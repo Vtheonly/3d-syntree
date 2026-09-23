@@ -1,0 +1,60 @@
+{
+  "system": {
+    "project_name": "3D-SynTree",
+    "seed": 42,
+    "device": "auto",
+    "mixed_precision": "fp16",
+    "tf32": true,
+    "num_workers": 2
+  },
+  "huggingface": {
+    "enabled": true,
+    "repo_id": "username/3d-syntree-checkpoints",
+    "push_every_n_epochs": 2,
+    "private": true
+  },
+  "data": {
+    "dataset_name": "crossdocked2020",
+    "data_dir": "./data/crossdocked",
+    "synthon_catalog_path": "./data/enamine_3d_subset.parquet",
+    "max_pocket_distance": 8.0,
+    "max_steps_per_molecule": 3,
+    "batch_size": 16,
+    "accumulate_grad_batches": 2,
+    "val_fraction": 0.1,
+    "synthetic_fallback": true
+  },
+  "model": {
+    "hidden_dim": 128,
+    "num_equivariant_layers": 4,
+    "num_radial_basis": 20,
+    "cutoff_radius": 5.0,
+    "synthon_embedding_dim": 128,
+    "num_attention_heads": 4,
+    "max_atomic_number": 100,
+    "dropout": 0.1
+  },
+  "training": {
+    "max_epochs": 40,
+    "time_budget_hours": 11.5,
+    "learning_rate": 3e-4,
+    "weight_decay": 1e-5,
+    "lr_scheduler": "cosine_warmup",
+    "warmup_epochs": 2,
+    "grad_clip_norm": 1.0,
+    "keep_last_n_checkpoints": 3,
+    "loss_weights": {
+      "synthon_ce": 1.0,
+      "torsion_nll": 0.5,
+      "steric_clash": 0.1
+    },
+    "eval_interval_epochs": 1
+  },
+  "evaluation": {
+    "num_test_pockets": 100,
+    "docking_engine": "gnina",
+    "exhaustiveness": 8,
+    "run_posebusters": true,
+    "run_aizynthfinder": true
+  }
+}

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "syntree"
+version = "0.1.0"
+description = "Structure-Based Molecular Design via Reaction-Constrained Synthon Assembly"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "3D-SynTree Contributors" }]
+dependencies = [
+    "torch>=2.1.0",
+    "torch-geometric>=2.4.0",
+    "rdkit>=2023.9.1",
+    "pandas>=2.1.0",
+    "pyarrow>=14.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "huggingface-hub>=0.20.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4.0"]
+hdf5 = ["h5py>=3.10.0"]
+
+[tool.setuptools.packages.find]
+include = ["syntree*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]

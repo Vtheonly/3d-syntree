@@ -1,0 +1,296 @@
+"""Enamine 3D synthon catalog: loading, filtering, and reaction-grammar
+masking.
+
+The catalog enforces the curated Enamine REAL 3D-Diversity constraints:
+
+* fraction of sp3 carbons (Fsp3) >= ``min_fsp3`` (default 0.42),
+* molecular weight <= ``max_mw`` Da (default 220),
+
+with one chemically necessary exemption: aryl halides and boronic acids
+(the mandatory coupling partners for Suzuki / Buchwald-Hartwig / SNAr
+chemistry, whose reacting atoms are aromatic by definition) are exempt
+from the Fsp3 floor. Without them the reaction grammar could not close.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import pandas as pd
+import torch
+from rdkit import Chem, DataStructs
+from rdkit.Chem import AllChem, rdFingerprintGenerator
+
+from syntree.chemistry.reactions import (
+    HANDLE_SMARTS,
+    REACTION_SIDES,
+    ReactionEngine,
+)
+
+logger = logging.getLogger(__name__)
+
+REQUIRED_COLUMNS = ("id", "smiles", "fsp3", "mw", "primary_handle")
+
+# Default catalog constraints (Enamine 3D-Diversity curation rules).
+DEFAULT_MIN_FSP3 = 0.42
+DEFAULT_MAX_MW = 220.0
+
+# Handle types exempt from the Fsp3 floor (aryl coupling partners are
+# necessarily flat: [c]-X bonds are required by the reaction SMARTS).
+DEFAULT_EXEMPT_HANDLES = ("aryl_halide", "boronic_acid")
+
+
+class SynthonCatalog:
+    """Manages the certified 3D building-block library.
+
+    Args:
+        catalog_path: Path to a parquet or CSV catalog with columns
+            ``id, smiles, fsp3, mw, primary_handle``.
+        embedding_dim: Dimensionality of the synthon embedding table.
+        min_fsp3: Minimum allowed fraction of sp3 carbons.
+        max_mw: Maximum allowed molecular weight (Da).
+        seed: Seed for the deterministic fingerprint projection.
+        validate_handles: When True, re-detect handles from SMILES and drop
+            rows whose ``primary_handle`` cannot be verified chemically.
+        exempt_handles: Handle types allowed to bypass the Fsp3 floor
+            (aryl coupling partners).
+    """
+
+    def __init__(
+        self,
+        catalog_path: str,
+        embedding_dim: int = 128,
+        min_fsp3: float = DEFAULT_MIN_FSP3,
+        max_mw: float = DEFAULT_MAX_MW,
+        seed: int = 42,
+        validate_handles: bool = True,
+        exempt_handles: Sequence[str] = DEFAULT_EXEMPT_HANDLES,
+    ):
+        if embedding_dim <= 0:
+            raise ValueError(f"embedding_dim must be positive, got {embedding_dim}")
+        self.catalog_path = str(catalog_path)
+        self.embedding_dim = int(embedding_dim)
+        self.min_fsp3 = float(min_fsp3)
+        self.max_mw = float(max_mw)
+        self.seed = int(seed)
+        self.exempt_handles = tuple(exempt_handles or ())
+
+        self.engine = ReactionEngine()
+        self.df = self._load_and_filter(validate_handles)
+        self.num_synthons = len(self.df)
+        if self.num_synthons == 0:
+            raise ValueError(
+                f"Catalog '{catalog_path}' is empty after filtering "
+                f"(Fsp3 >= {min_fsp3}, MW <= {max_mw})."
+            )
+
+        self.embeddings = self._compute_embeddings()
+        self.handle_masks = self._build_compatibility_indices()
+        self._smiles_cache: Dict[int, Optional[str]] = {}
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+    def _load_and_filter(self, validate_handles: bool) -> pd.DataFrame:
+        if self.catalog_path.endswith(".parquet"):
+            df = pd.read_parquet(self.catalog_path)
+        elif self.catalog_path.endswith(".csv"):
+            df = pd.read_csv(self.catalog_path)
+        else:
+            df = pd.read_csv(self.catalog_path)
+
+        missing = set(REQUIRED_COLUMNS) - set(df.columns)
+        if missing:
+            raise ValueError(f"Catalog must contain columns: {sorted(REQUIRED_COLUMNS)}")
+
+        n_raw = len(df)
+        is_exempt = df["primary_handle"].isin(self.exempt_handles)
+        passes_fsp3 = (df["fsp3"] >= self.min_fsp3) | is_exempt
+        filtered = df[passes_fsp3 & (df["mw"] <= self.max_mw)].copy()
+        n_filtered = len(filtered)
+
+        dropped = []
+        if validate_handles:
+            keep: List[bool] = []
+            for smiles, handle in zip(filtered["smiles"], filtered["primary_handle"]):
+                ok = False
+                mol = Chem.MolFromSmiles(str(smiles))
+                if mol is not None and handle in HANDLE_SMARTS:
+                    ok = handle in self.engine.handle_types(mol)
+                keep.append(ok)
+                if not ok:
+                    dropped.append(str(smiles))
+            filtered = filtered[keep]
+        filtered = filtered.reset_index(drop=True)
+
+        if n_filtered < n_raw:
+            logger.info(
+                "Catalog filter (Fsp3 >= %.2f, MW <= %.1f): %d -> %d synthons",
+                self.min_fsp3, self.max_mw, n_raw, n_filtered,
+            )
+        if dropped:
+            logger.warning(
+                "Dropped %d synthons with unverifiable primary_handle (e.g. %s)",
+                len(dropped), dropped[:3],
+            )
+        return filtered
+
+    # ------------------------------------------------------------------
+    # Embeddings: deterministic Morgan-fingerprint projections
+    # ------------------------------------------------------------------
+    def _compute_embeddings(self) -> torch.Tensor:
+        """Embed every synthon via a seeded random projection of its Morgan
+        count fingerprint.
+
+        The mapping is deterministic (fixed seed) and chemically informed:
+        structurally similar synthons receive similar embeddings, while no
+        gradient state is kept inside the catalog.
+        """
+        rng = np.random.default_rng(self.seed)
+        projection = rng.standard_normal((2048, self.embedding_dim)).astype(np.float32)
+        projection /= np.sqrt(2048)
+
+        rows = np.zeros((self.num_synthons, self.embedding_dim), dtype=np.float32)
+        for i, smiles in enumerate(self.df["smiles"]):
+            mol = Chem.MolFromSmiles(str(smiles))
+            if mol is None:
+                continue
+            try:
+                # Modern API (RDKit >= 2022): dedicated generator objects.
+                generator = rdFingerprintGenerator.GetMorganGenerator(
+                    radius=2, fpSize=2048
+                )
+                fp = generator.GetFingerprint(mol)
+            except (AttributeError, NameError):
+                fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+            vec = np.zeros((2048,), dtype=np.float32)
+            DataStructs.ConvertToNumpyArray(fp, vec)
+            rows[i] = vec @ projection
+
+        norms = np.linalg.norm(rows, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        emb = torch.from_numpy(rows / norms)
+        return emb
+
+    # ------------------------------------------------------------------
+    # Compatibility masks
+    # ------------------------------------------------------------------
+    def _build_compatibility_indices(self) -> Dict[str, np.ndarray]:
+        masks: Dict[str, np.ndarray] = {}
+        for handle in self.df["primary_handle"].unique():
+            masks[str(handle)] = (self.df["primary_handle"] == handle).to_numpy()
+        return masks
+
+    def get_reaction_mask(
+        self,
+        target_reaction: str,
+        device: Optional[torch.device] = None,
+        core_handle: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Logit mask over the catalog for ``target_reaction``.
+
+        Args:
+            target_reaction: Reaction name (key of :data:`REACTION_SIDES`).
+            device: Torch device for the returned tensor.
+            core_handle: Handle type of the growing ligand's attachment
+                point, if known. The mask is then restricted to the
+                *complementary* partner handle so the selected synthon can
+                actually react with the core.
+
+        Returns:
+            Float tensor of shape ``[num_synthons]`` with ``0.0`` for legal
+            synthons and ``-1e9`` for incompatible ones.
+        """
+        if target_reaction not in REACTION_SIDES:
+            raise ValueError(
+                f"Unknown reaction '{target_reaction}'. "
+                f"Available: {sorted(REACTION_SIDES)}"
+            )
+        side_a, side_b = REACTION_SIDES[target_reaction]
+        if core_handle == side_a:
+            allowed = {side_b}
+        elif core_handle == side_b:
+            allowed = {side_a}
+        else:
+            allowed = {side_a, side_b}
+
+        valid_indices = np.zeros(self.num_synthons, dtype=bool)
+        for handle in allowed:
+            if handle in self.handle_masks:
+                valid_indices |= self.handle_masks[handle]
+
+        mask = torch.zeros(self.num_synthons, dtype=torch.float32)
+        mask[~valid_indices] = -1e9
+        if device is not None:
+            mask = mask.to(device)
+        return mask
+
+    # ------------------------------------------------------------------
+    # Accessors
+    # ------------------------------------------------------------------
+    def get_mol(self, synthon_idx: int, explicit_hs: bool = False) -> Chem.Mol:
+        """Parse the SMILES of synthon ``synthon_idx``.
+
+        Args:
+            synthon_idx: Row index into the filtered catalog.
+            explicit_hs: When True, add explicit hydrogens (needed before
+                conformer embedding).
+        """
+        smiles = self.get_smiles(synthon_idx)
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Synthon {synthon_idx} has unparseable SMILES: {smiles}")
+        if explicit_hs:
+            mol = Chem.AddHs(mol)
+        return mol
+
+    def get_smiles(self, synthon_idx: int) -> str:
+        if not 0 <= synthon_idx < self.num_synthons:
+            raise IndexError(
+                f"synthon_idx {synthon_idx} out of range [0, {self.num_synthons})"
+            )
+        return str(self.df.iloc[synthon_idx]["smiles"])
+
+    def get_id(self, synthon_idx: int) -> str:
+        if not 0 <= synthon_idx < self.num_synthons:
+            raise IndexError(
+                f"synthon_idx {synthon_idx} out of range [0, {self.num_synthons})"
+            )
+        return str(self.df.iloc[synthon_idx]["id"])
+
+    def synthon_indices_for_handles(
+        self, handles: Iterable[str]
+    ) -> np.ndarray:
+        """Indices of synthons whose primary handle is in ``handles``."""
+        wanted = set(handles)
+        valid = np.zeros(self.num_synthons, dtype=bool)
+        for handle in wanted:
+            if handle in self.handle_masks:
+                valid |= self.handle_masks[handle]
+        return np.nonzero(valid)[0]
+
+    @property
+    def available_handles(self) -> List[str]:
+        """Handle types present in the catalog, sorted."""
+        return sorted(self.handle_masks.keys())
+
+    def __len__(self) -> int:
+        return self.num_synthons
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return (
+            f"SynthonCatalog(path={self.catalog_path!r}, "
+            f"n={self.num_synthons}, dim={self.embedding_dim}, "
+            f"min_fsp3={self.min_fsp3}, max_mw={self.max_mw})"
+        )
+
+
+__all__ = [
+    "SynthonCatalog",
+    "REQUIRED_COLUMNS",
+    "DEFAULT_MIN_FSP3",
+    "DEFAULT_MAX_MW",
+    "DEFAULT_EXEMPT_HANDLES",
+]
