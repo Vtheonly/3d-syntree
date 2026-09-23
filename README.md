@@ -41,24 +41,12 @@ structure and an actionable, multi-step synthetic recipe.**
 
 ## 2. The Problem: The Synthesizability Wall
 
-```
-┌────────────────────────────────────────────────────────┐
-│ ATOM-BY-ATOM 3D DIFFUSION (TargetDiff, DiffSBDD)       │
-│ • Treats generation as continuous 3D coordinate noise  │
-│ • Fits the pocket like a glove (docking > 95%)         │
-│ • 85%+ fail retrosynthetic planning (UNSYNTHESIZABLE)  │
-│ • Violates physics: 5-bond carbons, explosive rings    │
-└───────────────────────────┬────────────────────────────┘
-                            │
-              THE SYNTHESIZABILITY WALL
-                            │
-┌───────────────────────────▼────────────────────────────┐
-│ 2D FORWARD-SYNTHESIS TREES (SynNet, SyntheMol)         │
-│ • Assembles catalog building blocks via real reactions │
-│ • 70%+ wet-lab synthesis success                       │
-│ • Blind to 3D protein pockets                          │
-│ • Generates flat, lipophilic, low-potency aromatic wax │
-└────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["ATOM-BY-ATOM 3D DIFFUSION<br/>(TargetDiff, DiffSBDD)<br/><br/>• Continuous 3D coordinate noise<br/>• Strong pocket fit / docking scores<br/>• 85%+ fail retrosynthetic planning<br/>• Can violate chemical validity"] 
+    W["THE SYNTHESIZABILITY WALL"]
+    B["2D FORWARD-SYNTHESIS TREES<br/>(SynNet, SyntheMol)<br/><br/>• Real catalog building blocks + reactions<br/>• High synthesis feasibility<br/>• Blind to 3D protein pockets<br/>• Tends toward flat aromatic chemistry"]
+    A --> W --> B
 ```
 
 Three obstacles make this wall hard to tear down:
@@ -86,8 +74,8 @@ Four architectural commitments break the wall:
    mask zeroes the logits of every synthon that cannot legally react with
    the ligand's exposed handle, so illegal chemistry is unrepresentable.
 3. **Equivariant Torsion Guidance** – rather than predicting all atom
-   coordinates, the 3D geometry of each added synthon is set by predicting
-   the **dihedral angle** around the newly formed single bond with an
+   coordinates, the 3D geometry of each added synthon is set by predicting the
+   **dihedral angle** around the newly formed single bond with an
    SE(3)-equivariant network conditioned on pocket atoms, expressed as a
    von Mises distribution on the circle.
 4. **3D-Enriched Synthon Catalog** – spirocyclic, bridged, and chiral
@@ -95,40 +83,26 @@ Four architectural commitments break the wall:
    (aryl coupling partners are exempt from the Fsp3 floor because Suzuki /
    Buchwald / SNAr chemistry is aryl-by-definition).
 
-```
-                                PROTEIN POCKET (PDB)
-                                         │
-                                         ▼
-                             ┌───────────────────────┐
-                             │  PaiNN SE(3) Encoder  │
-                             └───────────┬───────────┘
-                                         │ Invariant/Equivariant Embeddings
-                                         ▼
-                             ┌───────────────────────┐
-   Intermediate Ligand M_t ─►│  Cross-Attention Core │
-   (Attachment Handle u)     └───────────┬───────────┘
-                                         │ Context Latent z_t
-                                         ▼
-                     ┌───────────────────┴───────────────────┐
-                     ▼                                       ▼
-          ┌──────────────────────┐               ┌───────────────────────┐
-          │ Synthon Head         │               │ Continuous Torsion    │
-          │ (Reaction Masked)    │               │ Head (SO(2) Space)    │
-          └──────────┬───────────┘               └───────────┬───────────┘
-                     │ Top-1 Synthon B_t                     │ Dihedral Angle φ_t
-                     └───────────────────┬───────────────────┘
-                                         ▼
-                             ┌───────────────────────┐
-                             │ RDKit Conformer Engine│
-                             │ (Deterministic Snap + │
-                             │  Kabsch + MMFF relax) │
-                             └───────────┬───────────┘
-                                         ▼
-                               Intermediate Ligand M_{t+1}
-                                         │
-                        [Iterate until cavity is filled]
-                                         ▼
-                      FINAL 3D DRUG CANDIDATE + LAB RECIPE
+```mermaid
+flowchart TD
+    P["PROTEIN POCKET<br/>(PDB)"]
+    E["PaiNN SE(3) Encoder"]
+    X["Cross-Attention Core<br/>Intermediate Ligand M_t<br/>(Attachment Handle u)"]
+    S["Synthon Head<br/>(Reaction Masked)"]
+    T["Continuous Torsion Head<br/>(SO(2) Space)"]
+    R["RDKit Conformer Engine<br/>(Deterministic Snap + Kabsch + MMFF relax)"]
+    I["Intermediate Ligand M_(t+1)"]
+    F["FINAL 3D DRUG CANDIDATE + LAB RECIPE"]
+
+    P --> E
+    E -->|Invariant / Equivariant Embeddings| X
+    X -->|Context Latent z_t| S
+    X -->|Context Latent z_t| T
+    S -->|Top-1 Synthon B_t| R
+    T -->|Dihedral Angle φ_t| R
+    R --> I
+    I -->|Iterate until cavity is filled| X
+    R --> F
 ```
 
 ---
@@ -170,7 +144,7 @@ relaxation of the junction bonds.
 
 ## 5. Repository Structure
 
-```
+```text
 3d-syntree/
 ├── configs/
 │   ├── default_config.json          # Master hyperparameter manifest
@@ -226,7 +200,7 @@ pip install -e .
 ### Download assets (offline fallback included)
 
 ```bash
-python scripts/download_assets.py --target-dataset crossdocked2020 \
+python scripts/download_assets.py --target-dataset crossdocked2020 \\
     --synthon-subset 3d-diversity-15k
 ```
 
@@ -243,7 +217,7 @@ python main.py --mode train --config configs/default_config.json --resume-auto
 ### Generate pocket-conditioned ligands + synthesis recipes
 
 ```bash
-python main.py --mode generate --config configs/default_config.json \
+python main.py --mode generate --config configs/default_config.json \\
     --pocket data/crossdocked/sample_pocket.pdb --num-ligands 8 --resume-auto
 ```
 
@@ -275,9 +249,9 @@ Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle, add your
    checkpoint sync every 2 epochs.
 7. Verifies the remote checkpoint state.
 
-**Disconnection immunity:** if Colab disconnects at hour 4, simply hit
-**Run All** again — the trainer detects the remote checkpoints on the HF Hub,
-restores model + optimizer + RNG state, and resumes from the correct epoch.
+**Disconnection immunity:** if Colab disconnects at hour 4, simply hit **Run All**
+again — the trainer detects the remote checkpoints on the HF Hub, restores model +
+optimizer + RNG state, and resumes from the correct epoch.
 
 ---
 
