@@ -81,6 +81,25 @@ def test_remote_empty_purges_stale_local_epoch_39(tmp_path):
     assert not (tmp_path / "progress.json").exists()
 
 
+def test_remote_verification_failure_purges_local_state(tmp_path):
+    _write_stale_local_state(tmp_path, epoch=39)
+    manager = _manager(tmp_path, FakeHub([]))
+
+    class UnavailableHub(FakeHub):
+        def list_repo_files(self, repo_id, repo_type="model"):
+            raise OSError("temporary network failure")
+
+    manager.api = UnavailableHub([])
+
+    start_epoch, step, best = manager.restore_latest(nn.Linear(2, 2))
+
+    assert (start_epoch, step) == (0, 0)
+    assert best == float("inf")
+    assert not list(tmp_path.glob("checkpoint_*.pt"))
+    assert not (tmp_path / "manifest.json").exists()
+    assert not (tmp_path / "progress.json").exists()
+
+
 def test_remote_progress_gap_is_rejected(tmp_path, monkeypatch):
     remote = Path(tmp_path) / "remote"
     remote.mkdir()
