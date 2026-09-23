@@ -205,8 +205,9 @@ def main(argv=None) -> int:
 
         episodes = int(rl_cfg.get("episodes", 256))
         temperature = float(rl_cfg.get("temperature", 1.0))
+        checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
         history = []
-        for episode in range(episodes):
+        for episode in range(start_epoch, episodes):
             pocket = pocket_paths[episode % len(pocket_paths)]
             model.eval()
             result = generator.generate_ligand(
@@ -215,7 +216,11 @@ def main(argv=None) -> int:
                 temperature=temperature,
                 return_trace=True,
             )
-            reward_details = reward_fn.compute(result["rdkit_mol"], pocket)
+            reward_details = reward_fn.compute(
+                result["rdkit_mol"],
+                pocket,
+                clash_score=float(result.get("clash_score", 0.0)),
+            )
             model.train()
             stats = finetuner.update_episode(
                 result.get("policy_trace") or [],
@@ -233,7 +238,6 @@ def main(argv=None) -> int:
                 f"[rl] episode {episode:04d} | reward={entry['reward']:.4f} | "
                 f"loss={entry['loss']:.4f} | steps={entry['steps']:.0f}"
             )
-            checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
             if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
                 manager.save_checkpoint(
                     epoch=episode,
