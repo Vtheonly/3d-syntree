@@ -16,7 +16,6 @@ import torch
 import torch.nn.functional as F
 from rdkit import Chem
 from rdkit.Chem import QED
-from torch_geometric.data import Batch
 
 from syntree.engine.evaluator import EvaluationPipeline
 
@@ -128,7 +127,6 @@ class ThreeDReward:
         return {
             "reward": float(reward),
             **components,
-            "smiles_hash": float(abs(hash(smiles)) % 10_000_000) if smiles else 0.0,
             "docking_available": float(docking_engine is not None),
         }
 
@@ -173,8 +171,7 @@ class PPOFineTuner:
         )
 
     def _log_prob_and_value(self, transition: PPOTransition):
-        state = transition.state
-        batch = Batch.from_data_list([state]).to(self.device)
+        batch = transition.state.to(self.device)
         reaction_mask = transition.reaction_mask.to(self.device)
         synthon_masks = transition.synthon_masks.to(self.device)
         family = int(transition.family_idx)
