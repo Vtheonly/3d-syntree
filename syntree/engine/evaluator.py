@@ -1,9 +1,9 @@
 """Evaluation pipeline: PoseBusters-style validation, retrosynthetic
-feasibility proxy, docking hooks (GNINA / Vina), and property benchmarks.
+feasibility reporting, docking hooks (GNINA / Vina), and property benchmarks.
 
 External engines (GNINA, AiZynthFinder) are optional: when their binaries
-or Python packages are absent, the pipeline degrades gracefully to
-internal RDKit-based metrics and reports which external tools were skipped.
+or configuration is absent, the pipeline reports those external evaluations
+as unavailable rather than replacing them with misleading internal proxies.
 """
 
 from __future__ import annotations
@@ -32,8 +32,9 @@ class EvaluationPipeline:
         * ``posebusters_pass_rate`` – fraction passing all sanity checks,
         * ``chemical_validity`` – RDKit sanitizable fraction,
         * ``mean_fsp3`` / ``fsp3_ge_0.42_rate`` – 3D character,
-        * ``retrosynthetic_feasibility`` – route solvability (AiZynthFinder
-          when available; otherwise a reaction-handle coverage proxy),
+        * ``retrosynthetic_feasibility`` – route solvability from a configured
+          AiZynthFinder planner; unavailable is reported explicitly rather than
+          substituted with a tautological recipe check,
         * ``mean_vina_score`` – docking affinity (when GNINA/Vina present),
         * ``recipe_completeness`` – fraction with a full synthesis recipe.
     """
@@ -46,6 +47,8 @@ class EvaluationPipeline:
         self.output_dir = str(output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
         self.validator = ChemicalValidator()
+        self.aizynthfinder_config = eval_cfg.get("aizynthfinder_config")
+        self._retro_status = "unavailable"
 
     # ------------------------------------------------------------------
     # Entry point
@@ -115,6 +118,7 @@ class EvaluationPipeline:
 
         # Retrosynthetic feasibility.
         report["retrosynthetic_feasibility"] = self._retro_feasibility(per_mol)
+        report["retrosynthetic_feasibility_status"] = self._retro_status
 
         # Docking (optional).
         if pocket_pdb_path is not None and self._tool_availability().get(
@@ -140,21 +144,33 @@ class EvaluationPipeline:
     # ------------------------------------------------------------------
     # Retrosynthesis
     # ------------------------------------------------------------------
-    def _retro_feasibility(self, per_mol: List[Dict]) -> float:
-        """Fraction of molecules with plausible routes.
+    def _retro_feasibility(self, per_mol: List[Dict]) -> Optional[float]:
+        """Return a genuine AiZynthFinder solve rate when fully configured.
 
-        When AiZynthFinder is installed, run its CLI; otherwise fall back to
-        the recipe-based proxy: a molecule is feasible when every catalog
-        synthon in its recipe is purchasable and every step is a certified
-        reaction (which is true by construction, so the proxy measures
-        recipe completeness).
+        A forward recipe being non-empty is not evidence that an independent
+        retrosynthesis planner can recover that route, so no proxy score is
+        returned when the planner is unavailable or unconfigured.
         """
-        if shutil.which("aizynthcli") is not None:
-            try:
-                return self._aizynth_run(per_mol)
-            except Exception as exc:  # pragma: no cover
-                logger.warning("AiZynthFinder failed (%s); using proxy.", exc)
-        return float(np.mean([m["recipe_complete"] for m in per_mol]))
+        if not bool(self.config.get("evaluation", {}).get("run_aizynthfinder", True)):
+            self._retro_status = "disabled"
+            return None
+        if shutil.which("aizynthcli") is None:
+            self._retro_status = "unavailable_missing_aizynthcli"
+            logger.warning("AiZynthFinder CLI is unavailable; retrosynthetic feasibility is not reported.")
+            return None
+        config_path = self.aizynthfinder_config
+        if not config_path or not os.path.isfile(config_path):
+            self._retro_status = "unavailable_missing_config"
+            logger.warning("AiZynthFinder configuration/model assets are not configured; retrosynthetic feasibility is not reported.")
+            return None
+        try:
+            result = self._aizynth_run(per_mol)
+            self._retro_status = "evaluated"
+            return result
+        except Exception as exc:  # pragma: no cover
+            self._retro_status = "failed"
+            logger.error("AiZynthFinder evaluation failed: %s", exc)
+            return None
 
     def _aizynth_run(self, per_mol: List[Dict]) -> float:  # pragma: no cover
         """Run aizynthcli over the SMILES list; returns solve rate."""
@@ -164,7 +180,9 @@ class EvaluationPipeline:
                 if m["smiles"]:
                     f.write(m["smiles"] + "\n")
         out_dir = os.path.join(self.output_dir, "aizynth")
-        cmd = ["aizynthcli", "--config", "{}", "-i", smiles_path, "-o", out_dir]
+        os.makedirs(out_dir, exist_ok=True)
+        config_path = os.path.abspath(str(self.aizynthfinder_config))
+        cmd = ["aizynthcli", "--config", config_path, "-i", smiles_path, "-o", out_dir]
         subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
         result_path = os.path.join(out_dir, "results.json")
         if os.path.exists(result_path):
