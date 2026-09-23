@@ -376,9 +376,16 @@ class ResilientTrainer:
                         synthon_mask,
                         reaction_mask,
                     )
-                    l_reaction = self.criterion(
+                    reaction_per_sample = F.cross_entropy(
                         preds["reaction_logits"],
                         batch.target_reaction_family_idx,
+                        reduction="none",
+                    )
+                    non_stop = ~batch.target_stop.bool()
+                    l_reaction = (
+                        reaction_per_sample[non_stop].mean()
+                        if bool(non_stop.any().item())
+                        else reaction_per_sample.new_zeros(())
                     )
                     l_synthon = self.criterion(preds["synthon_logits"], target_action)
                     l_torsion = ContinuousTorsionHead.loss_fn(
@@ -500,6 +507,7 @@ class ResilientTrainer:
         total, reaction, synthon, torsion = 0.0, 0.0, 0.0, 0.0
         reaction_correct, synthon_correct = 0, 0
         oracle_synthon_correct_total, joint_action_correct, n = 0, 0, 0
+        reaction_n = 0
         for batch in self.val_loader:
             batch = batch.to(self.device)
             target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
@@ -537,9 +545,11 @@ class ResilientTrainer:
             torsion += float(l_torsion.item())
 
             predicted_family = preds["reaction_logits"].argmax(-1)
+            non_stop = ~batch.target_stop.bool()
             reaction_correct += int(
-                (predicted_family == batch.target_reaction_family_idx).sum().item()
+                ((predicted_family == batch.target_reaction_family_idx) & non_stop).sum().item()
             )
+            reaction_n += int(non_stop.sum().item())
             oracle_synthon = preds["synthon_logits"].argmax(-1)
             synthon_oracle_correct = (oracle_synthon == target_action)
 
@@ -581,7 +591,7 @@ class ResilientTrainer:
             "val_reaction_ce": reaction / max(1, len(self.val_loader)),
             "val_synthon_ce": synthon / max(1, len(self.val_loader)),
             "val_torsion_nll": torsion / max(1, len(self.val_loader)),
-            "val_reaction_acc": reaction_correct / max(1, n),
+            "val_reaction_acc": reaction_correct / max(1, reaction_n),
             "val_synthon_acc": synthon_correct / max(1, n),
             "val_synthon_acc_oracle_family": oracle_synthon_correct_total / max(1, n),
             "val_joint_action_acc": joint_action_correct / max(1, n),
