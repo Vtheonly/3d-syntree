@@ -73,7 +73,7 @@ Four architectural commitments break the wall:
 
 1. **Lego-Rule Action Space** – the model never generates individual atoms.
    Every action attaches a pre-validated building block from a curated
-   a real reaction-compatible building-block catalog (default curation: Fsp3 ≥ 0.40, MW 80–220 Da).
+   Enamine REAL 3D-Diversity subset (Fsp3 ≥ 0.42, MW ≤ 220 Da).
 2. **Relative 3D Cross-Attention + Reaction Grammar** – the reacting handle
    includes chemical state plus pocket-frame position. Invariant handle-to-
    pocket distances condition the attention keys, while the reaction grammar
@@ -213,17 +213,16 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Prepare thesis data
+### Download assets (offline fallback included)
 
 ```bash
-python scripts/build_synthon_catalog.py --input /path/to/real_building_blocks.sdf --output ./data/enamine_3d_subset.parquet --min-fsp3 0.40 --max-mw 220 --strict-min-size 50000
-
-python scripts/prepare_multidataset.py --input-manifest /path/to/structural_sources.jsonl --output-dir ./data/unified --radius 10 --min-seq-id 0.30 --coverage 0.80
-
-python scripts/download_assets.py --target-dataset unified_multisource --output-dir ./data
+python scripts/download_assets.py --target-dataset crossdocked2020 \\
+    --synthon-subset 3d-diversity-15k
 ```
 
-Production mode never fabricates a training catalog or silently falls back to mock pockets. The unified stage standardizes every source, aligns ligand/pocket coordinates, writes rejection and split manifests, and performs leakage-resistant protein clustering. Use `--offline-smoke` only for plumbing tests.
+With no network access the builder creates a chemically verified offline
+catalog (Fsp3/MW computed with RDKit, handles detected by the real reaction
+engine) plus a sample protein pocket, so the entire pipeline runs end-to-end.
 
 ### Train (wall-clock budgeted, resumable)
 
@@ -234,7 +233,8 @@ python main.py --mode train --config configs/default_config.json --resume-auto
 ### Generate pocket-conditioned ligands + synthesis recipes
 
 ```bash
-python main.py --mode generate --config configs/default_config.json --pocket ./data/unified/pairs/<complex_id>_pocket.pdb --num-ligands 8 --resume-auto
+python main.py --mode generate --config configs/default_config.json \\
+    --pocket data/crossdocked/sample_pocket.pdb --num-ligands 8 --resume-auto
 ```
 
 ### Evaluate
@@ -254,14 +254,22 @@ python -m pytest tests/ -q
 ## 7. Colab / Kaggle Execution (12-hour budget)
 
 Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle and hit
-**Run All**. The notebook:
+**Run All**. The notebook is intentionally an execution/download wrapper; all
+data processing, model logic, training, and checkpoint orchestration remain in
+the codebase.
+
+The production run uses two separate Hugging Face repositories:
+* **Dataset:** `JJKK1212/3d-syntree-multidataset` (HF Dataset repo)
+* **Model checkpoints:** `JJKK1212/3d-syntree-checkpoints` (HF Model repo)
+
+The notebook:
 
 1. **Asks for your Hugging Face write token** via a hidden input prompt
    (auto-detected first from Colab/Kaggle secrets or `HF_TOKEN`; leave blank
    to keep checkpoints local-only).
 2. Clones (or pulls) this repository.
 3. Installs dependencies and verifies RDKit / PyTorch / PyG.
-4. Verifies or prepares the real data assets; production mode never synthesizes training data.
+4. Verifies the pre-filtered dataset manifests and exact synthon catalog from the HF Dataset repo.
 5. Profiles the GPU (TF32 on Ampere+, fp16 on T4/V100).
 6. Launches the time-budgeted training loop with automatic Hugging Face
    checkpoint sync every 2 epochs.
@@ -365,7 +373,9 @@ The synthon policy outputs K + 1 actions, where index K is the learned STOP acti
 * **Deterministic real-target extraction** – real labels require a catalog
   synthon match plus successful RDKit forward replay; there is no random
   target_synthon or target_dihedral path in real mode.
-* **Leakage-resistant splits** – unified structural sources are clustered with MMseqs2 at 30% sequence identity and whole protein clusters are kept together. External benchmark clusters can be locked outside training.
+* **Non-overlapping deterministic splits** – paired CrossDocked examples are deterministically
+  partitioned into train/val/test buckets instead of loading every pair into
+  every split.
 * **Reaction policy** – the network predicts a reaction family before synthon
   selection. The synthon logits are then masked by the selected family and
   the current core handle.
@@ -385,30 +395,273 @@ The synthon policy outputs K + 1 actions, where index K is the learned STOP acti
   never from committed configuration.
 * **Testing** – run python -m pytest tests/ -q before treating a benchmark as
   valid.
-## 11. Multi-Source Dataset Contract
+## 10.1 Unified multi-dataset thesis dataset pipeline
 
-For thesis runs, CrossDocked2020 is treated as one structural source rather than the definition of the full training distribution. The repository accepts a single manifest containing heterogeneous sources such as CrossDocked, BindingMOAD, and PDBbind exports, then normalizes every source before training.
+The production data path can combine CrossDocked2020, BindingMOAD, and PDBbind
+without changing the model input schema. Raw sources remain local inputs because
+their licensing and distribution layouts differ.
 
-### Structural normalization
+```mermaid
+flowchart LR
+    A[CrossDocked2020] --> D[Manifest normalization]
+    B[BindingMOAD] --> D
+    C[PDBbind refined] --> D
+    D --> E[RDKit sanitization + ligand filters]
+    E --> F[10 Å protein-only pocket extraction]
+    F --> G[Protein chain FASTA]
+    G --> H[MMseqs2 30% identity / 80% coverage]
+    H --> I[Component-level train / val / test assignment]
+    F --> J[Reaction-validated retrosynthetic labels]
+    I --> J
+    J --> K[Pre-featurized PyG states]
+    K --> L[500 MiB compressed shards + SHA-256 manifest]
+    L --> M[Hugging Face Dataset Hub]
+    M --> N[Lazy shard loader + shard-aware sampler]
+    N --> O[Training]
+```
 
-Every complex is reduced to one model-facing contract: a configurable heavy-atom pocket radius (10 Å by default); protein-only model pockets; a shared ligand/pocket coordinate origin; explicit rejection reasons for malformed, missing-3D, metal-containing, artifact, very-small, and low-MW records; and preserved source/provenance plus optional affinity metadata.
+### Input manifest
 
-### Leakage policy
+For heterogeneous source layouts, a CSV or JSONL row should contain at least:
 
-The split happens only after all sources are combined. MMseqs2 clusters the complete union of protein sequences, and a protein cluster is never divided across train/validation/test. This prevents the same family represented under different PDB IDs or source databases from crossing the split boundary. External benchmarks can be marked with a non-training split such as `casf2016_test`; the whole corresponding cluster is then excluded from train/validation/test allocation.
+`source,complex_id,protein_path,ligand_path,resolution,subset`
 
-### Building-block policy
+`preprocess_multidataset.py` also supports recursive discovery when a source
+uses a conventional <id>_protein.pdb and <id>_ligand.sdf|mol2 layout.
 
-The production catalog must come from a real library export. The curation script removes duplicates, applies MW/Fsp3 filters, indexes every detected reactive handle, and enforces a minimum unique-catalog size unless `--allow-small` is explicitly used for development. Repository-generated placeholder molecules remain available only in explicit smoke mode.
+### Build sequence-cluster-safe splits
 
-### Scientific interpretation
+```bash
+python scripts/preprocess_multidataset.py \
+  --crossdocked-manifest ./raw_data/crossdocked.csv \
+  --bindingmoad-manifest ./raw_data/bindingmoad.csv \
+  --pdbbind-manifest ./raw_data/pdbbind_refined.csv \
+  --output-dir ./data/multidataset
 
-PDBbind affinity metadata is preserved for downstream analysis but is not silently converted into a training objective for the current generator. Cross-source records retain provenance so later experiments can report source-specific performance instead of treating heterogeneous supervision as interchangeable.
+bash scripts/run_mmseqs_split.sh \
+  ./data/multidataset/processed_manifest.jsonl \
+  ./data/multidataset
+```
 
-## 12. Known Thesis Boundaries
+The split stage links complexes that share a clustered protein chain and assigns
+the resulting connected components to train, validation, or test. This prevents
+a clustered protein chain from appearing in multiple splits. A 30% sequence
+identity split supports sequence-level generalization claims; it does not by
+itself prove unseen structural folds.
 
-The repository enforces data and chemistry constraints, but those constraints are not scientific evidence by themselves. A valid RDKit product is not evidence of binding, a docking score is not experimental affinity, and a family-level split is not proof of biological generalization. Reported results must include the held-out population, curation rules, split policy, and evaluation tool/version.
+### Build real supervision and shard it
 
-## 13. License
+```bash
+python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split-manifest ./data/multidataset/split_manifest.json --split train --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_train.pt --max-steps 4
+python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split val --split-manifest ./data/multidataset/split_manifest.json --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_val.pt --max-steps 4
+python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split test --split-manifest ./data/multidataset/split_manifest.json --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_test.pt --max-steps 4
+python scripts/shard_and_upload.py --input ./data/trajectories_train.pt --split train --output-dir ./data/shards --repo-id JJKK1212/3d-syntree-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_train.json
+python scripts/shard_and_upload.py --input ./data/trajectories_val.pt --split val --output-dir ./data/shards --repo-id JJKK1212/3d-syntree-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_val.json
+python scripts/shard_and_upload.py --input ./data/trajectories_test.pt --split test --output-dir ./data/shards --repo-id JJKK1212/3d-syntree-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_test.json
+```
+
+Shards are bounded by compressed byte size rather than fixed sample count.
+The manifest stores sample ranges, compressed sizes, and SHA-256 hashes. The
+training loader downloads a shard on first access and keeps a bounded local
+LRU cache. The shard-aware sampler shuffles within each shard before moving
+to another shard, avoiding pathological global random cross-shard access.
+
+### Retrosynthesis coverage
+
+The forward reaction engine defines eight certified reaction SMARTS, but a
+co-crystallized product graph does not always contain enough information to
+recover the experimental precursor uniquely. The current product-only
+retrosynthesis implementation therefore accepts the five families declared in
+`SUPPORTED_RETRO_FAMILIES` and requires exact forward replay after catalog matching.
+Urea formation and click triazole are not silently converted into ground truth
+without additional reaction provenance.
+
+This distinction should remain explicit in the thesis: eight forward reaction
+templates are available to the generator, while only product-invertible
+transformations are used as supervised retrosynthetic labels unless external
+reaction provenance is available.
+## 11. License
 
 MIT — see [LICENSE](LICENSE).
+
+
+## 12. Research-grade contribution boundary
+
+3D-SynTree is not claimed to be novel merely because it combines PaiNN, RDKit,
+reaction SMARTS, cross-attention, or a synthon catalog. Those are established
+components. The research contribution must be demonstrated empirically by
+showing what the **chemistry-constrained 3D policy** adds beyond each component
+and by using a leakage-safe benchmark.
+
+The current research hypothesis is:
+
+> A reaction-constrained autoregressive policy can learn target-conditioned
+> choices over reaction family, purchasable synthon, and periodic junction
+> torsion while retaining hard chemical validity, and PPO can optimize the
+> resulting 3D designs against an external pocket oracle without relaxing the
+> synthesis grammar.
+
+This is a falsifiable hypothesis, not an acceptance claim.
+
+### 12.1 What is actually novel here
+
+The defensible unit of contribution is the **integrated constrained decision
+process**, not the individual neural layers:
+
+1. **Discrete reaction family** conditioned on the current reactive handle and
+   protein-pocket context.
+2. **Catalog-scale discrete synthon selection** under a reaction grammar.
+3. **Continuous periodic torsion** for the newly created bond.
+4. **Deterministic chemical execution** between policy decisions.
+5. **Terminal multi-objective optimization** with PPO while preserving the same
+   reaction/action constraints.
+6. **Evaluation of the entire synthesis-and-geometry trajectory**, rather than
+   reporting only a molecular validity percentage.
+
+The repository therefore reports reaction accuracy, oracle-family synthon
+accuracy, joint action accuracy, circular torsion NLL, chemical validity,
+3D validity, diversity, novelty, docking, and independent retrosynthetic
+solvability separately.
+
+This distinction matters because recent 3D SBDD benchmarks show that generated
+3D conformations can be invalid even when conventional docking scores look
+strong. A valid relaxed pose and a low docking score are therefore not
+interchangeable claims.
+
+### 12.2 Required ablations
+
+A thesis/paper run should contain at least these controlled variants:
+
+| Variant | Reaction grammar | 3D pocket conditioning | Learned torsion | PPO |
+| :--- | :---: | :---: | :---: | :---: |
+| Random constrained | Yes | No | No | No |
+| Catalog policy | Yes | Yes | No | No |
+| 3D-SynTree BC | Yes | Yes | Yes | No |
+| 3D-SynTree PPO | Yes | Yes | Yes | Yes |
+
+Additional ablations should remove the handle-to-pocket distance features,
+remove the reaction-family head, and replace the learned torsion with a
+deterministic torsion diagnostic. These experiments establish whether each
+architectural commitment contributes measurable information.
+
+### 12.3 Baseline protocol
+
+Published baselines such as TargetDiff, DiffSBDD, Pocket2Mol, SyntheMol, or
+other contemporary SBDD systems should not be reimplemented inside this
+repository merely to manufacture a comparison. Their official released
+checkpoints/configurations should generate outputs for the **same target
+manifest**, after which this repository evaluates the exported structures with
+the same metric code.
+
+Use:
+
+```bash
+python scripts/run_comparative_benchmark.py \
+  --manifest ./benchmarks/targets.jsonl \
+  --outputs ./benchmarks/outputs \
+  --methods 3d-syntree,targetdiff,diffsbbd,synthemol \
+  --limit 100
+```
+
+The target manifest must be frozen before model outputs are inspected. Target
+selection, sequence clustering, ligand filtering, docking protocol, and
+external retrosynthesis configuration must be shared across methods.
+
+Do not call a model's self-reported benchmark numbers a head-to-head result.
+A valid comparison requires the same targets, preprocessing, output budget,
+docking protocol, and metric implementation.
+
+### 12.4 Required primary metrics
+
+The comparative report should include:
+
+- chemical validity;
+- 3D validity / PoseBusters-style validity;
+- uniqueness;
+- pairwise molecular diversity;
+- novelty relative to the training corpus;
+- mean and distributional Fsp3;
+- molecular weight and other drug-like descriptors;
+- independent retrosynthetic solve rate;
+- docking score **only when the same external docking engine is available for
+  every method**;
+- target-conditioned success rate;
+- synthesis-step statistics and action-space failure rate.
+
+For a 3D generative model, docking alone is insufficient. The benchmark should
+also examine bond-length, angle, torsion, and pocket-distance distributions
+and, where appropriate, interaction recovery against the reference complex.
+
+### 12.5 Pareto analysis
+
+The phrase "break the Pareto frontier" is reserved for an observed result, not
+an architectural assumption.
+
+The final paper should plot at least:
+
+- docking/pose quality vs independent synthesis success;
+- docking/pose quality vs Fsp3;
+- synthesis success vs molecular diversity;
+- 3D validity vs docking score.
+
+Confidence intervals or bootstrap intervals should be reported across targets.
+A model occupies a useful trade-off region only if the observed data support
+that statement.
+
+### 12.6 Stage 2 PPO
+
+Stage 1 is behavioral cloning from reaction-validated crystal decompositions.
+Stage 2 is optional PPO fine-tuning:
+
+```bash
+python main.py \
+  --mode rl \
+  --config configs/rl_colab_12h.json \
+  --resume-auto
+```
+
+PPO uses a terminal reward. The reward is decomposed into docking, clash,
+Fsp3, QED, and chemical validity components. Docking is an external oracle:
+when GNINA/Vina is unavailable, the repository does **not** fabricate a docking
+score.
+
+The action space remains chemistry-constrained throughout RL. PPO therefore
+cannot directly propose an arbitrary atom graph or arbitrary bond geometry;
+every non-STOP action still passes through the same reaction grammar and RDKit
+reaction engine.
+
+### 12.7 Important scientific limitation
+
+The hybrid action space itself should not be presented as an unprecedented
+mathematical construction. SynCoGen has already demonstrated joint
+synthesis-aware 3D generation, while SHARP has demonstrated fragment-based
+hierarchical action-space reinforcement learning for synthesizable molecular
+optimization. The defensible contribution is therefore the particular
+reaction-family -> catalog-synthon -> periodic-torsion factorization, explicit
+RDKit reaction execution, target-conditioned torsion modeling, PPO training
+protocol, and empirical evidence produced by this repository.
+
+Likewise, high Fsp3 is not synonymous with good medicinal chemistry, and a
+catalog membership guarantee is not equivalent to successful laboratory
+synthesis. Independent retrosynthesis and, ultimately, experimental validation
+remain necessary.
+
+### 12.8 Reproducibility requirements
+
+Every reported experiment should archive:
+
+- exact Git commit;
+- dataset repository revision and manifest hashes;
+- synthon catalog hash;
+- target manifest hash;
+- model configuration;
+- random seeds;
+- checkpoint;
+- docking executable/version and command configuration;
+- PoseBusters version/configuration;
+- AiZynthFinder version/configuration;
+- generated SDFs and synthesis recipes;
+- per-target raw metrics.
+
+A paper table should never be produced from an unversioned mixture of local
+datasets, checkpoints, and generated outputs.
