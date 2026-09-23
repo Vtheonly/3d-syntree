@@ -151,7 +151,8 @@ class SynTreePolicy(nn.Module):
         Args:
             batch_data: PyG ``Data``/``Batch`` with ``pocket_pos`` ``[N,3]``,
                 ``pocket_z`` ``[N]``, ``pocket_batch`` ``[N]`` (optional),
-                and ``handle_features`` ``[B, 64]`` (or ``[64]``).
+                and ``handle_features`` ``[B, 67]`` (or ``[67]``; first 64 are
+                chemical features and final 3 are pocket-frame xyz).
             synthon_embeddings: ``[K, hidden_dim]`` catalog embeddings.
             synthon_compatibility_mask: ``[B, K]`` additive logit mask
                 (``0`` legal, ``-1e9`` illegal).
@@ -184,7 +185,7 @@ class SynTreePolicy(nn.Module):
             else:
                 raise ValueError(
                     f"handle_features has unsupported size {handle_features.size(0)}; "
-                    f"expected a multiple of {_HANDLE_FEATURE_DIM}"
+                    f"expected a multiple of {_HANDLE_FEATURE_DIM} (chemical 64 + xyz 3)"
                 )
         if handle_features.size(-1) != _HANDLE_FEATURE_DIM:
             raise ValueError(
