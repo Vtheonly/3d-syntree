@@ -370,6 +370,9 @@ class ResilientTrainer:
                 # Clamp catalog targets; STOP is represented by index K.
                 target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
                 stop_index = len(self.catalog)
+                target_stop = getattr(
+                    batch, "target_stop", torch.zeros_like(target, dtype=torch.bool)
+                )
                 target_action = torch.where(
                     batch.target_stop.bool(),
                     torch.full_like(target, stop_index),
