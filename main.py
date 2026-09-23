@@ -3,15 +3,10 @@
 
 Modes:
     train      – run the resilient, time-budgeted training loop.
+    rl         – run Stage 2 chemistry-constrained PPO optimization.
     generate   – generate pocket-conditioned ligands + synthesis recipes.
     evaluate   – run the benchmark battery over generated molecules.
     info       – print runtime/hardware and configuration diagnostics.
-
-Examples:
-    python main.py --mode train --config configs/default_config.json --resume-auto
-    python main.py --mode generate --pocket data/crossdocked/sample_pocket.pdb --num-ligands 8
-    python main.py --mode evaluate --sdf-dir outputs/
-    python main.py --mode info
 """
 
 from __future__ import annotations
@@ -127,8 +122,6 @@ def main(argv=None) -> int:
 
         ckpt_dir = os.path.join(args.output_dir or "./experiments", "checkpoints")
 
-        # A resumed run must keep the architecture it was trained with
-        # (which may have been GPU-auto-scaled on a different card).
         if args.resume_auto:
             reader = CheckpointManager(
                 {**config, "huggingface": {"enabled": False}}, ckpt_dir=ckpt_dir
@@ -138,7 +131,6 @@ def main(argv=None) -> int:
                 config["model"] = saved_model_cfg
                 print("[main] restored model architecture from checkpoint")
 
-        # GPU auto-scaling: bigger card -> bigger PaiNN (only for fresh runs).
         auto_cfg = config.get("training", {}).get("auto_scale", {})
         if (
             not args.resume_auto
@@ -191,16 +183,17 @@ def main(argv=None) -> int:
 
         model = build_model(config).to(device)
 
-        # Keep PPO checkpoints separate from Stage 1 epoch checkpoints so the
-        # two training stages never overwrite one another.
         rl_output_dir = args.output_dir or "./rl_outputs"
         rl_ckpt_dir = os.path.join(rl_output_dir, "checkpoints")
         rl_checkpoint_config = {**config, "huggingface": {"enabled": False}}
         rl_manager = CheckpointManager(rl_checkpoint_config, ckpt_dir=rl_ckpt_dir)
         rl_start_episode, _, _ = rl_manager.restore_latest(model)
-        print(
-            f"[main] Stage 2 PPO starting at episode {rl_start_episode}"
-        )
+        if rl_start_episode == 0:
+            # First time in Stage 2: load Stage 1 trained weights into policy
+            s1_epoch, s1_step, _ = stage1_manager.restore_latest(model)
+            if s1_step > 0:
+                print(f"[main] Stage 2 initialized with Stage 1 checkpoint (step {s1_step})")
+        print(f"[main] Stage 2 PPO starting at episode {rl_start_episode}")
 
         generator = SBDDGenerator(
             model, config, device, output_dir=args.output_dir or "./rl_outputs"
@@ -208,9 +201,6 @@ def main(argv=None) -> int:
         reward_fn = ThreeDReward(rl_cfg.get("reward", {}))
         finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
 
-        # The MDP environment (single source of chemistry truth) drives the
-        # rollouts; the generator's engines are reused so there is exactly
-        # one ReactionEngine / ConformerEngine / catalog instance.
         from syntree.engine.environment import MolecularAssemblyEnv
         from syntree.engine.rl import RolloutBuffer, collect_episode
 
@@ -223,20 +213,26 @@ def main(argv=None) -> int:
             device=device,
         )
 
-        # RL pocket discovery (Landmine 3 fix). The HuggingFace shard
-        # backend streams tensors, not loose PDB files, so the legacy
-        # data-dir scan finds nothing. Discovery order:
-        #   1. explicit --pocket-dir
-        #   2. config rl.pocket_dir
-        #   3. <data_dir>/test_pockets (staged by download_assets.py
-        #      from the dataset repo's targets/ folder)
-        #   4. legacy scan of <data_dir> for *_pocket.pdb
+        # Robust multi-path pocket discovery for RL mode
         candidate_dirs = [
             args.pocket_dir,
             rl_cfg.get("pocket_dir"),
+            "./data/test_pockets",
+            os.path.join(os.path.dirname(data_dir.rstrip("/")), "test_pockets"),
             os.path.join(data_dir, "test_pockets"),
             data_dir,
         ]
+        # Inspect assets_manifest.json if present
+        for manifest_candidate in ("./data/assets_manifest.json", os.path.join(os.path.dirname(data_dir.rstrip("/")), "assets_manifest.json")):
+            if os.path.isfile(manifest_candidate):
+                try:
+                    with open(manifest_candidate) as f:
+                        manifest_meta = json.load(f)
+                    if manifest_meta.get("rl_pocket_dir"):
+                        candidate_dirs.insert(0, manifest_meta["rl_pocket_dir"])
+                except Exception:
+                    pass
+
         pocket_paths = []
         pocket_source = None
         for candidate in candidate_dirs:
@@ -251,27 +247,19 @@ def main(argv=None) -> int:
                 pocket_paths = found
                 pocket_source = candidate
                 break
+
         if not pocket_paths:
             print(
-                "[main] no pocket PDB files found for --mode rl: tried "
-                f"{[c for c in candidate_dirs if c]}. Provide --pocket-dir or "
-                "upload a targets/ folder to the dataset repo "
-                "(download_assets.py stages it as test_pockets/).",
+                f"[main] no pocket PDB files found for --mode rl: tried {[c for c in candidate_dirs if c]}. "
+                "Provide --pocket-dir or ensure test_pockets/ is staged.",
                 file=sys.stderr,
             )
             return 2
-        print(
-            f"[main] RL using {len(pocket_paths)} pockets from {pocket_source}"
-        )
+        print(f"[main] RL using {len(pocket_paths)} pockets from {pocket_source}")
 
         episodes = int(rl_cfg.get("episodes", 256))
         temperature = float(rl_cfg.get("temperature", 1.0))
         checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
-        # Rollout buffering (bug report 2, Flaw 4): accumulate episodes
-        # across DIFFERENT pockets before every PPO update; advantages are
-        # GAE-estimated and normalized over the whole buffer, and the
-        # update runs on shuffled minibatches - never on a single
-        # 2-3-transition episode.
         rollout_episodes = max(1, int(rl_cfg.get("rollout_episodes", 32)))
         minibatch_size = max(1, int(rl_cfg.get("minibatch_size", 32)))
         history = []
@@ -280,6 +268,7 @@ def main(argv=None) -> int:
             gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
         )
         last_stats: Dict[str, float] = {}
+
         for episode in range(rl_start_episode, episodes):
             pocket = pocket_paths[episode % len(pocket_paths)]
             model.eval()
@@ -288,9 +277,9 @@ def main(argv=None) -> int:
                 model,
                 generator.catalog,
                 pocket_pdb_path=pocket,
-                terminal_reward_fn=lambda env: reward_fn.compute(
+                terminal_reward_fn=lambda env, p=pocket: reward_fn.compute(
                     env.current_mol,
-                    pocket,
+                    p,
                     clash_score=float(env.total_clash),
                     contact_energy=float(env.contact_energy()),
                 ),
@@ -311,6 +300,7 @@ def main(argv=None) -> int:
                     gamma=finetuner.gamma,
                     gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
                 )
+
             model.eval()
             entry = {
                 "episode": episode,
@@ -363,7 +353,6 @@ def main(argv=None) -> int:
         from syntree.utils.checkpoint import CheckpointManager
 
         manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
-        # Rebuild the exact trained architecture (auto-scaled runs store it).
         saved_model_cfg = manager.read_model_config()
         if saved_model_cfg:
             config["model"] = saved_model_cfg
@@ -379,7 +368,18 @@ def main(argv=None) -> int:
             model, config, device,
             output_dir=args.output_dir or "./outputs",
         )
-        pocket = args.pocket or os.path.join(data_dir, "sample_pocket.pdb")
+        pocket = args.pocket
+        if not pocket or not os.path.exists(pocket):
+            candidates = [
+                "./data/test_pockets/1a9u_pocket.pdb",
+                os.path.join(data_dir, "sample_pocket.pdb"),
+            ]
+            pocket = next((c for c in candidates if os.path.exists(c)), None)
+
+        if not pocket:
+            print(f"[main] no pocket provided and sample pocket missing.", file=sys.stderr)
+            return 2
+
         generator.generate_batch(
             pocket_pdb_path=pocket, num_ligands=int(args.num_ligands)
         )

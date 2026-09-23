@@ -155,13 +155,13 @@ class ResilientTrainer:
                 split_manifest_path=data_cfg.get("split_manifest_path"),
             )
 
-        # Mixed-precision flags (needed by the auto-scale probe below).
+        # Mixed-precision flags.
         self.use_amp = bool(config.get("system", {}).get("mixed_precision") in ("fp16", "bf16")) and \
             self.device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.criterion = torch.nn.CrossEntropyLoss()
 
-        # GPU auto-scaling: grow the batch until the card is ~85% full.
+        # GPU auto-scaling.
         self.batch_size = max(1, int(data_cfg.get("batch_size", 16)))
         self.lr_scale_factor = 1.0
         self._autoscale_batch(train_cfg)
@@ -192,7 +192,6 @@ class ResilientTrainer:
                     self.model, self.optimizer, self.scheduler
                 )
             )
-            # Advance the LR schedule to the resumed position.
             for _ in range(self.global_step):
                 self.scheduler.step()
 
@@ -201,13 +200,36 @@ class ResilientTrainer:
     # ------------------------------------------------------------------
     @staticmethod
     def _collate(items):
-        """PyG collate; follow_batch guarantees pocket_batch exists."""
+        """Robust PyG batch collator that guards against 0-dim tensor errors."""
         from torch_geometric.data import Batch
 
-        return Batch.from_data_list(list(items), follow_batch=["pocket_pos"])
+        clean_items = []
+        for item in items:
+            data = item.clone()
+            # Explicitly set num_nodes on each Data object to prevent PyG from
+            # guessing and calling .size(cat_dim) on 0-dim scalar tensors.
+            if hasattr(data, "pocket_pos") and data.pocket_pos is not None:
+                data.num_nodes = data.pocket_pos.size(0)
+            elif hasattr(data, "pos") and data.pos is not None:
+                data.num_nodes = data.pos.size(0)
+
+            # Convert any 0-dim scalar tensor to 1-dim so collate can concatenate cleanly.
+            for k in list(data.keys()):
+                v = data[k]
+                if isinstance(v, torch.Tensor) and v.dim() == 0:
+                    data[k] = v.unsqueeze(0)
+
+            clean_items.append(data)
+
+        batch = Batch.from_data_list(clean_items, follow_batch=["pocket_pos", "ligand_pos"])
+        if not hasattr(batch, "pocket_batch") or batch.pocket_batch is None:
+            batch.pocket_batch = getattr(batch, "pocket_pos_batch", None)
+        if not hasattr(batch, "ligand_batch") or batch.ligand_batch is None:
+            batch.ligand_batch = getattr(batch, "ligand_pos_batch", None)
+        return batch
 
     def _make_loader(self, dataset, shuffle: bool) -> DataLoader:
-        """Plain DataLoader over the PyG dataset (collate via Batch.from_data_list)."""
+        """DataLoader over PyG dataset with shard-aware sampling."""
         workers = int(self.config.get("system", {}).get("num_workers", 0))
         sampler = None
         if shuffle and isinstance(dataset, ShardedHuggingFaceDataset):
@@ -230,17 +252,7 @@ class ResilientTrainer:
     # GPU auto-scaling
     # ------------------------------------------------------------------
     def _autoscale_batch(self, train_cfg: dict) -> None:
-        """Grow ``batch_size`` until the GPU is filled to the target fraction.
-
-        Probing runs real forward+backward passes on real batches and reads
-        ``torch.cuda.max_memory_reserved`` after each one, so the chosen batch
-        reflects the actual memory footprint (activations included), not a
-        heuristic. The search is RNG-transparent: torch RNG state is snapshotted
-        and restored, weights are never updated (no optimizer step), and
-        gradients are zeroed between probes. Gradient accumulation is then
-        rebalanced so ``batch x accum`` stays close to the configured
-        effective batch. On CPU (or when disabled) this is a no-op.
-        """
+        """Grow batch size until target VRAM fraction is reached."""
         auto = dict(train_cfg.get("auto_scale", {}))
         if not auto.get("enabled", False) or self.device.type != "cuda":
             return
@@ -248,11 +260,10 @@ class ResilientTrainer:
         target_fraction = float(auto.get("target_vram_fraction", 0.85))
         max_batch = int(auto.get("max_batch_size", 8192))
         free_bytes = free_vram_bytes(self.device)
-        if free_bytes <= 0:  # pragma: no cover - defensive
+        if free_bytes <= 0:
             return
         target_bytes = int(free_bytes * target_fraction)
 
-        # --- RNG transparency -------------------------------------------------
         rng_state = torch.get_rng_state()
         cuda_states = (
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
@@ -297,17 +308,15 @@ class ResilientTrainer:
             result = autotune_batch_size(
                 probe,
                 dataset_size=len(self.dataset),
-                start_batch=self.batch_size,
+                start_batch=min(self.batch_size, max(1, len(self.dataset))),
                 max_batch=max_batch,
                 target_bytes=target_bytes,
                 device=self.device,
             )
-        except Exception as exc:  # pragma: no cover - keep training alive
-            logger.warning("auto-scale probe failed (%s); keeping batch=%d",
-                           exc, self.batch_size)
+        except Exception as exc:
+            logger.warning("auto-scale probe failed (%s); keeping batch=%d", exc, self.batch_size)
             result = {"batch_size": float(self.batch_size), "peak_bytes": 0.0}
         finally:
-            # Restore RNG so probing never perturbs training determinism.
             torch.set_rng_state(rng_state)
             if cuda_states is not None:
                 torch.cuda.set_rng_state_all(cuda_states)
@@ -319,13 +328,10 @@ class ResilientTrainer:
         free_gb = free_bytes / 1024 ** 3
         target_gb = target_bytes / 1024 ** 3
 
-        if tuned <= self.batch_size and peak_gb < 0.5:  # probing produced nothing useful
-            print(f"[trainer] auto-scale: disabled (probe inconclusive); "
-                  f"batch={self.batch_size}")
+        if tuned <= self.batch_size and peak_gb < 0.5:
+            print(f"[trainer] auto-scale: disabled (probe inconclusive); batch={self.batch_size}")
             return
 
-        # Rebalance accumulation toward the configured effective batch, then
-        # scale the learning rate to the effective batch actually achieved.
         effective = self.batch_size * self.accum_steps
         new_accum = max(1, int(round(effective / tuned)))
         old_batch, old_accum = self.batch_size, self.accum_steps
@@ -341,24 +347,11 @@ class ResilientTrainer:
             self.lr_scale_factor = 1.0
 
         print(
-            f"[trainer] auto-scale: free VRAM {free_gb:.2f} GB | "
-            f"target {target_gb:.2f} GB"
-        )
-        print(
-            f"[trainer] auto-scale: batch {old_batch} -> {tuned} | "
-            f"accum {old_accum} -> {new_accum} | "
-            f"effective {old_effective} -> {new_effective} | "
-            f"lr scale {self.lr_scale_factor:.3f} | "
+            f"[trainer] auto-scale: free VRAM {free_gb:.2f} GB | target {target_gb:.2f} GB\n"
+            f"[trainer] auto-scale: batch {old_batch} -> {tuned} | accum {old_accum} -> {new_accum} | "
+            f"effective {old_effective} -> {new_effective} | lr scale {self.lr_scale_factor:.3f} | "
             f"probe peak {peak_gb:.2f} GB ({100.0 * peak_gb / max(free_gb, 1e-9):.0f}% of free)"
         )
-        hard_cap = min(max_batch, len(self.dataset))
-        if tuned >= hard_cap and peak_gb < 0.95 * target_gb:
-            print(
-                f"[trainer] auto-scale note: reached only {peak_gb:.1f} GB because "
-                f"the batch is capped by the dataset size ({len(self.dataset)}). "
-                "Increase data.synthetic_samples (or use the real CrossDocked "
-                "data) for higher GPU utilization."
-            )
 
     def _make_scheduler(self):
         total = max(1, self.total_steps)
@@ -404,14 +397,11 @@ class ResilientTrainer:
                         f"[trainer] time budget expired after {elapsed / 3600:.2f}h; "
                         "checkpointing and exiting."
                     )
-                    # Persist the last COMPLETED epoch (epoch-level resume
-                    # granularity).
                     last_done = history[-1]["epoch"] if history else max(0, epoch - 1)
                     self._finalize(last_done, history)
                     return self._summary(history, floor=self.start_epoch)
 
                 batch = batch.to(self.device)
-                # Clamp catalog targets; STOP is represented by index K.
                 target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
                 stop_index = len(self.catalog)
                 target_stop = getattr(
@@ -424,13 +414,7 @@ class ResilientTrainer:
                 )
                 synthon_mask, reaction_mask = self._build_training_masks(batch)
 
-                # Teacher forcing (bug report 2 / Flaw 2): the torsion head is
-                # conditioned on the TARGET synthon embedding during training,
-                # matching the inference-time conditioning on the selected
-                # synthon.
-                torsion_synthon_emb = self.catalog.embeddings.to(self.device)[
-                    target
-                ]
+                torsion_synthon_emb = self.catalog.embeddings.to(self.device)[target]
 
                 with torch.autocast(
                     device_type=self.device.type, enabled=self.use_amp
@@ -454,9 +438,7 @@ class ResilientTrainer:
                         else reaction_per_sample.new_zeros(())
                     )
                     l_synthon = self.criterion(preds["synthon_logits"], target_action)
-                    # Torsion is undefined for STOP transitions. Masking it
-                    # keeps the continuous head from learning an arbitrary zero-angle
-                    # target for termination actions.
+
                     torsion_loss_all = ContinuousTorsionHead.loss_fn(
                         preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
                     )
@@ -469,6 +451,7 @@ class ResilientTrainer:
                         l_torsion = -torsion_log_probs.mean()
                     else:
                         l_torsion = torsion_loss_all.new_zeros(())
+
                     w_synthon = float(self.loss_weights.get("synthon_ce", 1.0))
                     w_torsion = float(self.loss_weights.get("torsion_nll", 0.5))
                     loss = (
@@ -599,11 +582,14 @@ class ResilientTrainer:
                 target,
             )
             synthon_mask, reaction_mask = self._build_training_masks(batch)
+            torsion_synthon_emb = self.catalog.embeddings.to(self.device)[target]
+
             preds = self.model(
                 batch,
                 self.catalog.embeddings.to(self.device),
                 synthon_mask,
                 reaction_mask,
+                synthon_embedding_input=torsion_synthon_emb,
             )
             l_reaction = self.criterion(
                 preds["reaction_logits"], batch.target_reaction_family_idx
@@ -707,7 +693,6 @@ class ResilientTrainer:
     @staticmethod
     def _summary(history, floor: int = 0) -> Dict[str, float]:
         if not history:
-            # Nothing completed this session; report the resumed floor.
             return {"epochs_completed": floor, "final_train_loss": None,
                     "best_val_loss": None}
         return {

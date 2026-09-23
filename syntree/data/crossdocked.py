@@ -93,8 +93,6 @@ class CrossDockedDataset(InMemoryDataset):
             p for p in self.all_pair_files if self._belongs_to_split(p)
         ]
 
-        # Synthetic data is explicit. With synthetic=None it is enabled
-        # only when the caller explicitly opted into synthetic_fallback.
         self.use_synthetic = (
             bool(synthetic)
             if synthetic is not None
@@ -134,9 +132,6 @@ class CrossDockedDataset(InMemoryDataset):
 
     def process(self):
         data_list = self._build_samples()
-        # _build_samples() may explicitly switch to synthetic mode when the
-        # caller opted into fallback. Recompute the processed path after that
-        # decision so a fallback cache is never stored under a "real" filename.
         self.save(data_list, self.processed_paths[0])
 
     def _load_or_process(self):
@@ -158,9 +153,6 @@ class CrossDockedDataset(InMemoryDataset):
             return self.num_synthetic
         return super().__len__()
 
-    # ------------------------------------------------------------------
-    # Splitting
-    # ------------------------------------------------------------------
     def _load_split_assignments(self) -> Optional[Dict[str, str]]:
         if not self.split_manifest_path:
             return None
@@ -178,7 +170,6 @@ class CrossDockedDataset(InMemoryDataset):
         return {str(k): str(v) for k, v in assignments.items()}
 
     def _belongs_to_split(self, pocket_path: str) -> bool:
-        """Use a global cluster-safe assignment when supplied."""
         complex_id = os.path.basename(pocket_path)
         if complex_id.endswith("_pocket.pdb"):
             complex_id = complex_id[:-len("_pocket.pdb")]
@@ -191,15 +182,11 @@ class CrossDockedDataset(InMemoryDataset):
                 )
             return assigned == self.split
 
-        # Backwards-compatible deterministic CrossDocked-only split.
         key = complex_id.encode("utf-8")
         bucket = zlib.crc32(key) % 1000
         assigned = "train" if bucket < 800 else "val" if bucket < 900 else "test"
         return assigned == self.split
 
-    # ------------------------------------------------------------------
-    # Sample construction
-    # ------------------------------------------------------------------
     def _build_samples(self) -> List[Data]:
         return self._build_synthetic() if self.use_synthetic else self._build_real()
 
@@ -231,9 +218,6 @@ class CrossDockedDataset(InMemoryDataset):
             n_pocket = int(rng.integers(24, 72))
             pos, z = _synthetic_pocket(rng, n_pocket)
             handle_position = pos[int(rng.integers(0, n_pocket))]
-            # Chemical features and position travel separately (Tell 1);
-            # the 67-dim concatenation is kept only as the internal seed for
-            # the synthetic label generator.
             handle_chem = torch.from_numpy(
                 rng.normal(size=64).astype(np.float32)
             )
@@ -265,8 +249,6 @@ class CrossDockedDataset(InMemoryDataset):
             )
             core_handle_idx = HANDLE_NAMES.index(handles[handle_idx])
 
-            # Keep synthetic labels chemically compatible with the same
-            # catalog grammar used by real training.
             if self.catalog is not None:
                 from syntree.chemistry.reactions import REACTION_FAMILY_MEMBERS, REACTION_SIDES
                 candidate_handles = set()
@@ -293,12 +275,10 @@ class CrossDockedDataset(InMemoryDataset):
 
             samples.append(
                 Data(
+                    num_nodes=pos.size(0),
                     pocket_pos=pos,
                     pocket_z=z,
-                    # Synthetic pockets carry no residue identity -> neutral.
                     pocket_charge=torch.zeros(z.size(0), dtype=torch.float32),
-                    # Synthetic states carry no real intermediate ligand: the
-                    # policy falls back to its empty-ligand pathway.
                     ligand_pos=torch.zeros(0, 3, dtype=torch.float32),
                     ligand_z=torch.zeros(0, dtype=torch.long),
                     ligand_charge=torch.zeros(0, dtype=torch.float32),
@@ -308,17 +288,17 @@ class CrossDockedDataset(InMemoryDataset):
                     ),
                     handle_features=handle_chem,
                     handle_pos=handle_position.view(1, 3),
-                    target_synthon=torch.tensor(target_synthon, dtype=torch.long),
-                    target_dihedral=torch.tensor(target_dihedral, dtype=torch.float32),
+                    target_synthon=torch.tensor([target_synthon], dtype=torch.long),
+                    target_dihedral=torch.tensor([target_dihedral], dtype=torch.float32),
                     target_reaction_family_idx=torch.tensor(
-                        family_idx, dtype=torch.long
+                        [family_idx], dtype=torch.long
                     ),
                     target_core_handle_idx=torch.tensor(
-                        core_handle_idx, dtype=torch.long
+                        [core_handle_idx], dtype=torch.long
                     ),
-                    target_stop=torch.tensor(False, dtype=torch.bool),
-                    stop_mask=torch.tensor(0.0, dtype=torch.float32),
-                    is_real_sample=torch.tensor(False, dtype=torch.bool),
+                    target_stop=torch.tensor([False], dtype=torch.bool),
+                    stop_mask=torch.tensor([0.0], dtype=torch.float32),
+                    is_real_sample=torch.tensor([False], dtype=torch.bool),
                 )
             )
         return samples
@@ -393,7 +373,6 @@ class CrossDockedDataset(InMemoryDataset):
                 skipped_unmatched += 1
                 continue
 
-            # Ghost-ligand fix: full intermediate-ligand state.
             try:
                 lig_state = MolecularFeaturizer.featurize_ligand(
                     target.core_mol, center=center
@@ -423,15 +402,16 @@ class CrossDockedDataset(InMemoryDataset):
 
             samples.append(
                 Data(
+                    num_nodes=feats["pocket_pos"].size(0),
                     pocket_pos=feats["pocket_pos"],
                     pocket_z=feats["pocket_z"],
                     pocket_charge=feats["pocket_charge"],
                     ligand_pos=lig_state["ligand_pos"],
                     ligand_z=lig_state["ligand_z"],
                     ligand_charge=lig_state["ligand_charge"],
-                    handle_pos=state_handle_pos,
-                    handle_nodes=torch.tensor(state_handle_node, dtype=torch.long),
-                    global_features=state_global,
+                    handle_pos=state_handle_pos.view(1, 3) if state_handle_pos.dim() == 1 else state_handle_pos,
+                    handle_nodes=torch.tensor([state_handle_node], dtype=torch.long),
+                    global_features=state_global.view(1, GLOBAL_FEATURE_DIM),
                     handle_features=MolecularFeaturizer.featurize_handle(
                         target.core_mol,
                         handle_info.atom_indices,
@@ -439,22 +419,22 @@ class CrossDockedDataset(InMemoryDataset):
                         reference_center=center,
                     ),
                     target_synthon=torch.tensor(
-                        target.synthon_index, dtype=torch.long
+                        [target.synthon_index], dtype=torch.long
                     ),
                     target_dihedral=torch.tensor(
-                        target.target_dihedral, dtype=torch.float32
+                        [target.target_dihedral], dtype=torch.float32
                     ),
                     target_reaction_family_idx=torch.tensor(
-                        REACTION_FAMILY_NAMES.index(target.reaction_family),
+                        [REACTION_FAMILY_NAMES.index(target.reaction_family)],
                         dtype=torch.long,
                     ),
                     target_core_handle_idx=torch.tensor(
-                        HANDLE_NAMES.index(target.core_handle_type),
+                        [HANDLE_NAMES.index(target.core_handle_type)],
                         dtype=torch.long,
                     ),
-                    target_stop=torch.tensor(False, dtype=torch.bool),
-                    stop_mask=torch.tensor(0.0, dtype=torch.float32),
-                    is_real_sample=torch.tensor(True, dtype=torch.bool),
+                    target_stop=torch.tensor([False], dtype=torch.bool),
+                    stop_mask=torch.tensor([0.0], dtype=torch.float32),
+                    is_real_sample=torch.tensor([True], dtype=torch.bool),
                 )
             )
 
@@ -478,7 +458,6 @@ class CrossDockedDataset(InMemoryDataset):
             raise RuntimeError(
                 f"No reaction-validated training targets were extracted from "
                 f"{len(self.pair_files)} {self.split} CrossDocked pairs. "
-                "Real data is never replaced with random or synthetic labels. "
                 "Enable data.synthetic_fallback only for an explicit smoke run."
             )
 

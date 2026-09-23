@@ -3,23 +3,8 @@
 
 The script intentionally does not reimplement TargetDiff, DiffSBDD, or other
 published generators. It evaluates their exported SDFs through the same
-EvaluationPipeline, so each method receives the identical target pockets and
-metric implementation.
-
-Manifest JSONL schema:
-    {"target_id": "1abc", "pocket": "pockets/1abc.pdb",
-     "reference_ligand": "ligands/1abc.sdf"}
-
-Method layout:
-    <root>/<method>/<target_id>/ligand_*.sdf
-    <root>/<method>/<target_id>/recipe_*.json   # optional
-
-Example:
-    python scripts/run_comparative_benchmark.py \
-      --manifest ./benchmarks/targets.jsonl \
-      --outputs ./benchmarks/outputs \
-      --methods 3d-syntree,targetdiff,synthemol \
-      --limit 100
+EvaluationPipeline, so each method receives identical target pockets and
+metric implementations.
 """
 
 from __future__ import annotations
@@ -38,6 +23,8 @@ from syntree.engine.evaluator import EvaluationPipeline
 
 def load_jsonl(path: str) -> List[Dict]:
     rows = []
+    if not os.path.exists(path):
+        return rows
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -46,8 +33,43 @@ def load_jsonl(path: str) -> List[Dict]:
     return rows
 
 
+def auto_generate_manifest(output_manifest_path: str) -> List[Dict]:
+    """Auto-discover candidate target pockets if manifest is missing."""
+    search_dirs = [
+        "./data/test_pockets",
+        "./data/crossdocked",
+        "./data/multidataset/pdbbind",
+    ]
+    pockets = []
+    for d in search_dirs:
+        p = Path(d)
+        if p.is_dir():
+            pockets.extend(sorted(p.glob("*_pocket.pdb")))
+
+    if not pockets:
+        return []
+
+    rows = []
+    for pocket in pockets:
+        tid = pocket.stem.replace("_pocket", "")
+        rows.append({
+            "target_id": tid,
+            "pocket": str(pocket.resolve()),
+        })
+
+    out_p = Path(output_manifest_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    with out_p.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    print(f"[benchmark] Auto-generated target manifest with {len(rows)} targets -> {output_manifest_path}")
+    return rows
+
+
 def load_target_molecules(target_dir: Path):
     mols, recipes = [], []
+    if not target_dir.is_dir():
+        return mols, recipes
     for sdf in sorted(target_dir.glob("ligand_*.sdf")):
         supplier = Chem.SDMolSupplier(str(sdf), removeHs=False)
         mol = supplier[0] if len(supplier) else None
@@ -85,7 +107,7 @@ def aggregate(records: List[Dict]) -> Dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Paired SBDD multi-target benchmark")
-    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--manifest", default="./benchmarks/targets.jsonl")
     parser.add_argument("--outputs", required=True,
                         help="root containing one directory per method")
     parser.add_argument("--methods", required=True,
@@ -95,13 +117,20 @@ def main() -> int:
     parser.add_argument("--output", default="./experiments/comparative_benchmark.json")
     args = parser.parse_args()
 
-    targets = load_jsonl(args.manifest)[: max(0, args.limit)]
+    targets = load_jsonl(args.manifest)
     if not targets:
-        raise SystemExit("No targets found in manifest.")
+        targets = auto_generate_manifest(args.manifest)
+    targets = targets[: max(0, args.limit)]
 
-    config = json.loads(Path(args.config).read_text())
+    if not targets:
+        print(f"[benchmark] No targets found in manifest '{args.manifest}' and no pocket files in data directories.", file=sys.stderr)
+        return 2
+
+    config_path = Path(args.config)
+    config = json.loads(config_path.read_text()) if config_path.exists() else {}
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     output_root = Path(args.outputs)
+    output_root.mkdir(parents=True, exist_ok=True)
     results = {"manifest": args.manifest, "target_count": len(targets), "methods": {}}
 
     for method in methods:
@@ -115,7 +144,7 @@ def main() -> int:
                 continue
 
             pocket = Path(target["pocket"])
-            if not pocket.is_absolute():
+            if not pocket.is_absolute() and os.path.exists(args.manifest):
                 pocket = Path(args.manifest).resolve().parent / pocket
 
             evaluator = EvaluationPipeline(

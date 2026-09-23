@@ -140,7 +140,15 @@ class ShardedHuggingFaceDataset(Dataset):
 
     def __getitem__(self, idx: int):
         shard_idx, local_idx = self._locate(int(idx))
-        return self._load_shard(shard_idx)[local_idx]
+        sample = self._load_shard(shard_idx)[local_idx]
+        # Ensure num_nodes is defined on loaded sample to protect PyG Batch collation
+        if hasattr(sample, "pocket_pos") and sample.pocket_pos is not None:
+            sample.num_nodes = sample.pocket_pos.size(0)
+        for k in list(sample.keys()):
+            v = sample[k]
+            if isinstance(v, torch.Tensor) and v.dim() == 0:
+                sample[k] = v.unsqueeze(0)
+        return sample
 
 
 class ShardAwareShuffleSampler(Sampler):

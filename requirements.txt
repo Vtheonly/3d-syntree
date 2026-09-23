@@ -9,4 +9,3 @@ huggingface-hub>=0.20.0
 tqdm>=4.66.0
 pytest>=7.4.0
 h5py>=3.10.0
-aizynthfinder>=4.0.0

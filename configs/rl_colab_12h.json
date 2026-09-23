@@ -77,8 +77,11 @@
   },
   "reinforcement_learning": {
     "enabled": true,
+    "pocket_dir": "./data/test_pockets",
     "episodes": 512,
     "ppo_epochs": 4,
+    "rollout_episodes": 16,
+    "minibatch_size": 16,
     "clip_epsilon": 0.2,
     "gamma": 0.99,
     "value_coef": 0.5,
@@ -88,13 +91,15 @@
     "temperature": 1,
     "checkpoint_every": 16,
     "reward": {
-      "docking_weight": 1,
+      "docking_weight": 1.0,
       "clash_weight": 0.25,
+      "contact_weight": 0.25,
       "fsp3_weight": 0.15,
       "qed_weight": 0.15,
       "validity_weight": 0.5,
       "docking_scale": 10,
-      "clash_scale": 25
+      "clash_scale": 25,
+      "contact_scale": 5
     }
   },
   "evaluation": {
@@ -102,12 +107,12 @@
     "docking_engine": "gnina",
     "exhaustiveness": 8,
     "run_posebusters": true,
-    "run_aizynthfinder": true,
+    "run_aizynthfinder": false,
     "aizynthfinder_config": null
   },
   "research": {
     "stage": "stage2_ppo",
-    "note": "Run after Stage 1 behavioral cloning. Docking is an external oracle; if GNINA/Vina is unavailable, docking contribution remains zero and is reported unavailable.",
+    "note": "Run after Stage 1 behavioral cloning. Docking is an external oracle via gnina.",
     "seed": 42
   }
 }

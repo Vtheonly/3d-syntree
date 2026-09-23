@@ -1,14 +1,4 @@
-"""Build reaction-validated, multi-step imitation-learning trajectories.
-
-A trajectory is obtained by recursively inverting supported forward reactions
-on an observed co-crystallized ligand. Each accepted inversion is required to
-match an actual catalog synthon and to replay through the real reaction engine.
-
-Approximate catalog similarity is used only to discover candidate synthons;
-supervised targets are accepted only after exact forward replay reproduces the
-observed molecular connectivity. This prevents fuzzy matching from becoming
-fabricated ground truth.
-"""
+"""Build reaction-validated, multi-step imitation-learning trajectories."""
 
 from __future__ import annotations
 
@@ -22,7 +12,7 @@ from rdkit import Chem
 from torch_geometric.data import Data
 
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES, ReactionEngine
-from syntree.data.featurizer import MolecularFeaturizer
+from syntree.data.featurizer import MolecularFeaturizer, GLOBAL_FEATURE_DIM
 from syntree.data.decomposer import RetrosyntheticTrajectoryExtractor
 
 
@@ -65,7 +55,14 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         return len(self.states)
 
     def __getitem__(self, index):
-        return self.states[index]
+        sample = self.states[index]
+        if hasattr(sample, "pocket_pos") and sample.pocket_pos is not None:
+            sample.num_nodes = sample.pocket_pos.size(0)
+        for k in list(sample.keys()):
+            v = sample[k]
+            if isinstance(v, torch.Tensor) and v.dim() == 0:
+                sample[k] = v.unsqueeze(0)
+        return sample
 
     @property
     def num_synthetic(self):
@@ -89,15 +86,6 @@ class RetrosyntheticTrajectoryBuilder:
         pocket: Optional[Chem.Mol] = None,
         trajectory_id: str = "",
     ) -> Tuple[List[Data], Dict]:
-        """Build PyG expert states from a co-crystallized ligand.
-
-        The reverse search repeatedly removes one catalog-compatible synthon.
-        The accepted records are reversed to recover the forward order:
-        seed -> linker/cap -> ... -> observed ligand.
-
-        A final explicit STOP state is emitted when the decomposition cannot
-        continue but the resulting scaffold still exposes a reactive handle.
-        """
         if ligand is None or ligand.GetNumAtoms() == 0:
             return [], {"trajectory_id": trajectory_id, "status": "invalid_ligand"}
         if ligand.GetNumConformers() == 0:
@@ -157,8 +145,6 @@ class RetrosyntheticTrajectoryBuilder:
                 target.core_handle_type,
                 reference_center=ligand_center,
             )
-            # Ghost-ligand fix: the state carries the full intermediate
-            # ligand (the core at this step) as a heavy-atom point cloud.
             try:
                 lig_feats = MolecularFeaturizer.featurize_ligand(
                     target.core_mol, center=ligand_center
@@ -175,7 +161,6 @@ class RetrosyntheticTrajectoryBuilder:
                     pocket_volume=MolecularFeaturizer.vdw_sphere_volume(pocket),
                 )
             except (ValueError, RuntimeError):
-                # Degenerate state (e.g. no conformer): empty ligand graph.
                 lig_feats = {
                     "ligand_pos": torch.zeros(0, 3),
                     "ligand_z": torch.zeros(0, dtype=torch.long),
@@ -184,10 +169,11 @@ class RetrosyntheticTrajectoryBuilder:
                 }
                 handle_node_idx = -1
                 handle_pos = torch.zeros(3)
-                global_feats = torch.zeros(4)
+                global_feats = torch.zeros(GLOBAL_FEATURE_DIM)
 
             samples.append(
                 Data(
+                    num_nodes=pocket_features["pocket_pos"].size(0),
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
                     pocket_charge=pocket_features["pocket_charge"],
@@ -195,38 +181,34 @@ class RetrosyntheticTrajectoryBuilder:
                     ligand_z=lig_feats["ligand_z"],
                     ligand_charge=lig_feats["ligand_charge"],
                     handle_features=handle_features,
-                    handle_pos=handle_pos,
-                    handle_nodes=torch.tensor(
-                        handle_node_idx, dtype=torch.long
-                    ),
-                    global_features=global_feats,
+                    handle_pos=handle_pos.view(1, 3) if handle_pos.dim() == 1 else handle_pos,
+                    handle_nodes=torch.tensor([handle_node_idx], dtype=torch.long),
+                    global_features=global_feats.view(1, GLOBAL_FEATURE_DIM),
                     target_synthon=torch.tensor(
-                        int(target.synthon_index), dtype=torch.long
+                        [int(target.synthon_index)], dtype=torch.long
                     ),
                     target_reaction_family_idx=torch.tensor(
-                        REACTION_FAMILY_NAMES.index(target.reaction_family),
+                        [REACTION_FAMILY_NAMES.index(target.reaction_family)],
                         dtype=torch.long,
                     ),
                     target_core_handle_idx=torch.tensor(
-                        HANDLE_NAMES.index(target.core_handle_type),
+                        [HANDLE_NAMES.index(target.core_handle_type)],
                         dtype=torch.long,
                     ),
                     target_dihedral=torch.tensor(
-                        float(target.target_dihedral), dtype=torch.float32
+                        [float(target.target_dihedral)], dtype=torch.float32
                     ),
-                    target_stop=torch.tensor(False, dtype=torch.bool),
-                    stop_mask=torch.tensor(0.0, dtype=torch.float32),
-                    trajectory_step=torch.tensor(step_idx, dtype=torch.long),
+                    target_stop=torch.tensor([False], dtype=torch.bool),
+                    stop_mask=torch.tensor([0.0], dtype=torch.float32),
+                    trajectory_step=torch.tensor([step_idx], dtype=torch.long),
                     trajectory_hash=torch.tensor(
-                        zlib.crc32(str(trajectory_id).encode("utf-8")),
+                        [zlib.crc32(str(trajectory_id).encode("utf-8"))],
                         dtype=torch.long,
                     ),
-                    is_real_sample=torch.tensor(True, dtype=torch.bool),
+                    is_real_sample=torch.tensor([True], dtype=torch.bool),
                 )
             )
 
-        # If the final recoverable scaffold still has a reactive handle, teach
-        # the policy that an explicit STOP is a valid terminal action.
         terminal_handles = self.engine.detect_handles(current)
         if terminal_handles and samples:
             terminal_handle = terminal_handles[0]
@@ -259,9 +241,10 @@ class RetrosyntheticTrajectoryBuilder:
                 }
                 term_handle_node = -1
                 term_handle_pos = torch.zeros(3)
-                term_global = torch.zeros(4)
+                term_global = torch.zeros(GLOBAL_FEATURE_DIM)
             samples.append(
                 Data(
+                    num_nodes=pocket_features["pocket_pos"].size(0),
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
                     pocket_charge=pocket_features["pocket_charge"],
@@ -269,33 +252,31 @@ class RetrosyntheticTrajectoryBuilder:
                     ligand_z=term_lig_feats["ligand_z"],
                     ligand_charge=term_lig_feats["ligand_charge"],
                     handle_features=terminal_features,
-                    handle_pos=term_handle_pos,
+                    handle_pos=term_handle_pos.view(1, 3) if term_handle_pos.dim() == 1 else term_handle_pos,
                     handle_nodes=torch.tensor(
-                        term_handle_node, dtype=torch.long
+                        [term_handle_node], dtype=torch.long
                     ),
-                    global_features=term_global,
-                    target_synthon=torch.tensor(0, dtype=torch.long),
+                    global_features=term_global.view(1, GLOBAL_FEATURE_DIM),
+                    target_synthon=torch.tensor([0], dtype=torch.long),
                     target_reaction_family_idx=torch.tensor(
-                        REACTION_FAMILY_NAMES.index(
-                            REACTION_FAMILY_NAMES[0]
-                        ),
+                        [REACTION_FAMILY_NAMES.index(REACTION_FAMILY_NAMES[0])],
                         dtype=torch.long,
                     ),
                     target_core_handle_idx=torch.tensor(
-                        HANDLE_NAMES.index(terminal_handle.handle_type),
+                        [HANDLE_NAMES.index(terminal_handle.handle_type)],
                         dtype=torch.long,
                     ),
-                    target_dihedral=torch.tensor(0.0, dtype=torch.float32),
-                    target_stop=torch.tensor(True, dtype=torch.bool),
-                    stop_mask=torch.tensor(0.0, dtype=torch.float32),
+                    target_dihedral=torch.tensor([0.0], dtype=torch.float32),
+                    target_stop=torch.tensor([True], dtype=torch.bool),
+                    stop_mask=torch.tensor([0.0], dtype=torch.float32),
                     trajectory_step=torch.tensor(
-                        len(samples), dtype=torch.long
+                        [len(samples)], dtype=torch.long
                     ),
                     trajectory_hash=torch.tensor(
-                        zlib.crc32(str(trajectory_id).encode("utf-8")),
+                        [zlib.crc32(str(trajectory_id).encode("utf-8"))],
                         dtype=torch.long,
                     ),
-                    is_real_sample=torch.tensor(True, dtype=torch.bool),
+                    is_real_sample=torch.tensor([True], dtype=torch.bool),
                 )
             )
 
