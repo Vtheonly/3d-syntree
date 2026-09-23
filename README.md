@@ -633,11 +633,13 @@ reaction engine.
 ### 12.7 Important scientific limitation
 
 The hybrid action space itself should not be presented as an unprecedented
-mathematical construction. Recent work has already explored synthesis-aware
-3D generation and hierarchical action-space reinforcement learning. The
-defensible contribution is instead the particular formulation, reaction
-execution mechanism, target-conditioned torsion modeling, training protocol,
-and empirical evidence produced by this repository.
+mathematical construction. SynCoGen has already demonstrated joint
+synthesis-aware 3D generation, while SHARP has demonstrated fragment-based
+hierarchical action-space reinforcement learning for synthesizable molecular
+optimization. The defensible contribution is therefore the particular
+reaction-family -> catalog-synthon -> periodic-torsion factorization, explicit
+RDKit reaction execution, target-conditioned torsion modeling, PPO training
+protocol, and empirical evidence produced by this repository.
 
 Likewise, high Fsp3 is not synonymous with good medicinal chemistry, and a
 catalog membership guarantee is not equivalent to successful laboratory
