@@ -207,9 +207,23 @@ class CheckpointManager:
                 unexpected,
             )
         if optimizer is not None and checkpoint.get("optimizer_state_dict"):
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except (ValueError, RuntimeError) as exc:
+                # Legacy checkpoints may have a different parameter-group
+                # topology after adding the reaction-family head.
+                logger.warning(
+                    "Skipping incompatible optimizer state from legacy checkpoint: %s",
+                    exc,
+                )
         if scheduler is not None and checkpoint.get("scheduler_state_dict"):
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            try:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            except (ValueError, RuntimeError) as exc:
+                logger.warning(
+                    "Skipping incompatible scheduler state from legacy checkpoint: %s",
+                    exc,
+                )
         self._restore_rng(checkpoint.get("rng_states"))
 
         best = float("inf")
