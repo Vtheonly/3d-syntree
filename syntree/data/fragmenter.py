@@ -15,7 +15,7 @@ family (for example SNAr/Buchwald aryl amination).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from rdkit import Chem
 
@@ -139,56 +139,54 @@ class ReactionConstrainedFragmenter:
                 prepared_b = self._decorate_fragment(
                     frag_b, ep_b, side_b
                 )
-                if prepared_a is None or prepared_b is None:
+                if not prepared_a or not prepared_b:
                     continue
 
-                for synthon_role, core_role, synthon_mol, core_mol in (
-                    (side_a, side_b, prepared_a, prepared_b),
-                    (side_b, side_a, prepared_b, prepared_a),
-                ):
-                    lookup = self._catalog_lookup.get(
-                        canonical_smiles(synthon_mol), ()
-                    )
-                    if not lookup:
-                        continue
+                for prepared_a_mol in prepared_a:
+                    for prepared_b_mol in prepared_b:
+                        for synthon_role, core_role, synthon_mol, core_mol in (
+                            (side_a, side_b, prepared_a_mol, prepared_b_mol),
+                            (side_b, side_a, prepared_b_mol, prepared_a_mol),
+                        ):
+                            lookup = self._catalog_lookup.get(
+                                canonical_smiles(synthon_mol), ()
+                            )
+                            if not lookup:
+                                continue
 
-                    # Verify that the core exposes exactly the handle the
-                    # selected reaction expects.
-                    handles = [
-                        h for h in self.engine.detect_handles(core_mol)
-                        if h.handle_type == core_role
-                    ]
-                    if not handles:
-                        continue
+                            handles = [
+                                h for h in self.engine.detect_handles(core_mol)
+                                if h.handle_type == core_role
+                            ]
+                            if not handles:
+                                continue
 
-                    for synthon_index in sorted(lookup):
-                        synthon = self.catalog.get_mol(
-                            synthon_index, explicit_hs=False
-                        )
-                        replay = self.engine.apply_reaction(
-                            core_mol, synthon, backend
-                        )
-                        if replay is None:
-                            continue
-                        if canonical_smiles(replay.product) != canonical_smiles(ligand):
-                            continue
+                            for synthon_index in sorted(lookup):
+                                synthon = self.catalog.get_mol(
+                                    synthon_index, explicit_hs=False
+                                )
+                                replay = self.engine.apply_reaction(
+                                    core_mol, synthon, backend
+                                )
+                                if replay is None:
+                                    continue
+                                if canonical_smiles(replay.product) != canonical_smiles(ligand):
+                                    continue
 
-                        # Product-only reconstruction is enough to supervise
-                        # the torsion around the observed junction.
-                        target_dihedral = ConformerEngine.get_dihedral(
-                            ligand, (left, right)
-                        )
-                        if target_dihedral is None:
-                            continue
+                                target_dihedral = ConformerEngine.get_dihedral(
+                                    ligand, (left, right)
+                                )
+                                if target_dihedral is None:
+                                    continue
 
-                        return RetrosyntheticTarget(
-                            synthon_index=synthon_index,
-                            reaction_family=REACTION_FAMILY_FOR[backend],
-                            reaction_name=backend,
-                            core_handle_type=core_role,
-                            target_dihedral=float(target_dihedral),
-                            core_mol=Chem.Mol(core_mol),
-                        )
+                                return RetrosyntheticTarget(
+                                    synthon_index=synthon_index,
+                                    reaction_family=REACTION_FAMILY_FOR[backend],
+                                    reaction_name=backend,
+                                    core_handle_type=core_role,
+                                    target_dihedral=float(target_dihedral),
+                                    core_mol=Chem.Mol(core_mol),
+                                )
         return None
 
     @staticmethod
@@ -231,53 +229,65 @@ class ReactionConstrainedFragmenter:
     @staticmethod
     def _decorate_fragment(
         fragment: Chem.Mol, endpoint: int, handle_type: str
-    ) -> Optional[Chem.Mol]:
-        """Restore the reactant handle implied by a product-side bond cut."""
+    ) -> Tuple[Chem.Mol, ...]:
+        """Restore one or more possible reactant handles after a bond cut.
+
+        The product graph does not preserve which aryl halide leaving group was
+        used experimentally, so aryl_halide returns Br/Cl/I variants and the
+        caller matches them against the actual catalog. Other handles have a
+        unique graph reconstruction.
+        """
+        endpoint_atom = fragment.GetAtomWithIdx(endpoint)
+        if handle_type == "aryl_halide":
+            if not endpoint_atom.GetIsAromatic():
+                return ()
+            variants: List[Chem.Mol] = []
+            for atomic_num in (35, 17, 53):
+                rw = Chem.RWMol(fragment)
+                xi = rw.AddAtom(Chem.Atom(atomic_num))
+                rw.AddBond(endpoint, xi, Chem.BondType.SINGLE)
+                mol = rw.GetMol()
+                mol.UpdatePropertyCache(False)
+                try:
+                    Chem.SanitizeMol(mol)
+                except Exception:
+                    continue
+                variants.append(mol)
+            return tuple(variants)
+
         rw = Chem.RWMol(fragment)
         endpoint_atom = rw.GetAtomWithIdx(endpoint)
-        reaction_handle = handle_type
 
-        if reaction_handle in ("carboxylic_acid",):
+        if handle_type == "carboxylic_acid":
             if endpoint_atom.GetAtomicNum() != 6:
-                return None
+                return ()
             oi = rw.AddAtom(Chem.Atom(8))
             rw.AddBond(endpoint, oi, Chem.BondType.SINGLE)
-
-        elif reaction_handle == "aldehyde":
+        elif handle_type == "aldehyde":
             if endpoint_atom.GetAtomicNum() != 6:
-                return None
+                return ()
             oi = rw.AddAtom(Chem.Atom(8))
             rw.AddBond(endpoint, oi, Chem.BondType.DOUBLE)
-
-        elif reaction_handle == "aryl_halide":
+        elif handle_type == "boronic_acid":
             if not endpoint_atom.GetIsAromatic():
-                return None
-            xi = rw.AddAtom(Chem.Atom(17))
-            rw.AddBond(endpoint, xi, Chem.BondType.SINGLE)
-
-        elif reaction_handle == "boronic_acid":
-            if not endpoint_atom.GetIsAromatic():
-                return None
+                return ()
             bi = rw.AddAtom(Chem.Atom(5))
             rw.AddBond(endpoint, bi, Chem.BondType.SINGLE)
             for _ in range(2):
                 oi = rw.AddAtom(Chem.Atom(8))
                 rw.AddBond(bi, oi, Chem.BondType.SINGLE)
-
-        elif reaction_handle in ("primary_secondary_amine", "alcohol"):
-            # The cut consumes the reactive atom's external bond; RDKit can
-            # restore the implicit hydrogen on sanitization.
+        elif handle_type in ("primary_secondary_amine", "alcohol"):
             pass
         else:
-            return None
+            return ()
 
         mol = rw.GetMol()
         mol.UpdatePropertyCache(False)
         try:
             Chem.SanitizeMol(mol)
         except Exception:
-            return None
-        return mol
+            return ()
+        return (mol,)
 
     def _family_pairs(self, family: str):
         """Return (side_a, side_b, concrete backend) candidates."""
