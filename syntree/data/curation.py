@@ -68,7 +68,7 @@ def _parse_pdb_atoms(path: str) -> List[dict]:
                 continue
             atoms.append(
                 {
-                    "line": line.rstrip("\\n"),
+                    "line": line.rstrip("\n"),
                     "record": line[:6].strip(),
                     "resname": line[17:20].strip().upper(),
                     "chain": line[21:22].strip(),
@@ -171,7 +171,7 @@ def standardize_pocket(
             z = atom["z"] - shift[2]
             line = atom["line"]
             line = f"{line[:6]}{serial:5d}{line[11:30]}{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
-            handle.write(line + "\\n")
+            handle.write(line + "\n")
         handle.write("END\\n")
 
     pocket_xyz = [
@@ -231,7 +231,7 @@ def write_jsonl(records: Iterable[CuratedComplexRecord], path: str) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         for record in records:
-            handle.write(json.dumps(record.to_dict(), sort_keys=True) + "\\n")
+            handle.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
     return path
 
 
@@ -245,3 +245,35 @@ __all__ = [
     "ligand_quality_flags",
     "write_jsonl",
 ]
+
+
+def recenter_ligand(ligand: Chem.Mol, center: Sequence[float]) -> Chem.Mol:
+    """Return a copy whose 3D conformer uses the same origin as the pocket."""
+    if ligand.GetNumConformers() == 0:
+        raise ValueError("Ligand must contain a 3D conformer")
+    if len(center) != 3:
+        raise ValueError("center must contain three coordinates")
+    out = Chem.Mol(ligand)
+    conf = out.GetConformer()
+    for idx in range(out.GetNumAtoms()):
+        point = conf.GetAtomPosition(idx)
+        conf.SetAtomPosition(
+            idx,
+            (
+                float(point.x - center[0]),
+                float(point.y - center[1]),
+                float(point.z - center[2]),
+            ),
+        )
+    return out
+
+
+def write_ligand_sdf(ligand: Chem.Mol, path: str) -> str:
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    writer = Chem.SDWriter(path)
+    writer.write(ligand)
+    writer.close()
+    return path
+
+
+__all__ += ["recenter_ligand", "write_ligand_sdf"]
