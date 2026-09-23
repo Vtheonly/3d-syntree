@@ -246,8 +246,14 @@ class SynTreePolicy(nn.Module):
             context, reaction_compatibility_mask
         )
 
+        stop_mask = getattr(batch_data, "stop_mask", None)
+        if stop_mask is None:
+            stop_mask = torch.zeros(batch_size, dtype=context.dtype, device=context.device)
+        else:
+            stop_mask = stop_mask.view(batch_size).to(context.dtype)
+
         logits, log_probs = self.synthon_head(
-            context, synthon_embeddings, synthon_compatibility_mask
+            context, synthon_embeddings, synthon_compatibility_mask, stop_mask=stop_mask
         )
 
         # 4. Torsion prediction.
@@ -307,17 +313,34 @@ class SynTreePolicy(nn.Module):
             selected_mask = synthon_masks_by_reaction[
                 rows, reaction_family_idx
             ]
+            stop_mask = getattr(batch_data, "stop_mask", None)
+            if stop_mask is None:
+                stop_mask = torch.zeros(reaction_family_idx.size(0), device=logits.device)
             logits, _ = self.synthon_head(
                 out["pocket_context"],
                 synthon_embeddings,
                 selected_mask,
+                stop_mask=stop_mask,
             )
 
         if sample:
             probs = torch.softmax(logits / max(temperature, 1e-6), dim=-1)
-            synthon_idx = torch.multinomial(probs, 1).squeeze(-1)
+            action_idx = torch.multinomial(probs, 1).squeeze(-1)
         else:
-            synthon_idx = logits.argmax(dim=-1)
+            action_idx = logits.argmax(dim=-1)
+        stop = action_idx.eq(synthon_embeddings.size(0))
+        synthon_idx = torch.where(
+            stop,
+            torch.full_like(action_idx, -1),
+            action_idx,
+        )
+        reaction_log_probs = out["reaction_log_probs"].gather(
+            -1, reaction_family_idx.unsqueeze(-1)
+        ).squeeze(-1)
+        action_log_probs = torch.log_softmax(logits, dim=-1).gather(
+            -1, action_idx.unsqueeze(-1)
+        ).squeeze(-1)
+        joint_log_prob = reaction_log_probs + action_log_probs
 
         phi = ContinuousTorsionHead.sample(
             out["torsion_mu"], out["torsion_kappa"]
@@ -325,7 +348,11 @@ class SynTreePolicy(nn.Module):
         return {
             "reaction_family_idx": reaction_family_idx,
             "synthon_idx": synthon_idx,
+            "action_idx": action_idx,
+            "stop": stop,
             "dihedral": phi,
+            "joint_log_prob": joint_log_prob,
+            "synthon_log_prob": action_log_probs,
             "reaction_logits": reaction_logits,
             "logits": logits,
             "torsion_mu": out["torsion_mu"],
