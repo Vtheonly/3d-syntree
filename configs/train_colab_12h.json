@@ -34,11 +34,14 @@
     },
     "multidataset": {
       "processed_manifest_path": "./data/multidataset/processed_manifest.jsonl",
-      "split_manifest_path": "./data/multidataset/unified_splits_30seq_id.parquet",
+      "split_manifest_path": "./data/multidataset/split_manifest.json",
       "max_resolution": 2.5,
       "pocket_radius_angstrom": 10,
       "min_pocket_atoms": 100
-    }
+    },
+    "split_manifest_path": "./data/multidataset/split_manifest.json",
+    "require_real_data": true,
+    "curated_manifest_path": "./data/multidataset/curated_manifest.jsonl"
   },
   "model": {
     "hidden_dim": 128,
@@ -101,5 +104,9 @@
     "run_posebusters": true,
     "run_aizynthfinder": true,
     "aizynthfinder_config": null
+  },
+  "catalog": {
+    "min_fsp3": 0.4,
+    "max_mw": 220
   }
 }
