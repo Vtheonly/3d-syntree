@@ -305,7 +305,7 @@ chemical constraints**.
 | Component | Mechanism | What a benchmark number means |
 | :--- | :--- | :--- |
 | Reaction-family prediction | Learned neural reaction head | Accuracy on held-out, reaction-validated CrossDocked decompositions |
-| Synthon selection | Learned pocket/handle-to-catalog scoring + reaction mask | Top-1 / top-k accuracy on held-out validated catalog synthons |
+| Synthon selection | Learned pocket/handle-to-catalog scoring + reaction mask | Top-1 / top-k accuracy; report both oracle-family and joint-policy results |
 | Dihedral prediction | Learned von Mises torsion head | Circular error / NLL on held-out observed junction torsions |
 | Chemical validity | RDKit reaction execution + sanitization | A hard construction constraint, not model intelligence |
 | Recipe validity | Catalog membership + certified forward reaction replay | A property enforced by the action space, not a learned hit rate |
