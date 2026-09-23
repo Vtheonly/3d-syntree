@@ -2,11 +2,12 @@
 
 Guarantees:
 * every fully completed epoch is recorded in an atomic progress.json,
-* progress.json must contain strictly contiguous completed epochs,
+* progress.json contains strictly monotonic completed epochs/episodes,
 * when Hub sync is enabled, the remote Hub state is authoritative,
 * stale local checkpoints are purged when the remote run was wiped/corrupt,
 * regular uploads may run asynchronously, but final checkpoint uploads are
   synchronous and explicitly flush all earlier uploads before returning,
+* in-flight background uploads are protected from premature pruning,
 * checkpoint downloads from checkpoints/... are materialized into the manager's
   local checkpoint directory (never a nested directory).
 """
@@ -23,7 +24,7 @@ import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 
 import numpy as np
 import torch
@@ -60,6 +61,7 @@ class CheckpointManager:
         self._upload_lock = threading.Lock()
         self._upload_executor: Optional[ThreadPoolExecutor] = None
         self._upload_futures: List[Future] = []
+        self._pending_upload_paths: Set[str] = set()
 
         if self.enabled:
             if not self.token:
@@ -95,8 +97,6 @@ class CheckpointManager:
 
     def _ensure_upload_executor(self) -> ThreadPoolExecutor:
         if self._upload_executor is None:
-            # Non-daemon executor workers cannot be abandoned mid-socket-write
-            # when the Python interpreter exits.
             self._upload_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="syntree-hf-upload",
@@ -128,7 +128,7 @@ class CheckpointManager:
 
     @classmethod
     def _validate_progress(cls, progress: Dict) -> Tuple[bool, int]:
-        """Return (valid, last_contiguous_epoch)."""
+        """Return (valid, last_completed_epoch)."""
         if not isinstance(progress, dict):
             return False, -1
 
@@ -139,14 +139,15 @@ class CheckpointManager:
         if not isinstance(completed, list) or not isinstance(history, list):
             return False, -1
         if any(
-            not isinstance(epoch, int) or isinstance(epoch, bool)
+            not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0
             for epoch in completed
         ):
             return False, -1
 
-        expected = list(range(len(completed)))
-        if completed != expected:
-            return False, -1
+        # Checkpoints must be strictly monotonically increasing with no duplicates
+        for i in range(1, len(completed)):
+            if completed[i] <= completed[i - 1]:
+                return False, -1
 
         expected_last = completed[-1] if completed else -1
         if last_seq != expected_last:
@@ -159,21 +160,21 @@ class CheckpointManager:
         valid, last_seq = self._validate_progress(progress)
         if not valid:
             raise RuntimeError(
-                "progress.json is missing/corrupt/non-contiguous; refusing to "
+                "progress.json is missing/corrupt/non-monotonic; refusing to "
                 f"record completed epoch {epoch}."
             )
 
         if epoch not in progress["completed_epochs"]:
-            if epoch != last_seq + 1:
+            if epoch <= last_seq:
                 raise RuntimeError(
-                    "Non-sequential epoch completion detected: "
+                    "Non-monotonic epoch completion detected: "
                     f"last completed={last_seq}, attempted={epoch}."
                 )
             progress["completed_epochs"].append(epoch)
             progress["last_sequential_epoch"] = epoch
         elif epoch != progress["last_sequential_epoch"]:
             raise RuntimeError(
-                f"Epoch {epoch} is already recorded out of order."
+                f"Epoch {epoch} is already recorded out of order (latest={last_seq})."
             )
 
         numeric_metrics = {
@@ -267,8 +268,6 @@ class CheckpointManager:
             torch.save(state, best_tmp)
             os.replace(best_tmp, best_dst)
 
-        self._prune_old_checkpoints(keep=self.keep_last_n)
-
         should_push = self.enabled and self.api is not None and (
             final or is_best or (epoch % self.push_freq == 0)
         )
@@ -284,6 +283,7 @@ class CheckpointManager:
                     ckpt_path, epoch, manifest_bytes, progress_bytes
                 )
 
+        self._prune_old_checkpoints(keep=self.keep_last_n)
         return ckpt_path
 
     # ------------------------------------------------------------------
@@ -295,12 +295,7 @@ class CheckpointManager:
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler=None,
     ) -> Tuple[int, int, float]:
-        """Restore the freshest verified checkpoint.
-
-        With Hub sync enabled, the remote repository is authoritative:
-        local state is never trusted until remote manifest + progress + latest
-        checkpoint presence are verified.
-        """
+        """Restore the freshest verified checkpoint."""
         manifest_path = self.ckpt_dir / self.MANIFEST_NAME
 
         if self.enabled and self.api is not None:
@@ -336,6 +331,9 @@ class CheckpointManager:
                 self._purge_all_checkpoints()
                 return 0, 0, float("inf")
 
+            # Remove stale local .pt files before downloading clean remote state
+            self._purge_local_checkpoints_only()
+
             if not self._pull_manifest_from_hub() or not self._pull_progress_from_hub():
                 logger.warning(
                     "[checkpoint] Failed to materialize verified remote metadata; "
@@ -359,7 +357,7 @@ class CheckpointManager:
             progress_valid, last_seq = self._validate_progress(progress)
             if not progress_valid or last_seq < 0:
                 logger.warning(
-                    "[checkpoint] Remote progress.json is missing/corrupt/non-contiguous; "
+                    "[checkpoint] Remote progress.json is missing/corrupt/non-monotonic; "
                     "rejecting the remote state and starting fresh."
                 )
                 self._purge_all_checkpoints()
@@ -376,7 +374,7 @@ class CheckpointManager:
 
             if latest_epoch != last_seq:
                 logger.warning(
-                    "[checkpoint] Remote sequential progress ends at epoch %d, "
+                    "[checkpoint] Remote progress ends at epoch %d, "
                     "but manifest claims epoch %d. Rejecting the state and "
                     "starting fresh.",
                     last_seq,
@@ -395,7 +393,6 @@ class CheckpointManager:
                 self._purge_all_checkpoints()
                 return 0, 0, float("inf")
 
-            self._purge_all_checkpoints()
             if not self._pull_checkpoint_from_hub(latest_epoch):
                 logger.warning(
                     "[checkpoint] Verified remote checkpoint could not be downloaded; "
@@ -432,21 +429,12 @@ class CheckpointManager:
 
         ckpt_path = self.ckpt_dir / f"checkpoint_epoch_{latest_epoch}.pt"
         if not ckpt_path.exists():
-            if self.enabled and self.api is not None:
-                if not self._pull_checkpoint_from_hub(latest_epoch):
-                    logger.warning(
-                        "Manifest points to missing checkpoint %s; starting fresh.",
-                        ckpt_path,
-                    )
-                    self._purge_all_checkpoints()
-                    return 0, 0, float("inf")
-            else:
-                logger.warning(
-                    "Manifest points to missing checkpoint %s; starting fresh.",
-                    ckpt_path,
-                )
-                self._purge_all_checkpoints()
-                return 0, 0, float("inf")
+            logger.warning(
+                "Manifest points to missing checkpoint %s; starting fresh.",
+                ckpt_path,
+            )
+            self._purge_all_checkpoints()
+            return 0, 0, float("inf")
 
         try:
             checkpoint = torch.load(
@@ -529,10 +517,8 @@ class CheckpointManager:
                 self.MANIFEST_NAME not in remote_files
                 or self.PROGRESS_NAME not in remote_files
             ):
-                self._purge_all_checkpoints()
                 return None
             if not self._pull_manifest_from_hub() or not self._pull_progress_from_hub():
-                self._purge_all_checkpoints()
                 return None
 
         manifest_path = self.ckpt_dir / self.MANIFEST_NAME
@@ -545,32 +531,26 @@ class CheckpointManager:
             valid, last_seq = self._validate_progress(progress)
             latest_epoch = int(manifest["latest_epoch"])
             if not valid or last_seq != latest_epoch:
-                self._purge_all_checkpoints()
                 return None
 
             remote_checkpoint_name = (
                 f"checkpoints/checkpoint_epoch_{latest_epoch}.pt"
             )
             if remote_files is not None and remote_checkpoint_name not in remote_files:
-                self._purge_all_checkpoints()
                 return None
 
-            # When Hub sync is authoritative, never reuse a local checkpoint
-            # without first proving that this exact remote checkpoint exists.
             ckpt_path = self.ckpt_dir / f"checkpoint_epoch_{latest_epoch}.pt"
-            if remote_files is not None:
-                self._purge_all_checkpoints()
-                if not self._pull_checkpoint_from_hub(latest_epoch):
-                    self._purge_all_checkpoints()
+            if not ckpt_path.exists():
+                if remote_files is not None:
+                    if not self._pull_checkpoint_from_hub(latest_epoch):
+                        return None
+                else:
                     return None
-            elif not ckpt_path.exists():
-                return None
 
             checkpoint = torch.load(
                 ckpt_path, map_location="cpu", weights_only=False
             )
             if int(checkpoint.get("epoch", -1)) != latest_epoch:
-                self._purge_all_checkpoints()
                 return None
             return checkpoint.get("model_config")
         except Exception as exc:
@@ -602,6 +582,8 @@ class CheckpointManager:
         progress_bytes: bytes,
     ) -> None:
         """Queue a serialized snapshot without daemon threads."""
+        self._pending_upload_paths.add(str(ckpt_path))
+        self._pending_upload_paths.add(str(ckpt_path.resolve()))
         executor = self._ensure_upload_executor()
         future = executor.submit(
             self._upload_snapshot,
@@ -650,8 +632,6 @@ class CheckpointManager:
                     repo_id=self.repo_id,
                     repo_type="model",
                 )
-                # The manifest is last so it never advertises a checkpoint
-                # before that checkpoint and matching progress are on the Hub.
                 self.api.upload_file(
                     path_or_fileobj=io.BytesIO(manifest_bytes),
                     path_in_repo=self.MANIFEST_NAME,
@@ -664,6 +644,10 @@ class CheckpointManager:
                     "HF Hub upload failed for epoch %d: %s. Local copy is safe.",
                     epoch, exc
                 )
+            finally:
+                self._pending_upload_paths.discard(str(ckpt_path))
+                self._pending_upload_paths.discard(str(ckpt_path.resolve()))
+                self._prune_old_checkpoints(keep=self.keep_last_n)
 
     def _download_hub_file(self, filename: str, destination: Path) -> bool:
         try:
@@ -711,12 +695,50 @@ class CheckpointManager:
         for future in futures:
             try:
                 future.result()
-            except Exception as exc:  # pragma: no cover
+            except Exception as exc:
                 logger.warning("[checkpoint] background upload failed: %s", exc)
         self._upload_futures.clear()
+        self._prune_old_checkpoints(keep=self.keep_last_n)
+
+    def reset_local(self) -> None:
+        """Clear local checkpoint artifacts and re-initialize empty state."""
+        self._purge_all_checkpoints()
+
+    def reset_all(self, purge_remote: bool = False) -> None:
+        """Completely reset local (and optionally remote) checkpoint state."""
+        self._purge_all_checkpoints()
+        if purge_remote and self.enabled and self.api is not None and self.repo_id:
+            try:
+                remote_files = self._list_remote_files() or set()
+                for name in (self.MANIFEST_NAME, self.PROGRESS_NAME):
+                    if name in remote_files:
+                        try:
+                            self.api.delete_file(
+                                path_in_repo=name,
+                                repo_id=self.repo_id,
+                                repo_type="model",
+                            )
+                        except Exception:
+                            pass
+                for f in remote_files:
+                    if f.startswith("checkpoints/"):
+                        try:
+                            self.api.delete_file(
+                                path_in_repo=f,
+                                repo_id=self.repo_id,
+                                repo_type="model",
+                            )
+                        except Exception:
+                            pass
+                logger.info(
+                    "[checkpoint] Remote HF repository %s cleared for fresh run.",
+                    self.repo_id,
+                )
+            except Exception as exc:
+                logger.warning("[checkpoint] Could not clear remote HF repo: %s", exc)
 
     def _purge_all_checkpoints(self) -> None:
-        """Delete local checkpoint artifacts, including stale metadata."""
+        """Delete local checkpoint artifacts, including metadata."""
         for pattern in ("checkpoint_epoch_*.pt", "checkpoint_best.pt", "*.pt.tmp"):
             for path in self.ckpt_dir.glob(pattern):
                 try:
@@ -731,15 +753,29 @@ class CheckpointManager:
                 except OSError:
                     pass
 
+    def _purge_local_checkpoints_only(self) -> None:
+        """Delete local checkpoint .pt files while keeping metadata files."""
+        for pattern in ("checkpoint_epoch_*.pt", "checkpoint_best.pt", "*.pt.tmp"):
+            for path in self.ckpt_dir.glob(pattern):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
     def _prune_old_checkpoints(self, keep: int) -> None:
         ckpts = sorted(
             self.ckpt_dir.glob("checkpoint_epoch_*.pt"),
             key=lambda p: _epoch_from_name(p.name),
         )
         for old in ckpts[:-keep]:
+            if (
+                str(old) in self._pending_upload_paths
+                or str(old.resolve()) in self._pending_upload_paths
+            ):
+                continue
             try:
                 old.unlink()
-            except OSError:  # pragma: no cover
+            except OSError:
                 pass
 
     @staticmethod
@@ -777,7 +813,7 @@ class CheckpointManager:
                 torch.set_rng_state(states["torch"])
             if states.get("cuda") and torch.cuda.is_available():
                 torch.cuda.set_rng_state_all(states["cuda"])
-        except Exception:  # pragma: no cover
+        except Exception:
             logger.warning("RNG state restoration failed; continuing.")
 
 

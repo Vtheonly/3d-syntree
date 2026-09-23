@@ -56,6 +56,10 @@ def main(argv=None) -> int:
                         help="JSON with a 'config_override' block (from notebooks)")
     parser.add_argument("--resume-auto", action="store_true",
                         help="auto-resume from the latest checkpoint (local or HF Hub)")
+    parser.add_argument("--fresh", "--reset", action="store_true", dest="fresh",
+                        help="start a completely fresh training run from epoch 0, ignoring and clearing any existing checkpoints")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="override training.max_epochs (e.g. to continue training past restored epochs)")
     parser.add_argument("--pocket", type=str, default=None,
                         help="pocket PDB for generation")
     parser.add_argument("--num-ligands", type=int, default=4)
@@ -85,6 +89,12 @@ def main(argv=None) -> int:
         config.setdefault("system", {})["seed"] = int(args.seed)
     if args.output_dir is not None:
         config.setdefault("data", {})["output_dir"] = args.output_dir
+    if args.epochs is not None:
+        config.setdefault("training", {})["max_epochs"] = int(args.epochs)
+
+    # Fresh mode overrides resume
+    if args.fresh:
+        args.resume_auto = False
 
     # ---- hardware ------------------------------------------------------
     from syntree.utils.hardware import configure_runtime_environment
@@ -122,9 +132,12 @@ def main(argv=None) -> int:
 
         ckpt_dir = os.path.join(args.output_dir or "./experiments", "checkpoints")
 
-        if args.resume_auto:
-            # Keep the same Hub/local authority rules for architecture discovery
-            # that the trainer will use for actual checkpoint restoration.
+        if args.fresh:
+            print("[main] --fresh specified: resetting checkpoint state for a clean run from epoch 0")
+            cleaner = CheckpointManager(config, ckpt_dir=ckpt_dir)
+            cleaner.reset_all(purge_remote=bool(config.get("huggingface", {}).get("enabled", False)))
+
+        if args.resume_auto and not args.fresh:
             reader = CheckpointManager(config, ckpt_dir=ckpt_dir)
             saved_model_cfg = reader.read_model_config()
             if saved_model_cfg:
@@ -189,10 +202,11 @@ def main(argv=None) -> int:
         rl_manager = CheckpointManager(rl_checkpoint_config, ckpt_dir=rl_ckpt_dir)
         rl_start_episode, _, _ = rl_manager.restore_latest(model)
         if rl_start_episode == 0:
-            # First time in Stage 2: load Stage 1 trained weights into policy
             s1_epoch, s1_step, _ = stage1_manager.restore_latest(model)
-            if s1_step > 0:
-                print(f"[main] Stage 2 initialized with Stage 1 checkpoint (step {s1_step})")
+            if s1_epoch > 0 or s1_step > 0:
+                print(f"[main] Stage 2 initialized with Stage 1 checkpoint (epoch {s1_epoch - 1}, step {s1_step})")
+            else:
+                print("[main] Stage 2: No Stage 1 checkpoint found; starting with initialized weights.")
         print(f"[main] Stage 2 PPO starting at episode {rl_start_episode}")
 
         generator = SBDDGenerator(
@@ -213,7 +227,6 @@ def main(argv=None) -> int:
             device=device,
         )
 
-        # Robust multi-path pocket discovery for RL mode
         candidate_dirs = [
             args.pocket_dir,
             rl_cfg.get("pocket_dir"),
@@ -222,7 +235,6 @@ def main(argv=None) -> int:
             os.path.join(data_dir, "test_pockets"),
             data_dir,
         ]
-        # Inspect assets_manifest.json if present
         for manifest_candidate in ("./data/assets_manifest.json", os.path.join(os.path.dirname(data_dir.rstrip("/")), "assets_manifest.json")):
             if os.path.isfile(manifest_candidate):
                 try:

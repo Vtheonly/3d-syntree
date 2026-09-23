@@ -50,7 +50,7 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     try:
         os.environ["PYTHONHASHSEED"] = str(seed)
-    except Exception:  # pragma: no cover
+    except Exception:
         pass
 
 
@@ -194,6 +194,9 @@ class ResilientTrainer:
             )
             for _ in range(self.global_step):
                 self.scheduler.step()
+        else:
+            # Fresh run: reset any local checkpoint state to ensure clean start at epoch 0
+            self.ckpt_manager.reset_local()
 
     # ------------------------------------------------------------------
     # Setup helpers
@@ -206,14 +209,11 @@ class ResilientTrainer:
         clean_items = []
         for item in items:
             data = item.clone()
-            # Explicitly set num_nodes on each Data object to prevent PyG from
-            # guessing and calling .size(cat_dim) on 0-dim scalar tensors.
             if hasattr(data, "pocket_pos") and data.pocket_pos is not None:
                 data.num_nodes = data.pocket_pos.size(0)
             elif hasattr(data, "pos") and data.pos is not None:
                 data.num_nodes = data.pos.size(0)
 
-            # Convert any 0-dim scalar tensor to 1-dim so collate can concatenate cleanly.
             for k in list(data.keys()):
                 v = data[k]
                 if isinstance(v, torch.Tensor) and v.dim() == 0:
@@ -381,6 +381,25 @@ class ResilientTrainer:
             f"batch={self.batch_size} x accum={self.accum_steps} | "
             f"steps/epoch={len(self.loader)} | amp={self.use_amp}"
         )
+
+        if self.start_epoch >= self.max_epochs:
+            print(
+                f"[trainer] Restored checkpoint is at epoch {self.start_epoch - 1} "
+                f"(completed {self.start_epoch} epochs), which already meets or "
+                f"exceeds max_epochs ({self.max_epochs}).\n"
+                f"[trainer] No additional epochs to train.\n"
+                f"[trainer] -> To train for more epochs, increase 'training.max_epochs' in the config or pass --epochs <N>.\n"
+                f"[trainer] -> To start a completely fresh training run from epoch 0, pass --fresh (or --reset)."
+            )
+            return {
+                "epochs_completed": self.start_epoch,
+                "status": "already_completed",
+                "message": (
+                    f"Restored checkpoint epoch {self.start_epoch - 1} already meets or "
+                    f"exceeds max_epochs {self.max_epochs}. Use --fresh to start from epoch 0 "
+                    f"or --epochs {self.start_epoch + 10} to train further."
+                ),
+            }
 
         history = []
         for epoch in range(self.start_epoch, self.max_epochs):
@@ -681,10 +700,6 @@ class ResilientTrainer:
             json.dump(entry, f, indent=2)
 
     def _finalize(self, epoch: Optional[int], history) -> None:
-        # Only a fully completed epoch may be checkpointed. In particular,
-        # never synthesize epoch 0 (or the current epoch) after a mid-epoch
-        # time-budget exit, and never create a fake extra epoch when
-        # start_epoch == max_epochs.
         if epoch is not None:
             if not history or history[-1]["epoch"] != epoch:
                 raise RuntimeError(
@@ -702,8 +717,6 @@ class ResilientTrainer:
                 model_config=self.config.get("model"),
             )
 
-        # Explicitly drain any non-final asynchronous Hub uploads before the
-        # Python process can exit.
         self.ckpt_manager.wait_for_uploads()
 
         with open(os.path.join(self.output_dir, "history.json"), "w") as f:
