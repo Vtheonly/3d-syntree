@@ -4,7 +4,6 @@
 [![PyTorch 2.1+](https://img.shields.io/badge/PyTorch-2.1+-ee4c2c.svg)](https://pytorch.org/)
 [![PyG](https://img.shields.io/badge/PyG-2.4+-3C2179.svg)](https://www.pyg.org/)
 [![RDKit](https://img.shields.io/badge/RDKit-2023.09+-green.svg)](https://www.rdkit.org/)
-[![Tests](https://img.shields.io/badge/tests-302%20passing-brightgreen.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -298,46 +297,80 @@ the card, the trainer prints a note suggesting a larger
 
 ---
 
-## 8. Evaluation Targets
+## 8. What is learned vs. guaranteed
 
-| Metric | TargetDiff / DiffSBDD | SynNet / SyntheMol | **3D-SynTree (target)** | Tool |
-| :--- | :--- | :--- | :--- | :--- |
-| Retrosynthetic feasibility | 10–20% | > 90% | **> 85%** | AiZynthFinder / proxy |
-| PoseBusters pass rate | 30–50% | N/A | **> 90%** | Built-in validator |
-| Chemical validity (valence) | 70–85% | 100% | **100%** | RDKit sanitization |
-| Pocket affinity (kcal/mol) | −8.5 to −9.5 | N/A | **−8.0 to −9.0** | GNINA / Vina hooks |
-| 3D complexity (Fsp3) | 0.35 | 0.20–0.28 | **≥ 0.45** | RDKit descriptors |
-| Actionable synthesis recipe | 0% | 100% | **100%** | Native output |
+The project deliberately separates **learned predictions** from **deterministic
+chemical constraints**.
 
-External tools (GNINA, AiZynthFinder) are optional: the evaluator detects
-their availability and degrades gracefully to internal RDKit metrics.
+| Component | Mechanism | What a benchmark number means |
+| :--- | :--- | :--- |
+| Reaction-family prediction | Learned neural reaction head | Accuracy on held-out, reaction-validated CrossDocked decompositions |
+| Synthon selection | Learned pocket/handle-to-catalog scoring + reaction mask | Top-1 / top-k accuracy on held-out validated catalog synthons |
+| Dihedral prediction | Learned von Mises torsion head | Circular error / NLL on held-out observed junction torsions |
+| Chemical validity | RDKit reaction execution + sanitization | A hard construction constraint, not model intelligence |
+| Recipe validity | Catalog membership + certified forward reaction replay | A property enforced by the action space, not a learned hit rate |
+| Pose quality | RDKit conformers plus the neural torsion prediction | Must be measured separately with blinded docking / PoseBusters-style evaluation |
+| Binding affinity | External docking / experimental assay | **Not trained by the core policy and not inferred from validity alone** |
 
----
+### Real CrossDocked supervision
+
+Real pocket/ligand pairs are no longer assigned random labels. The
+ReactionConstrainedFragmenter searches non-ring single bonds, reconstructs
+chemically meaningful precursor handles, matches the resulting synthon against
+the filtered catalog, and then replays the forward reaction with the real
+ReactionEngine.
+
+A training example is accepted only when the replayed product has the same
+molecular connectivity as the observed ligand and an observed 3D junction
+torsion is available. Unmatched complexes are skipped rather than being
+converted into fabricated targets.
+
+SNAr and Buchwald-Hartwig substitutions share one learned aryl_amination
+family because the final product structure does not contain enough information
+to identify which experimental conditions produced that bond.
+
+### Synthetic mode
+
+The deterministic synthetic dataset remains available for CPU/Colab smoke
+tests and unit tests. Its labels are intentionally learnable but synthetic.
+It must not be used as evidence of molecular-design performance, and production
+configs now disable automatic fallback to it.
+
+### Evaluation policy
+
+Claims about binding, docking, PoseBusters, retrosynthetic success, or wet-lab
+hit rates must come from an explicit held-out evaluation using real complexes,
+with the evaluation protocol and sample population reported alongside the
+numbers. The core repository does not assume that a valid molecule binds its
+target.
 
 ## 9. Engineering Notes
 
-* **Determinism** – seeded everywhere (Python/NumPy/Torch); catalog
-  embeddings are seeded random projections of Morgan fingerprints, so
-  identical catalogs produce identical embeddings across machines.
-* **Resilience** – the trainer wraps every run in a wall-clock budget,
-  checkpoints atomically (tmp-file + rename), prunes stale checkpoints,
-  and restores Python/NumPy/Torch/CUDA RNG states on resume.
-* **Security** – the HF write token is read exclusively from the `HF_TOKEN`
-  environment variable (the notebook sets it from a hidden `getpass`
-  prompt), never from config files that may be committed.
-* **Robust chemistry** – reaction templates are validated against the
-  installed RDKit version (H-count predicates and atom-map placement
-  follow the modern parser grammar); the catalog re-verifies every
-  declared handle from structure on load.
-* **Test coverage** – 325 tests cover the reaction engine (provenance,
-  junctions, product validity), SE(3) equivariance (rotation/translation
-  invariance proofs), von Mises math (Bessel, sampling, NLL), end-to-end
-  generation with recipe replay, checkpoint/resume (including RNG
-  replay and architecture persistence), GPU auto-scaling tiers and CPU
-  no-op paths, and the CLI.
-
----
-
+* **Deterministic real-target extraction** – real labels require a catalog
+  synthon match plus successful RDKit forward replay; there is no random
+  target_synthon or target_dihedral path in real mode.
+* **Leakage-resistant splits** – paired CrossDocked examples are deterministically
+  partitioned into train/val/test buckets instead of loading every pair into
+  every split.
+* **Reaction policy** – the network predicts a reaction family before synthon
+  selection. The synthon logits are then masked by the selected family and
+  the current core handle.
+* **Torsion integrity** – the neural torsion prediction is applied directly by
+  default. A brute-force clash grid remains available as an explicit diagnostic
+  option, but it no longer silently overwrites the model prediction.
+* **Chemical guarantees** – catalog membership and RDKit reaction execution
+  constrain the action space, but those guarantees are not presented as
+  learned accuracy.
+* **Determinism** – seeded everywhere (Python/NumPy/Torch); catalog embeddings
+  are deterministic projections of Morgan fingerprints, so identical catalogs
+  produce reproducible embedding tables.
+* **Resilience** – the trainer checkpoints atomically and restores optimizer,
+  scheduler, and RNG state. Legacy checkpoints can still be read after the
+  reaction head expansion, with newly introduced parameters initialized fresh.
+* **Security** – the HF write token is read exclusively from HF_TOKEN and
+  never from committed configuration.
+* **Testing** – run python -m pytest tests/ -q before treating a benchmark as
+  valid.
 ## 10. License
 
 MIT — see [LICENSE](LICENSE).
