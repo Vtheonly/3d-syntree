@@ -23,7 +23,7 @@ from torch_geometric.data import Data
 
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES, ReactionEngine
 from syntree.data.featurizer import MolecularFeaturizer
-from syntree.data.decomposer import RetrosyntheticTrajectoryExtractor, SUPPORTED_RETRO_FAMILIES
+from syntree.data.decomposer import RetrosyntheticTrajectoryExtractor
 
 
 @dataclass(frozen=True)
