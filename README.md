@@ -349,7 +349,7 @@ target.
 * **Deterministic real-target extraction** – real labels require a catalog
   synthon match plus successful RDKit forward replay; there is no random
   target_synthon or target_dihedral path in real mode.
-* **Leakage-resistant splits** – paired CrossDocked examples are deterministically
+* **Non-overlapping deterministic splits** – paired CrossDocked examples are deterministically
   partitioned into train/val/test buckets instead of loading every pair into
   every split.
 * **Reaction policy** – the network predicts a reaction family before synthon
