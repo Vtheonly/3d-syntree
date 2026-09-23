@@ -54,7 +54,7 @@ def build_model(config: dict):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="3D-SynTree SBDD Engine")
-    parser.add_argument("--mode", choices=["train", "generate", "evaluate", "info"],
+    parser.add_argument("--mode", choices=["train", "rl", "generate", "evaluate", "info"],
                         required=True)
     parser.add_argument("--config", type=str, default="configs/default_config.json")
     parser.add_argument("--runtime-config", type=str, default=None,
@@ -162,6 +162,104 @@ def main(argv=None) -> int:
         )
         summary = trainer.train()
         print(f"[main] training summary: {json.dumps(summary, indent=2)}")
+        return 0
+
+    if args.mode == "rl":
+        if not args.resume_auto:
+            print("[main] --mode rl requires --resume-auto so Stage 2 starts from Stage 1 weights.", file=sys.stderr)
+            return 2
+
+        from syntree.engine.generator import SBDDGenerator
+        from syntree.engine.rl import PPOFineTuner, ThreeDReward
+        from syntree.utils.checkpoint import CheckpointManager
+
+        rl_cfg = config.get("reinforcement_learning", {})
+        if not bool(rl_cfg.get("enabled", False)):
+            print("[main] reinforcement_learning.enabled is false; enable it for Stage 2.", file=sys.stderr)
+            return 2
+
+        manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
+        saved_model_cfg = manager.read_model_config()
+        if saved_model_cfg:
+            config["model"] = saved_model_cfg
+            print("[main] restored model architecture from Stage 1 checkpoint")
+
+        model = build_model(config).to(device)
+        start_epoch, _, _ = manager.restore_latest(model)
+        print(f"[main] Stage 2 PPO starting from checkpoint epoch {start_epoch - 1}")
+
+        generator = SBDDGenerator(
+            model, config, device, output_dir=args.output_dir or "./rl_outputs"
+        )
+        reward_fn = ThreeDReward(rl_cfg.get("reward", {}))
+        finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
+
+        pocket_paths = sorted(
+            os.path.join(data_dir, name)
+            for name in os.listdir(data_dir)
+            if name.endswith("_pocket.pdb")
+        )
+        if not pocket_paths:
+            print(f"[main] no pocket PDB files found under {data_dir}", file=sys.stderr)
+            return 2
+
+        episodes = int(rl_cfg.get("episodes", 256))
+        temperature = float(rl_cfg.get("temperature", 1.0))
+        history = []
+        for episode in range(episodes):
+            pocket = pocket_paths[episode % len(pocket_paths)]
+            model.eval()
+            result = generator.generate_ligand(
+                pocket_pdb_path=pocket,
+                sample=True,
+                temperature=temperature,
+                return_trace=True,
+            )
+            reward_details = reward_fn.compute(result["rdkit_mol"], pocket)
+            model.train()
+            stats = finetuner.update_episode(
+                result.get("policy_trace") or [],
+                reward_details["reward"],
+            )
+            model.eval()
+            entry = {
+                "episode": episode,
+                "pocket": os.path.basename(pocket),
+                **reward_details,
+                **stats,
+            }
+            history.append(entry)
+            print(
+                f"[rl] episode {episode:04d} | reward={entry['reward']:.4f} | "
+                f"loss={entry['loss']:.4f} | steps={entry['steps']:.0f}"
+            )
+            checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
+            if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
+                manager.save_checkpoint(
+                    epoch=episode,
+                    step=episode + 1,
+                    model=model,
+                    optimizer=finetuner.optimizer,
+                    metrics=entry,
+                    is_best=False,
+                    model_config=config.get("model"),
+                )
+
+        manager.save_checkpoint(
+            epoch=max(0, episodes - 1),
+            step=episodes,
+            model=model,
+            optimizer=finetuner.optimizer,
+            metrics=history[-1] if history else {},
+            is_best=True,
+            final=True,
+            model_config=config.get("model"),
+        )
+        rl_output = args.output_dir or "./rl_outputs"
+        os.makedirs(rl_output, exist_ok=True)
+        with open(os.path.join(rl_output, "rl_history.json"), "w") as f:
+            json.dump(history, f, indent=2)
+        print(f"[main] Stage 2 complete: {episodes} PPO episodes")
         return 0
 
     if args.mode == "generate":
