@@ -93,7 +93,9 @@ def main() -> int:
     parser.add_argument("--max-mw", type=float, default=800.0)
     parser.add_argument("--min-heavy-atoms", type=int, default=10)
     parser.add_argument("--max-resolution", type=float, default=2.5)
-    parser.add_argument("--strict-resolution-metadata", action="store_true")
+    parser.add_argument("--crossdocked-max-rmsd", type=float, default=1.0)
+    parser.add_argument("--strict-source-metadata", action="store_true",
+                        help="Require CrossDocked RMSD, BindingMOAD X-ray method/resolution, and PDBbind refined metadata.")
     parser.add_argument("--pdbbind-subset", default="refined")
     args = parser.parse_args()
 
@@ -122,9 +124,40 @@ def main() -> int:
         if resolution is not None and resolution > args.max_resolution:
             skipped["resolution"] = skipped.get("resolution", 0) + 1
             continue
-        if args.strict_resolution_metadata and resolution is None:
+        if args.strict_source_metadata and resolution is None:
             skipped["missing_resolution"] = skipped.get("missing_resolution", 0) + 1
             continue
+
+        raw_rmsd = row.get("rmsd") or row.get("ligand_rmsd")
+        try:
+            rmsd = float(raw_rmsd) if raw_rmsd not in (None, "", "nan") else None
+        except (ValueError, TypeError):
+            rmsd = None
+        if source == "crossdocked2020":
+            if rmsd is not None and rmsd > args.crossdocked_max_rmsd:
+                skipped["crossdocked_rmsd"] = skipped.get("crossdocked_rmsd", 0) + 1
+                continue
+            if args.strict_source_metadata and rmsd is None:
+                skipped["missing_crossdocked_rmsd"] = skipped.get("missing_crossdocked_rmsd", 0) + 1
+                continue
+
+        method = str(row.get("experimental_method") or row.get("method") or "").strip().lower()
+        if source == "bindingmoad":
+            if method and "x-ray" not in method and "xray" not in method:
+                skipped["bindingmoad_not_xray"] = skipped.get("bindingmoad_not_xray", 0) + 1
+                continue
+            if args.strict_source_metadata and not method:
+                skipped["missing_bindingmoad_method"] = skipped.get("missing_bindingmoad_method", 0) + 1
+                continue
+
+        subset = row.get("subset")
+        if source == "pdbbind":
+            if subset and str(subset).strip().lower() != str(args.pdbbind_subset).lower():
+                skipped["pdbbind_subset"] = skipped.get("pdbbind_subset", 0) + 1
+                continue
+            if args.strict_source_metadata and not subset:
+                skipped["missing_pdbbind_subset"] = skipped.get("missing_pdbbind_subset", 0) + 1
+                continue
 
         ligand = read_ligand(str(ligand_path))
         valid, descriptors = validate_ligand(
@@ -167,6 +200,8 @@ def main() -> int:
             "processed_pocket_path": str(pocket_path.resolve()),
             "processed_ligand_path": str(ligand_out.resolve()),
             "resolution": resolution,
+            "rmsd": rmsd,
+            "experimental_method": method or None,
             "subset": row.get("subset") or (args.pdbbind_subset if source == "pdbbind" else None),
             "mw": descriptors["mw"],
             "heavy_atoms": int(descriptors["heavy_atoms"]),
@@ -191,6 +226,8 @@ def main() -> int:
             "min_heavy_atoms": args.min_heavy_atoms,
         },
         "max_resolution_when_available": args.max_resolution,
+        "crossdocked_max_rmsd": args.crossdocked_max_rmsd,
+        "strict_source_metadata": args.strict_source_metadata,
         "manifest": str(manifest_path),
     }
     manifest_path.with_name("preprocess_summary.json").write_text(

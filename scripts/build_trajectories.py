@@ -11,6 +11,7 @@ A legacy CrossDocked directory mode is kept for backwards compatibility.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from collections import Counter
@@ -24,6 +25,14 @@ from rdkit import Chem
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.data.multidataset import iter_jsonl
 from syntree.data.trajectory import RetrosyntheticTrajectoryBuilder
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_first_molecule(path: str):
@@ -81,6 +90,7 @@ def build_unified(args) -> int:
         "source_state_counts": dict(source_counts),
         "trajectory_status_counts": dict(status_counts),
         "catalog": str(args.catalog),
+        "catalog_sha256": sha256_file(args.catalog),
         "max_steps": args.max_steps,
     }
     output.with_suffix(".json").write_text(json.dumps(manifest, indent=2, sort_keys=True))

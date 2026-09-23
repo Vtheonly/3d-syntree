@@ -137,6 +137,7 @@ def main() -> int:
     parser.add_argument("--repo-id")
     parser.add_argument("--max-shard-gb", type=float, default=0.50)
     parser.add_argument("--delete-after-upload", action="store_true")
+    parser.add_argument("--metadata-json", help="Optional JSON metadata merged into the split manifest.")
     args = parser.parse_args()
 
     samples = torch.load(args.input, map_location="cpu", weights_only=False)
@@ -149,6 +150,15 @@ def main() -> int:
         args.output_dir,
         max_shard_bytes=int(args.max_shard_gb * 1024**3),
     )
+    if args.metadata_json:
+        metadata = json.loads(
+            Path(args.metadata_json).read_text(encoding="utf-8")
+        )
+        manifest["metadata"] = metadata
+        (Path(args.output_dir) / args.split / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
     print(json.dumps(manifest, indent=2))
 
     if args.repo_id:

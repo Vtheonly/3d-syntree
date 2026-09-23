@@ -447,9 +447,9 @@ itself prove unseen structural folds.
 python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split-manifest ./data/multidataset/unified_splits_30seq_id.parquet --split train --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_train.pt --max-steps 4
 python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split val --split-manifest ./data/multidataset/unified_splits_30seq_id.parquet --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_val.pt --max-steps 4
 python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split test --split-manifest ./data/multidataset/unified_splits_30seq_id.parquet --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_test.pt --max-steps 4
-python scripts/shard_and_upload.py --input ./data/trajectories_train.pt --split train --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50
-python scripts/shard_and_upload.py --input ./data/trajectories_val.pt --split val --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50
-python scripts/shard_and_upload.py --input ./data/trajectories_test.pt --split test --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50
+python scripts/shard_and_upload.py --input ./data/trajectories_train.pt --split train --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_train.json
+python scripts/shard_and_upload.py --input ./data/trajectories_val.pt --split val --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_val.json
+python scripts/shard_and_upload.py --input ./data/trajectories_test.pt --split test --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_test.json
 ```
 
 Shards are bounded by compressed byte size rather than fixed sample count.
