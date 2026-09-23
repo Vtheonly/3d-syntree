@@ -517,6 +517,7 @@ class CheckpointManager:
 
     def read_model_config(self) -> Optional[dict]:
         """Return the model architecture stored in the authoritative state."""
+        remote_files = None
         if self.enabled and self.api is not None:
             remote_files = self._list_remote_files()
             if remote_files is None:
@@ -543,16 +544,31 @@ class CheckpointManager:
             if not valid or last_seq != latest_epoch:
                 self._purge_all_checkpoints()
                 return None
+
+            remote_checkpoint_name = (
+                f"checkpoints/checkpoint_epoch_{latest_epoch}.pt"
+            )
+            if remote_files is not None and remote_checkpoint_name not in remote_files:
+                self._purge_all_checkpoints()
+                return None
+
+            # When Hub sync is authoritative, never reuse a local checkpoint
+            # without first proving that this exact remote checkpoint exists.
             ckpt_path = self.ckpt_dir / f"checkpoint_epoch_{latest_epoch}.pt"
-            if not ckpt_path.exists() and self.enabled and self.api is not None:
+            if remote_files is not None:
+                self._purge_all_checkpoints()
                 if not self._pull_checkpoint_from_hub(latest_epoch):
                     self._purge_all_checkpoints()
                     return None
-            if not ckpt_path.exists():
+            elif not ckpt_path.exists():
                 return None
+
             checkpoint = torch.load(
                 ckpt_path, map_location="cpu", weights_only=False
             )
+            if int(checkpoint.get("epoch", -1)) != latest_epoch:
+                self._purge_all_checkpoints()
+                return None
             return checkpoint.get("model_config")
         except Exception as exc:
             logger.warning("Could not read model config from checkpoint: %s", exc)
