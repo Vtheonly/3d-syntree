@@ -59,6 +59,8 @@ class TestConstruction:
 class TestForward:
     def test_output_shapes(self, model, batch, catalog):
         out = model(batch, catalog.embeddings)
+        assert out["reaction_logits"].shape == (4, 7)
+        assert out["reaction_log_probs"].shape == (4, 7)
         assert out["synthon_logits"].shape == (4, len(catalog))
         assert out["synthon_log_probs"].shape == (4, len(catalog))
         assert out["torsion_mu"].shape == (4,)
@@ -139,6 +141,8 @@ class TestAct:
         model.eval()
         data = dataset[0]
         decision = model.act(data, catalog.embeddings)
+        assert decision["reaction_family_idx"].shape == (1,)
+        assert 0 <= decision["reaction_family_idx"][0].item() < 7
         assert decision["synthon_idx"].shape == (1,)
         assert 0 <= decision["synthon_idx"][0].item() < len(catalog)
         assert -math.pi <= decision["dihedral"][0].item() < math.pi
