@@ -73,7 +73,7 @@ Four architectural commitments break the wall:
 
 1. **Lego-Rule Action Space** – the model never generates individual atoms.
    Every action attaches a pre-validated building block from a curated
-   Enamine REAL 3D-Diversity subset (Fsp3 ≥ 0.42, MW ≤ 220 Da).
+   a real reaction-compatible building-block catalog (default curation: Fsp3 ≥ 0.40, MW 80–220 Da).
 2. **Relative 3D Cross-Attention + Reaction Grammar** – the reacting handle
    includes chemical state plus pocket-frame position. Invariant handle-to-
    pocket distances condition the attention keys, while the reaction grammar
@@ -213,16 +213,17 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Download assets (offline fallback included)
+### Prepare thesis data
 
 ```bash
-python scripts/download_assets.py --target-dataset crossdocked2020 \\
-    --synthon-subset 3d-diversity-15k
+python scripts/build_synthon_catalog.py \\\n    --input /path/to/real_building_blocks.sdf \\\n    --output ./data/enamine_3d_subset.parquet \\\n    --min-fsp3 0.40 \\\n    --max-mw 220 \\\n    --strict-min-size 50000
+
+python scripts/prepare_multidataset.py \\\n    --input-manifest /path/to/structural_sources.jsonl \\\n    --output-dir ./data/unified \\\n    --radius 10 \\\n    --min-seq-id 0.30 \\\n    --coverage 0.80
+
+python scripts/download_assets.py \\\n    --target-dataset unified_multisource \\\n    --output-dir ./data
 ```
 
-With no network access the builder creates a chemically verified offline
-catalog (Fsp3/MW computed with RDKit, handles detected by the real reaction
-engine) plus a sample protein pocket, so the entire pipeline runs end-to-end.
+Production mode never fabricates a training catalog or silently falls back to mock pockets. The unified stage standardizes every source, aligns ligand/pocket coordinates, writes rejection and split manifests, and performs leakage-resistant protein clustering. Use `--offline-smoke` only for plumbing tests.
 
 ### Train (wall-clock budgeted, resumable)
 
@@ -261,7 +262,7 @@ Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle and hit
    to keep checkpoints local-only).
 2. Clones (or pulls) this repository.
 3. Installs dependencies and verifies RDKit / PyTorch / PyG.
-4. Downloads or synthesizes the data assets.
+4. Verifies or prepares the real data assets; production mode never synthesizes training data.
 5. Profiles the GPU (TF32 on Ampere+, fp16 on T4/V100).
 6. Launches the time-budgeted training loop with automatic Hugging Face
    checkpoint sync every 2 epochs.
@@ -365,9 +366,7 @@ The synthon policy outputs K + 1 actions, where index K is the learned STOP acti
 * **Deterministic real-target extraction** – real labels require a catalog
   synthon match plus successful RDKit forward replay; there is no random
   target_synthon or target_dihedral path in real mode.
-* **Non-overlapping deterministic splits** – paired CrossDocked examples are deterministically
-  partitioned into train/val/test buckets instead of loading every pair into
-  every split.
+* **Leakage-resistant splits** – unified structural sources are clustered with MMseqs2 at 30% sequence identity and whole protein clusters are kept together. External benchmark clusters can be locked outside training.
 * **Reaction policy** – the network predicts a reaction family before synthon
   selection. The synthon logits are then masked by the selected family and
   the current core handle.
@@ -387,6 +386,30 @@ The synthon policy outputs K + 1 actions, where index K is the learned STOP acti
   never from committed configuration.
 * **Testing** – run python -m pytest tests/ -q before treating a benchmark as
   valid.
-## 11. License
+## 11. Multi-Source Dataset Contract
+
+For thesis runs, CrossDocked2020 is treated as one structural source rather than the definition of the full training distribution. The repository accepts a single manifest containing heterogeneous sources such as CrossDocked, BindingMOAD, and PDBbind exports, then normalizes every source before training.
+
+### Structural normalization
+
+Every complex is reduced to one model-facing contract: a configurable heavy-atom pocket radius (10 Å by default); protein-only model pockets; a shared ligand/pocket coordinate origin; explicit rejection reasons for malformed, missing-3D, metal-containing, artifact, very-small, and low-MW records; and preserved source/provenance plus optional affinity metadata.
+
+### Leakage policy
+
+The split happens only after all sources are combined. MMseqs2 clusters the complete union of protein sequences, and a protein cluster is never divided across train/validation/test. This prevents the same family represented under different PDB IDs or source databases from crossing the split boundary. External benchmarks can be marked with a non-training split such as `casf2016_test`; the whole corresponding cluster is then excluded from train/validation/test allocation.
+
+### Building-block policy
+
+The production catalog must come from a real library export. The curation script removes duplicates, applies MW/Fsp3 filters, indexes every detected reactive handle, and enforces a minimum unique-catalog size unless `--allow-small` is explicitly used for development. Repository-generated placeholder molecules remain available only in explicit smoke mode.
+
+### Scientific interpretation
+
+PDBbind affinity metadata is preserved for downstream analysis but is not silently converted into a training objective for the current generator. Cross-source records retain provenance so later experiments can report source-specific performance instead of treating heterogeneous supervision as interchangeable.
+
+## 12. Known Thesis Boundaries
+
+The repository enforces data and chemistry constraints, but those constraints are not scientific evidence by themselves. A valid RDKit product is not evidence of binding, a docking score is not experimental affinity, and a family-level split is not proof of biological generalization. Reported results must include the held-out population, curation rules, split policy, and evaluation tool/version.
+
+## 13. License
 
 MIT — see [LICENSE](LICENSE).

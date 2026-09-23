@@ -13,6 +13,8 @@ dataset and is explicitly marked as synthetic in each sample.
 from __future__ import annotations
 
 import glob
+import hashlib
+import json
 import logging
 import math
 import os
@@ -63,6 +65,7 @@ class CrossDockedDataset(InMemoryDataset):
         pre_transform=None,
         pre_filter=None,
         force_rebuild: bool = False,
+        split_manifest_path: Optional[str] = None,
     ):
         if split not in ("train", "val", "test"):
             raise ValueError(f"split must be train/val/test, got '{split}'")
@@ -74,6 +77,8 @@ class CrossDockedDataset(InMemoryDataset):
         self.synthetic_fallback = bool(synthetic_fallback)
         self.force_rebuild = bool(force_rebuild)
         self.num_synthetic = int(num_synthetic)
+        self.split_manifest_path = str(split_manifest_path) if split_manifest_path else None
+        self._split_assignments = self._load_split_assignments()
 
         os.makedirs(self.root_dir, exist_ok=True)
         self.pocket_files = sorted(
@@ -116,8 +121,12 @@ class CrossDockedDataset(InMemoryDataset):
     def processed_file_names(self) -> List[str]:
         mode = "synthetic" if self.use_synthetic else "real"
         catalog_key = len(self.catalog) if self.catalog is not None else 0
+        manifest_key = 0
+        if self.split_manifest_path and os.path.exists(self.split_manifest_path):
+            with open(self.split_manifest_path, "rb") as handle:
+                manifest_key = hashlib.sha1(handle.read()).hexdigest()[:10]
         return [
-            f"{self.split}_{mode}_n{self.num_synthetic}_s{self.seed}_k{catalog_key}.pt"
+            f"{self.split}_{mode}_n{self.num_synthetic}_s{self.seed}_k{catalog_key}_m{manifest_key}.pt"
         ]
 
     def download(self):
@@ -152,13 +161,40 @@ class CrossDockedDataset(InMemoryDataset):
     # ------------------------------------------------------------------
     # Splitting
     # ------------------------------------------------------------------
+    def _load_split_assignments(self) -> Optional[Dict[str, str]]:
+        if not self.split_manifest_path:
+            return None
+        if not os.path.exists(self.split_manifest_path):
+            raise FileNotFoundError(
+                f"Configured split manifest does not exist: {self.split_manifest_path}"
+            )
+        with open(self.split_manifest_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        assignments = payload.get("assignments")
+        if not isinstance(assignments, dict) or not assignments:
+            raise ValueError(
+                f"Split manifest {self.split_manifest_path} has no assignments"
+            )
+        return {str(k): str(v) for k, v in assignments.items()}
+
     def _belongs_to_split(self, pocket_path: str) -> bool:
-        """Stable 80/10/10 split with no cross-split duplication."""
-        key = os.path.basename(pocket_path).encode("utf-8")
+        """Use global family-cluster assignment when a manifest is supplied."""
+        complex_id = os.path.basename(pocket_path)
+        if complex_id.endswith("_pocket.pdb"):
+            complex_id = complex_id[:-len("_pocket.pdb")]
+        if self._split_assignments is not None:
+            assigned = self._split_assignments.get(complex_id)
+            if assigned is None:
+                raise ValueError(
+                    f"Complex {complex_id} is absent from split manifest "
+                    f"{self.split_manifest_path}"
+                )
+            return assigned == self.split
+
+        # Backwards-compatible local split for legacy CrossDocked-only runs.
+        key = complex_id.encode("utf-8")
         bucket = zlib.crc32(key) % 1000
-        assigned = (
-            "train" if bucket < 800 else "val" if bucket < 900 else "test"
-        )
+        assigned = "train" if bucket < 800 else "val" if bucket < 900 else "test"
         return assigned == self.split
 
     # ------------------------------------------------------------------

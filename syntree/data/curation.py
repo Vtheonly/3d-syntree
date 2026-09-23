@@ -173,7 +173,7 @@ def standardize_pocket(
             line = atom["line"]
             line = f"{line[:6]}{serial:5d}{line[11:30]}{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
             handle.write(line + "\n")
-        handle.write("END\\n")
+        handle.write("END\n")
 
     pocket_xyz = [
         (a["x"] - shift[0], a["y"] - shift[1], a["z"] - shift[2])
@@ -209,6 +209,16 @@ def load_first_ligand(ligand_sdf: str) -> Chem.Mol:
 
 def ligand_quality_flags(ligand: Chem.Mol) -> List[str]:
     flags: List[str] = []
+    if ligand.GetNumAtoms():
+        residue_info = ligand.GetAtomWithIdx(0).GetPDBResidueInfo()
+        if residue_info is not None:
+            residue_name = residue_info.GetResidueName().strip().upper()
+            if residue_name in ARTIFACT_RESNAMES:
+                flags.append("crystallization_artifact")
+    for prop_name in ("RESNAME", "PDB_RESNAME"):
+        if ligand.HasProp(prop_name):
+            if ligand.GetProp(prop_name).strip().upper() in ARTIFACT_RESNAMES:
+                flags.append("crystallization_artifact")
     if ligand.GetNumConformers() == 0:
         flags.append("missing_3d_conformer")
     heavy = sum(1 for atom in ligand.GetAtoms() if atom.GetAtomicNum() > 1)
@@ -225,7 +235,7 @@ def ligand_quality_flags(ligand: Chem.Mol) -> List[str]:
         flags.append("metal_containing")
     if fsp3 == 0.0 and heavy >= 8:
         flags.append("fully_aromatic")
-    return flags
+    return sorted(set(flags))
 
 
 def write_jsonl(records: Iterable[CuratedComplexRecord], path: str) -> str:

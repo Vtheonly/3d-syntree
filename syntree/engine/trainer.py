@@ -113,6 +113,7 @@ class ResilientTrainer:
                 catalog=self.catalog,
                 num_synthetic=int(data_cfg.get("synthetic_samples", 100)),
                 synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
+                split_manifest_path=data_cfg.get("split_manifest_path"),
             )
             self.val_dataset = CrossDockedDataset(
                 data_cfg["data_dir"],
@@ -120,6 +121,7 @@ class ResilientTrainer:
                 catalog=self.catalog,
                 num_synthetic=max(8, int(self.dataset.num_synthetic * val_fraction)),
                 synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
+                split_manifest_path=data_cfg.get("split_manifest_path"),
             )
 
         # Mixed-precision flags (needed by the auto-scale probe below).

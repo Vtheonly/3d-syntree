@@ -14,10 +14,10 @@
     "private": true
   },
   "data": {
-    "dataset_name": "crossdocked2020",
-    "data_dir": "./data/crossdocked",
+    "dataset_name": "unified_multisource",
+    "data_dir": "./data/unified/pairs",
     "synthon_catalog_path": "./data/enamine_3d_subset.parquet",
-    "max_pocket_distance": 8,
+    "max_pocket_distance": 10,
     "max_steps_per_molecule": 3,
     "batch_size": 16,
     "accumulate_grad_batches": 2,
@@ -25,7 +25,12 @@
     "synthetic_fallback": false,
     "synthetic_samples": 100,
     "trajectory_dataset_path": null,
-    "terminal_cap_min_mw": 250.0
+    "terminal_cap_min_mw": 250,
+    "split_manifest_path": "./data/unified/split_manifest.json",
+    "require_real_data": true,
+    "curated_manifest_path": "./data/unified/curated_manifest.jsonl",
+    "min_protein_sequence_identity": 0.3,
+    "protein_sequence_coverage": 0.8
   },
   "model": {
     "hidden_dim": 128,
@@ -70,11 +75,11 @@
     "value_coef": 0.5,
     "entropy_coef": 0.01,
     "learning_rate": 0.00001,
-    "max_grad_norm": 1.0,
-    "temperature": 1.0,
+    "max_grad_norm": 1,
+    "temperature": 1,
     "checkpoint_every": 16,
     "reward": {
-      "docking_weight": 1.0,
+      "docking_weight": 1,
       "clash_weight": 0.25,
       "fsp3_weight": 0.15,
       "qed_weight": 0.15,
@@ -88,5 +93,9 @@
     "run_posebusters": true,
     "run_aizynthfinder": true,
     "aizynthfinder_config": null
+  },
+  "catalog": {
+    "min_fsp3": 0.4,
+    "max_mw": 220
   }
 }

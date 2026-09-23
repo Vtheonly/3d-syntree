@@ -221,50 +221,122 @@ def try_download_crossdocked(output_dir: str, data_subdir: str = "crossdocked") 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="3D-SynTree asset downloader")
-    parser.add_argument("--target-dataset", type=str, default="crossdocked2020")
-    parser.add_argument("--synthon-subset", type=str, default="3d-diversity-15k")
+    parser = argparse.ArgumentParser(description="3D-SynTree production asset staging")
+    parser.add_argument("--target-dataset", type=str, default="unified_multisource")
+    parser.add_argument("--synthon-subset", type=str, default="real-building-block-export")
     parser.add_argument("--output-dir", type=str, default="./data")
-    parser.add_argument("--catalog-copies", type=int, default=40,
-                        help="replication factor of the base synthon set for "
-                             "the offline catalog")
+    parser.add_argument("--catalog-input", type=str, default=None,
+                        help="real SDF/CSV building-block export to curate")
+    parser.add_argument("--structure-manifest", type=str, default=None,
+                        help="JSONL manifest containing complexes from all sources")
+    parser.add_argument("--offline-smoke", action="store_true",
+                        help="explicitly build the tiny synthetic smoke bundle")
     parser.add_argument("--skip-download", action="store_true",
-                        help="always use the offline synthetic fallback")
+                        help="do not attempt public CrossDocked retrieval")
     args = parser.parse_args()
 
     print(f"[assets] target dataset: {args.target_dataset}")
     print(f"[assets] synthon subset: {args.synthon_subset}")
 
-    # 1. Synthon catalog (synthetic fallback is always available offline).
     catalog_path = os.path.join(args.output_dir, "enamine_3d_subset.parquet")
-    if not os.path.exists(catalog_path):
-        print("[assets] building offline synthon catalog (RDKit-verified) ...")
-        build_synthetic_catalog(args.output_dir, num_copies=args.catalog_copies)
-    else:
-        print(f"[assets] catalog already present: {catalog_path}")
-
-    # 2. Protein pockets.
-    downloaded = False
-    if not args.skip_download:
-        downloaded = try_download_crossdocked(args.output_dir)
-    pocket_dir = os.path.join(args.output_dir, "crossdocked")
-    has_pockets = any(f.endswith("_pocket.pdb") for f in os.listdir(pocket_dir)) \
-        if os.path.isdir(pocket_dir) else False
-    if not downloaded and not has_pockets:
-        print("[assets] writing synthetic sample pocket ...")
+    if args.offline_smoke:
+        print("[assets] OFFLINE SMOKE MODE: building deterministic toy assets only")
+        build_synthetic_catalog(args.output_dir, num_copies=1)
         build_sample_pockets(args.output_dir)
+    else:
+        if args.catalog_input:
+            import subprocess
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(os.path.dirname(__file__), "build_synthon_catalog.py"),
+                    "--input", args.catalog_input,
+                    "--output", catalog_path,
+                ],
+                check=False,
+            )
+            if result.returncode != 0:
+                return result.returncode
+        elif not os.path.exists(catalog_path):
+            print(
+                "[assets] production synthon catalog is missing. Provide "
+                "--catalog-input with a real vendor/library export; the repository "
+                "will not fabricate an Enamine-sized catalog.",
+                file=sys.stderr,
+            )
+            return 2
 
-    # 3. Manifest for downstream consumers.
+        if args.structure_manifest:
+            import subprocess
+            unified_dir = os.path.join(args.output_dir, "unified")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(os.path.dirname(__file__), "prepare_multidataset.py"),
+                    "--input-manifest", args.structure_manifest,
+                    "--output-dir", unified_dir,
+                ],
+                check=False,
+            )
+            if result.returncode != 0:
+                return result.returncode
+
+        if args.target_dataset == "crossdocked2020" and not args.skip_download:
+            downloaded = try_download_crossdocked(args.output_dir)
+            if not downloaded:
+                print(
+                    "[assets] CrossDocked retrieval failed. No synthetic fallback is "
+                    "performed in production mode.",
+                    file=sys.stderr,
+                )
+                return 2
+
+        expected_data_dir = (
+            os.path.join(args.output_dir, "unified", "pairs")
+            if args.target_dataset == "unified_multisource"
+            else os.path.join(args.output_dir, "crossdocked")
+        )
+        if not os.path.isdir(expected_data_dir):
+            print(
+                f"[assets] expected production data directory is missing: {expected_data_dir}",
+                file=sys.stderr,
+            )
+            if args.target_dataset == "unified_multisource":
+                print(
+                    "[assets] prepare all source complexes into one JSONL manifest and "
+                    "pass it with --structure-manifest.",
+                    file=sys.stderr,
+                )
+            return 2
+
+        print(f"[assets] production assets verified at {expected_data_dir}")
+
     manifest = {
+        "version": 2,
+        "mode": "offline_smoke" if args.offline_smoke else "production",
         "target_dataset": args.target_dataset,
         "synthon_subset": args.synthon_subset,
         "catalog_path": catalog_path,
-        "data_dir": pocket_dir,
-        "offline_fallback_used": not downloaded,
+        "data_dir": (
+            os.path.join(args.output_dir, "unified", "pairs")
+            if args.target_dataset == "unified_multisource"
+            else os.path.join(args.output_dir, "crossdocked")
+        ),
+        "curated_manifest_path": (
+            os.path.join(args.output_dir, "unified", "curated_manifest.jsonl")
+            if args.target_dataset == "unified_multisource"
+            else None
+        ),
+        "split_manifest_path": (
+            os.path.join(args.output_dir, "unified", "split_manifest.json")
+            if args.target_dataset == "unified_multisource"
+            else None
+        ),
     }
     manifest_path = os.path.join(args.output_dir, "assets_manifest.json")
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
+    os.makedirs(args.output_dir, exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
     print(f"[assets] manifest written: {manifest_path}")
     return 0
 
