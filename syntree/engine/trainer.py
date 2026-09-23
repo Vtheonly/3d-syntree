@@ -215,7 +215,13 @@ class ResilientTrainer:
                 num_workers=0, collate_fn=self._collate,
             )
             batch = next(iter(loader)).to(self.device)
-            target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
+            target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
+            stop_index = len(self.catalog)
+            target_action = torch.where(
+                batch.target_stop.bool(),
+                torch.full_like(target, stop_index),
+                target,
+            )
             synthon_mask, reaction_mask = self._build_training_masks(batch)
             with torch.autocast(device_type="cuda", enabled=self.use_amp):
                 preds = self.model(
@@ -226,7 +232,7 @@ class ResilientTrainer:
                 )
                 loss = (
                     self.criterion(preds["reaction_logits"], batch.target_reaction_family_idx)
-                    + self.criterion(preds["synthon_logits"], target)
+                    + self.criterion(preds["synthon_logits"], target_action)
                     + 0.5 * ContinuousTorsionHead.loss_fn(
                         preds["torsion_mu"], preds["torsion_kappa"],
                         batch.target_dihedral,
