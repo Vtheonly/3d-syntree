@@ -13,7 +13,6 @@ dataset and is explicitly marked as synthetic in each sample.
 from __future__ import annotations
 
 import glob
-import hashlib
 import json
 import logging
 import math
@@ -123,6 +122,7 @@ class CrossDockedDataset(InMemoryDataset):
         catalog_key = len(self.catalog) if self.catalog is not None else 0
         manifest_key = 0
         if self.split_manifest_path and os.path.exists(self.split_manifest_path):
+            import hashlib
             with open(self.split_manifest_path, "rb") as handle:
                 manifest_key = hashlib.sha1(handle.read()).hexdigest()[:10]
         return [
@@ -178,7 +178,7 @@ class CrossDockedDataset(InMemoryDataset):
         return {str(k): str(v) for k, v in assignments.items()}
 
     def _belongs_to_split(self, pocket_path: str) -> bool:
-        """Use global family-cluster assignment when a manifest is supplied."""
+        """Use a global cluster-safe assignment when supplied."""
         complex_id = os.path.basename(pocket_path)
         if complex_id.endswith("_pocket.pdb"):
             complex_id = complex_id[:-len("_pocket.pdb")]
@@ -191,7 +191,7 @@ class CrossDockedDataset(InMemoryDataset):
                 )
             return assigned == self.split
 
-        # Backwards-compatible local split for legacy CrossDocked-only runs.
+        # Backwards-compatible deterministic CrossDocked-only split.
         key = complex_id.encode("utf-8")
         bucket = zlib.crc32(key) % 1000
         assigned = "train" if bucket < 800 else "val" if bucket < 900 else "test"
