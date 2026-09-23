@@ -23,7 +23,9 @@
     "accumulate_grad_batches": 2,
     "val_fraction": 0.1,
     "synthetic_fallback": false,
-    "synthetic_samples": 65536
+    "synthetic_samples": 65536,
+    "trajectory_dataset_path": null,
+    "terminal_cap_min_mw": 250.0
   },
   "model": {
     "hidden_dim": 128,
