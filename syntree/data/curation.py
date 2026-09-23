@@ -14,6 +14,7 @@ import os
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from rdkit import Chem
+from rdkit.Geometry import Point3D
 from rdkit.Chem import Descriptors, Lipinski
 
 
@@ -259,7 +260,7 @@ def recenter_ligand(ligand: Chem.Mol, center: Sequence[float]) -> Chem.Mol:
         point = conf.GetAtomPosition(idx)
         conf.SetAtomPosition(
             idx,
-            (
+            Point3D(
                 float(point.x - center[0]),
                 float(point.y - center[1]),
                 float(point.z - center[2]),
