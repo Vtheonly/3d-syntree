@@ -84,6 +84,11 @@ _BIFUNCTIONAL_SYNTHONS = [
     ("C#CCN", "alkyne"),
     ("N=[N+]=[N-]CCO", "azide"),
     ("N=[N+]=[N-]CC#C", "azide"),
+    ("Brc1ccc(B(O)O)cc1", "aryl_halide"),     # aryl halide + boronic acid
+    ("Brc1ccc(N)cc1", "aryl_halide"),         # aryl halide + amine
+    ("Brc1ccc(O)cc1", "aryl_halide"),         # aryl halide + alcohol
+    ("Brc1ccc(C(=O)O)cc1", "aryl_halide"),    # aryl halide + carboxylic acid
+    ("OB(O)c1ccc(N)cc1", "boronic_acid"),     # boronic acid + amine
 ]
 
 # --- aryl coupling partners (Fsp3-exempt: aromatic by chemistry) ----------
