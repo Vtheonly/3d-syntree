@@ -172,14 +172,16 @@ class SBDDGenerator:
                 handle_features=handle_feat,
             )
 
+            require_remaining_handle = step < steps
             reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
                 device=self.device,
                 core_handle=target_handle.handle_type,
+                require_remaining_handle=require_remaining_handle,
             ).unsqueeze(0)
             synthon_masks = self.catalog.get_reaction_family_masks(
                 device=self.device,
                 core_handle=target_handle.handle_type,
-                require_remaining_handle=(step < steps),
+                require_remaining_handle=require_remaining_handle,
             ).unsqueeze(0)
 
             decision = self.model.act(
@@ -320,7 +322,7 @@ class SBDDGenerator:
         summary: List[Dict] = []
         for i in range(num_ligands):
             t0 = time.time()
-            seed = int(self.seed_rng.integers(0, len(self.catalog)))
+            seed = self._pick_seed_synthon()
             res = self.generate_ligand(pocket_pdb_path, seed_synthon_idx=seed)
 
             sdf_path = os.path.join(out, f"ligand_{i:03d}.sdf")
