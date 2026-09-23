@@ -20,7 +20,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Optional
+from typing import Dict, Optional
 
 import torch
 
@@ -203,6 +203,21 @@ def main(argv=None) -> int:
         reward_fn = ThreeDReward(rl_cfg.get("reward", {}))
         finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
 
+        # The MDP environment (single source of chemistry truth) drives the
+        # rollouts; the generator's engines are reused so there is exactly
+        # one ReactionEngine / ConformerEngine / catalog instance.
+        from syntree.engine.environment import MolecularAssemblyEnv
+        from syntree.engine.rl import RolloutBuffer, collect_episode
+
+        assembly_env = MolecularAssemblyEnv(
+            rxn_engine=generator.rxn_engine,
+            conformer_engine=generator.conformer_engine,
+            catalog=generator.catalog,
+            validator=generator.validator,
+            config=config,
+            device=device,
+        )
+
         pocket_paths = sorted(
             os.path.join(data_dir, name)
             for name in os.listdir(data_dir)
@@ -215,38 +230,68 @@ def main(argv=None) -> int:
         episodes = int(rl_cfg.get("episodes", 256))
         temperature = float(rl_cfg.get("temperature", 1.0))
         checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
+        # Rollout buffering (bug report 2, Flaw 4): accumulate episodes
+        # across DIFFERENT pockets before every PPO update; advantages are
+        # GAE-estimated and normalized over the whole buffer, and the
+        # update runs on shuffled minibatches - never on a single
+        # 2-3-transition episode.
+        rollout_episodes = max(1, int(rl_cfg.get("rollout_episodes", 32)))
+        minibatch_size = max(1, int(rl_cfg.get("minibatch_size", 32)))
         history = []
+        buffer = RolloutBuffer(
+            gamma=finetuner.gamma,
+            gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
+        )
+        last_stats: Dict[str, float] = {}
         for episode in range(rl_start_episode, episodes):
             pocket = pocket_paths[episode % len(pocket_paths)]
             model.eval()
-            result = generator.generate_ligand(
+            transitions, reward_details = collect_episode(
+                assembly_env,
+                model,
+                generator.catalog,
                 pocket_pdb_path=pocket,
+                terminal_reward_fn=lambda env: reward_fn.compute(
+                    env.current_mol,
+                    pocket,
+                    clash_score=float(env.total_clash),
+                    contact_energy=float(env.contact_energy()),
+                ),
                 sample=True,
                 temperature=temperature,
-                return_trace=True,
             )
-            reward_details = reward_fn.compute(
-                result["rdkit_mol"],
-                pocket,
-                clash_score=float(result.get("clash_score", 0.0)),
-                contact_energy=float(result.get("contact_energy", 0.0)),
-            )
+            buffer.add_episode(transitions)
             model.train()
-            stats = finetuner.update_episode(
-                result.get("policy_trace") or [],
-                reward_details["reward"],
-            )
+
+            if (
+                buffer.num_episodes >= rollout_episodes
+                or episode == episodes - 1
+            ):
+                last_stats = finetuner.update_rollout(
+                    buffer, minibatch_size=minibatch_size
+                )
+                buffer = RolloutBuffer(
+                    gamma=finetuner.gamma,
+                    gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
+                )
             model.eval()
             entry = {
                 "episode": episode,
                 "pocket": os.path.basename(pocket),
                 **reward_details,
-                **stats,
+                "buffered_episodes": buffer.num_episodes,
+                **{
+                    k: v
+                    for k, v in last_stats.items()
+                    if isinstance(v, (int, float))
+                },
             }
             history.append(entry)
             print(
                 f"[rl] episode {episode:04d} | reward={entry['reward']:.4f} | "
-                f"loss={entry['loss']:.4f} | steps={entry['steps']:.0f}"
+                f"transitions={last_stats.get('transitions', 0)} | "
+                f"loss={entry.get('loss', 0.0):.4f} | "
+                f"clip={entry.get('clip_fraction', 0.0):.3f}"
             )
             if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
                 rl_manager.save_checkpoint(

@@ -15,8 +15,9 @@ of substituting a fabricated score.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -25,6 +26,8 @@ from rdkit import Chem
 from rdkit.Chem import QED
 
 from syntree.engine.evaluator import EvaluationPipeline
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -170,6 +173,95 @@ class PPOTransition:
     action_idx: int
     old_log_prob: torch.Tensor
     old_value: torch.Tensor
+
+
+@dataclass
+class RolloutTransition(PPOTransition):
+    """A PPO transition plus its environment feedback.
+
+    ``reward`` is the reward received *after* taking the action (dense
+    physics shaping during growth; the terminal reward is added to the
+    final transition of the episode).
+    """
+
+    reward: float = 0.0
+    done: bool = False
+
+
+class RolloutBuffer:
+    """PPO rollout buffer across multiple episodes (bug report 2, Flaw 4).
+
+    The old loop updated the policy on every single 2-3 transition episode,
+    which destabilises PPO's importance-sampling ratio and causes
+    catastrophic forgetting. This buffer accumulates ``rollout_episodes``
+    episodes (32-64 in production) across *different* pockets; advantages
+    are then estimated with Generalized Advantage Estimation and normalized
+    across the entire buffer before any gradient step.
+    """
+
+    def __init__(self, gamma: float = 0.99, gae_lambda: float = 0.95):
+        self.gamma = float(gamma)
+        self.gae_lambda = float(gae_lambda)
+        self.episodes: List[List[RolloutTransition]] = []
+
+    # ------------------------------------------------------------------
+    def add_episode(self, transitions: Sequence[RolloutTransition]) -> None:
+        if transitions:
+            self.episodes.append(list(transitions))
+
+    @property
+    def num_episodes(self) -> int:
+        return len(self.episodes)
+
+    def __len__(self) -> int:
+        return sum(len(ep) for ep in self.episodes)
+
+    # ------------------------------------------------------------------
+    def compute_gae(
+        self, device: Optional[torch.device] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Generalized Advantage Estimation over the whole buffer.
+
+        For each episode with rewards ``r_1..r_T`` and values ``V_1..V_T``:
+
+            delta_t = r_t + gamma * V_{t+1} - V_t      (V_{T+1} = 0)
+            A_t     = delta_t + gamma * lambda * A_{t+1}
+            return_t = A_t + V_t
+
+        Returns:
+            ``(advantages, returns)`` flat tensors of length
+            ``len(buffer)`` in episode order.
+        """
+        advantages: List[float] = []
+        returns: List[float] = []
+        for episode in self.episodes:
+            n = len(episode)
+            values = [float(t.old_value.detach().float().item()) for t in episode]
+            rewards = [float(t.reward) for t in episode]
+            # Backward GAE recursion.
+            adv_t = 0.0
+            ep_adv = [0.0] * n
+            ep_ret = [0.0] * n
+            for t in range(n - 1, -1, -1):
+                next_value = values[t + 1] if t + 1 < n else 0.0
+                # Bootstrapping uses V(s_{t+1}); for terminal transitions
+                # (done=True) the successor value is 0 by definition.
+                if t + 1 < n and not episode[t].done:
+                    next_value = values[t + 1]
+                elif episode[t].done:
+                    next_value = 0.0
+                delta = rewards[t] + self.gamma * next_value - values[t]
+                adv_t = delta + self.gamma * self.gae_lambda * adv_t
+                ep_adv[t] = adv_t
+            for t in range(n):
+                ep_ret[t] = ep_adv[t] + values[t]
+            advantages.extend(ep_adv)
+            returns.extend(ep_ret)
+        dev = device or torch.device("cpu")
+        return (
+            torch.tensor(advantages, dtype=torch.float32, device=dev),
+            torch.tensor(returns, dtype=torch.float32, device=dev),
+        )
 
 
 class PPOFineTuner:
@@ -334,5 +426,210 @@ class PPOFineTuner:
             "policy_entropy": last_entropy,
         }
 
+    # ------------------------------------------------------------------
+    # Buffered PPO (bug report 2, Flaw 4)
+    # ------------------------------------------------------------------
+    def update_rollout(
+        self,
+        buffer: RolloutBuffer,
+        minibatch_size: int = 32,
+    ) -> Dict[str, float]:
+        """PPO update over a multi-episode rollout buffer.
 
-__all__ = ["ThreeDRewardConfig", "ThreeDReward", "PPOTransition", "PPOFineTuner"]
+        Advantages are computed once with GAE over the whole buffer,
+        normalized across ALL transitions (never per micro-batch), and the
+        policy is then updated for ``ppo_epochs`` over shuffled minibatches
+        of ``minibatch_size`` transitions - the standard, numerically stable
+        PPO loop instead of the old 2-3-transition micro-batch descent.
+
+        Returns summary statistics (losses, entropy, clip fractions).
+        """
+        if len(buffer) == 0:
+            return {
+                "loss": 0.0,
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "entropy": 0.0,
+                "mean_advantage": 0.0,
+                "clip_fraction": 0.0,
+                "transitions": 0,
+                "episodes": 0,
+            }
+
+        advantages, returns = buffer.compute_gae(device=self.device)
+        # Advantage normalization across the ENTIRE buffer.
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (
+                advantages.std(unbiased=False) + 1e-8
+            )
+
+        flat: List[RolloutTransition] = [
+            t for episode in buffer.episodes for t in episode
+        ]
+        n = len(flat)
+        minibatch_size = max(1, min(int(minibatch_size), n))
+
+        last = {
+            "loss": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "clip_fraction": 0.0,
+        }
+        for _ in range(self.ppo_epochs):
+            perm = torch.randperm(n)
+            epoch_losses, epoch_policy, epoch_value = [], [], []
+            epoch_entropy, epoch_clip = [], []
+            for start in range(0, n, minibatch_size):
+                idx = perm[start : start + minibatch_size]
+                policy_terms, value_terms, entropy_terms, clip_terms = (
+                    [],
+                    [],
+                    [],
+                    [],
+                )
+                for i in idx.tolist():
+                    transition = flat[i]
+                    new_log_prob, new_value, entropy = self._log_prob_and_value(
+                        transition
+                    )
+                    old_log_prob = transition.old_log_prob.to(self.device)
+                    ratio = torch.exp(new_log_prob - old_log_prob)
+                    adv = advantages[i]
+                    unclipped = ratio * adv
+                    clipped = torch.clamp(
+                        ratio,
+                        1.0 - self.clip_epsilon,
+                        1.0 + self.clip_epsilon,
+                    ) * adv
+                    policy_terms.append(-torch.minimum(unclipped, clipped))
+                    clip_terms.append(
+                        (torch.abs(ratio - 1.0) > self.clip_epsilon).float()
+                    )
+                    value_terms.append(F.mse_loss(new_value, returns[i]))
+                    entropy_terms.append(entropy)
+
+                policy_loss = torch.stack(policy_terms).mean()
+                value_loss = torch.stack(value_terms).mean()
+                entropy = torch.stack(entropy_terms).mean()
+                loss = (
+                    policy_loss
+                    + self.value_coef * value_loss
+                    - self.entropy_coef * entropy
+                )
+
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
+                self.optimizer.step()
+
+                epoch_losses.append(float(loss.detach().item()))
+                epoch_policy.append(float(policy_loss.detach().item()))
+                epoch_value.append(float(value_loss.detach().item()))
+                epoch_entropy.append(float(entropy.detach().item()))
+                epoch_clip.append(
+                    float(torch.stack(clip_terms).mean().item())
+                )
+
+            last = {
+                "loss": sum(epoch_losses) / max(1, len(epoch_losses)),
+                "policy_loss": sum(epoch_policy) / max(1, len(epoch_policy)),
+                "value_loss": sum(epoch_value) / max(1, len(epoch_value)),
+                "entropy": sum(epoch_entropy) / max(1, len(epoch_entropy)),
+                "clip_fraction": sum(epoch_clip) / max(1, len(epoch_clip)),
+            }
+
+        return {
+            **last,
+            "mean_advantage": float(advantages.mean().item()),
+            "transitions": n,
+            "episodes": buffer.num_episodes,
+        }
+
+
+def collect_episode(
+    env,
+    model: torch.nn.Module,
+    catalog,
+    pocket_pdb_path: Optional[str] = None,
+    terminal_reward_fn=None,
+    sample: bool = True,
+    temperature: float = 1.0,
+    seed_synthon_idx: Optional[int] = None,
+    max_steps: Optional[int] = None,
+) -> Tuple[List[RolloutTransition], Dict]:
+    """Roll out one episode of the assembly MDP under the current policy.
+
+    Drives :class:`~syntree.engine.environment.MolecularAssemblyEnv` with
+    ``model.act`` and records PPO transitions enriched with the per-step
+    dense physics reward. The terminal reward (docking/QED/contact
+    components) is computed by ``terminal_reward_fn(env) -> dict`` and added
+    to the final transition, exactly as required by GAE bootstrapping.
+
+    Returns:
+        ``(transitions, reward_details)``.
+    """
+    from syntree.engine.environment import AssemblyAction
+
+    observation = env.reset(
+        pocket_pdb_path=pocket_pdb_path,
+        seed_synthon_idx=seed_synthon_idx,
+        max_steps=max_steps,
+    )
+    transitions: List[RolloutTransition] = []
+    reward_details: Dict = {}
+    while not env.done:
+        reaction_mask, synthon_masks, has_handle = env.legal_action_masks()
+        if not has_handle or not bool((reaction_mask > -1e8).any().item()):
+            break
+        decision = model.act(
+            observation,
+            catalog.embeddings,
+            reaction_compatibility_mask=reaction_mask,
+            synthon_masks_by_reaction=synthon_masks,
+            sample=sample,
+            temperature=temperature,
+        )
+        transition = RolloutTransition(
+            state=observation.clone(),
+            reaction_mask=reaction_mask.detach().clone(),
+            synthon_masks=synthon_masks.detach().clone(),
+            family_idx=int(decision["reaction_family_idx"][0].item()),
+            action_idx=int(decision["action_idx"][0].item()),
+            old_log_prob=decision["joint_log_prob"][0].detach(),
+            old_value=decision["state_value"][0].detach(),
+        )
+        action = AssemblyAction(
+            reaction_family_idx=int(decision["reaction_family_idx"][0].item()),
+            synthon_idx=int(decision["synthon_idx"][0].item()),
+            dihedral_rad=float(decision["dihedral"][0].item()),
+            action_idx=int(decision["action_idx"][0].item()),
+        )
+        observation, step_reward, done, info = env.step(action)
+        transition.reward = float(step_reward)
+        transition.done = bool(done)
+        transitions.append(transition)
+
+    if terminal_reward_fn is not None:
+        try:
+            reward_details = terminal_reward_fn(env)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("terminal reward failed (%s); using zero.", exc)
+            reward_details = {"reward": 0.0}
+        terminal = float(reward_details.get("reward", 0.0))
+        if transitions:
+            transitions[-1].reward += terminal
+    return transitions, reward_details
+
+
+__all__ = [
+    "ThreeDRewardConfig",
+    "ThreeDReward",
+    "PPOTransition",
+    "RolloutTransition",
+    "RolloutBuffer",
+    "PPOFineTuner",
+    "collect_episode",
+]
