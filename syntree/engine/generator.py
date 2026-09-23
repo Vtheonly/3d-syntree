@@ -27,7 +27,12 @@ from torch_geometric.data import Data
 
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.conformer import ConformerEngine, vdw_radius
-from syntree.chemistry.reactions import ReactionEngine
+from syntree.chemistry.reactions import (
+    REACTION_FAMILY_MEMBERS,
+    REACTION_FAMILY_NAMES,
+    REACTION_SIDES,
+    ReactionEngine,
+)
 from syntree.chemistry.validator import ChemicalValidator
 from syntree.data.featurizer import MolecularFeaturizer
 
@@ -76,7 +81,7 @@ class SBDDGenerator:
         seed_synthon_idx: Optional[int] = None,
         sample: bool = False,
         temperature: float = 1.0,
-        optimize_torsion_grid: bool = True,
+        optimize_torsion_grid: bool = False,
     ) -> Dict:
         """Generate one ligand inside the pocket at ``pocket_pdb_path``.
 
@@ -86,8 +91,8 @@ class SBDDGenerator:
                 valid handle-bearing synthon when None).
             sample: sample the synthon choice instead of argmax.
             temperature: softmax temperature when sampling.
-            optimize_torsion_grid: after applying the predicted dihedral,
-                run a clash-minimising grid refinement around the junction.
+            optimize_torsion_grid: optional diagnostic refinement. Disabled by
+                default so inference does not overwrite the neural torsion prediction.
 
         Returns:
             Dict with ``rdkit_mol`` (3D, explicit H), ``recipe`` (list of
@@ -165,8 +170,11 @@ class SBDDGenerator:
                 handle_features=handle_feat,
             )
 
-            rxn_mask = self.catalog.get_reaction_mask(
-                chosen_rxn,
+            reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
+                device=self.device,
+                core_handle=target_handle.handle_type,
+            ).unsqueeze(0)
+            synthon_masks = self.catalog.get_reaction_family_masks(
                 device=self.device,
                 core_handle=target_handle.handle_type,
             ).unsqueeze(0)
@@ -174,24 +182,31 @@ class SBDDGenerator:
             decision = self.model.act(
                 batch_data,
                 self.catalog.embeddings.to(self.device),
-                rxn_mask,
+                reaction_compatibility_mask=reaction_mask,
+                synthon_masks_by_reaction=synthon_masks,
                 sample=sample,
                 temperature=temperature,
+            )
+            selected_family_idx = int(decision["reaction_family_idx"][0].item())
+            reaction_family = REACTION_FAMILY_NAMES[selected_family_idx]
+            chosen_rxn = self._preferred_reaction(
+                reaction_family, target_handle.handle_type
             )
             selected_synthon_idx = int(decision["synthon_idx"][0].item())
             dihedral_pred = float(decision["dihedral"][0].item())
 
-            # Guard: masked catalog entries may all be illegal for this
-            # reaction; retry with the complementary mask or skip.
-            if self.catalog.get_reaction_mask(
-                chosen_rxn, core_handle=target_handle.handle_type
-            )[selected_synthon_idx].item() < -1e8:
-                candidates = self.catalog.synthon_indices_for_handles(
-                    self._partner_handles(chosen_rxn, target_handle.handle_type)
-                )
-                if len(candidates) == 0:
+            # The family mask is the final chemistry guard. It is deterministic
+            # and comes from the same reaction grammar used by execution.
+            selected_mask = self.catalog.get_reaction_family_mask(
+                reaction_family,
+                device=self.device,
+                core_handle=target_handle.handle_type,
+            )
+            if selected_mask[selected_synthon_idx].item() < -1e8:
+                candidates = torch.nonzero(selected_mask > -1e8).view(-1)
+                if candidates.numel() == 0:
                     break
-                selected_synthon_idx = int(candidates[0])
+                selected_synthon_idx = int(candidates[0].item())
 
             synthon_mol = self.catalog.get_mol(selected_synthon_idx, explicit_hs=False)
 
@@ -242,6 +257,7 @@ class SBDDGenerator:
                     "step": step,
                     "action": "react",
                     "reaction": chosen_rxn,
+                    "reaction_family": reaction_family,
                     "handle": target_handle.handle_type,
                     "synthon_id": self.catalog.get_id(selected_synthon_idx),
                     "synthon_smiles": self.catalog.get_smiles(selected_synthon_idx),
@@ -405,10 +421,17 @@ class SBDDGenerator:
             return 0
         return int(self.seed_rng.choice(candidates))
 
-    def _partner_handles(self, reaction: str, core_handle: str) -> List[str]:
-        from syntree.chemistry.reactions import REACTION_PARTNER_HANDLES
-
-        return list(REACTION_PARTNER_HANDLES.get(core_handle, {}).get(reaction, ()))
+    @staticmethod
+    def _preferred_reaction(reaction_family: str, core_handle: str) -> str:
+        """Choose a concrete RDKit backend for a predicted reaction family."""
+        members = REACTION_FAMILY_MEMBERS.get(reaction_family, ())
+        for reaction in members:
+            if core_handle in REACTION_SIDES[reaction]:
+                return reaction
+        raise ValueError(
+            f"Reaction family {reaction_family!r} is incompatible with "
+            f"handle {core_handle!r}"
+        )
 
 
 __all__ = ["SBDDGenerator"]
