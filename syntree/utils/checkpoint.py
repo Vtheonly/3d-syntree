@@ -134,8 +134,9 @@ class CheckpointManager:
 
         completed = progress.get("completed_epochs")
         last_seq = progress.get("last_sequential_epoch")
+        history = progress.get("history", [])
 
-        if not isinstance(completed, list):
+        if not isinstance(completed, list) or not isinstance(history, list):
             return False, -1
         if any(
             not isinstance(epoch, int) or isinstance(epoch, bool)
