@@ -124,11 +124,13 @@ class SBDDGenerator:
         current_mol = self.conformer_engine.embed_product(current_mol)
         if current_mol is None:
             raise RuntimeError("Failed to embed the seed synthon in 3D.")
-        # Place the seed at the pocket's most spacious point (max-min
-        # distance to pocket atoms, searched on a coarse deterministic grid
-        # around the centroid). For real cavity pockets this lands the seed
-        # inside the void; the pocket cloud is centroid-centered.
-        self._place_seed_in_pocket(current_mol, pocket_coords_np)
+        # Place the seed at a contact-rich position near the pocket interface
+        # rather than at the point farthest from the protein.
+        self._place_seed_in_pocket(
+            current_mol,
+            pocket_coords_np,
+            pocket_vdw=pocket_vdw,
+        )
         current_mol = Chem.AddHs(current_mol, addCoords=True)
 
         recipe: List[Dict] = [
@@ -177,6 +179,7 @@ class SBDDGenerator:
             synthon_masks = self.catalog.get_reaction_family_masks(
                 device=self.device,
                 core_handle=target_handle.handle_type,
+                require_remaining_handle=(step < steps),
             ).unsqueeze(0)
 
             decision = self.model.act(
@@ -201,6 +204,7 @@ class SBDDGenerator:
                 reaction_family,
                 device=self.device,
                 core_handle=target_handle.handle_type,
+                require_remaining_handle=(step < steps),
             )
             if selected_mask[selected_synthon_idx].item() < -1e8:
                 candidates = torch.nonzero(selected_mask > -1e8).view(-1)
@@ -359,39 +363,64 @@ class SBDDGenerator:
     def _place_seed_in_pocket(
         mol: Chem.Mol,
         pocket_coords: np.ndarray,
+        pocket_vdw: Optional[np.ndarray] = None,
         search_radius: float = 4.0,
-        grid: int = 5,
+        grid: int = 9,
+        contact_distance: float = 3.2,
+        contact_width: float = 0.8,
     ) -> None:
-        """Translate the seed conformer to the pocket's most spacious point.
+        """Translate a seed to a contact-rich, clash-avoiding pocket position.
 
-        A coarse deterministic grid search around the pocket centroid
-        (origin in the centered frame) maximises the minimum atom-atom
-        distance between the ligand and the pocket. In real cavities this
-        drops the seed into the void; it degrades gracefully on degenerate
-        (toy) pockets.
+        Candidate translations are scored by a soft contact-shell objective
+        and a strong steric-overlap penalty. A 9-point grid plus local
+        refinement replaces the old distance-maximising placement.
         """
         if pocket_coords is None or len(pocket_coords) == 0 or mol.GetNumConformers() == 0:
             return
         from rdkit.Geometry import Point3D
 
         conf = mol.GetConformer()
-        pos = np.array(conf.GetPositions(), dtype=np.float64)
-        pos = pos - pos.mean(axis=0)  # center on origin first
+        pos = np.asarray(conf.GetPositions(), dtype=np.float64)
+        pos = pos - pos.mean(axis=0)
+        protein_vdw = (
+            np.asarray(pocket_vdw, dtype=np.float64)
+            if pocket_vdw is not None
+            else np.full(len(pocket_coords), 1.70, dtype=np.float64)
+        )
+        ligand_vdw = np.asarray(
+            [vdw_radius(atom.GetAtomicNum()) for atom in mol.GetAtoms()],
+            dtype=np.float64,
+        )
 
-        offsets = np.linspace(-search_radius, search_radius, grid)
-        best_offset = np.zeros(3)
-        best_min_dist = -1.0
-        for dx in offsets:
-            for dy in offsets:
-                for dz in offsets:
-                    shifted = pos + np.array([dx, dy, dz])
-                    dists = np.sqrt(
-                        ((shifted[:, None, :] - pocket_coords[None, :, :]) ** 2).sum(-1)
-                    )
-                    min_dist = dists.min()
-                    if min_dist > best_min_dist:
-                        best_min_dist = min_dist
-                        best_offset = np.array([dx, dy, dz])
+        def score(offset: np.ndarray) -> float:
+            shifted = pos + offset
+            dists = np.linalg.norm(
+                shifted[:, None, :] - pocket_coords[None, :, :], axis=-1
+            )
+            contacts = np.exp(
+                -0.5 * ((dists - contact_distance) / max(contact_width, 1e-3)) ** 2
+            ).sum()
+            vdw_sum = ligand_vdw[:, None] + protein_vdw[None, :]
+            overlap = np.maximum(0.0, vdw_sum * 0.90 - dists)
+            clash_penalty = float((overlap * overlap).sum())
+            return float(contacts - 25.0 * clash_penalty)
+
+        def search(center: np.ndarray, radius: float, points: int) -> np.ndarray:
+            offsets = np.linspace(-radius, radius, points)
+            best = np.zeros(3, dtype=np.float64)
+            best_score = -float("inf")
+            for dx in offsets:
+                for dy in offsets:
+                    for dz in offsets:
+                        candidate = center + np.array([dx, dy, dz])
+                        candidate_score = score(candidate)
+                        if candidate_score > best_score:
+                            best_score = candidate_score
+                            best = candidate
+            return best
+
+        best_offset = search(np.zeros(3, dtype=np.float64), search_radius, grid)
+        best_offset = search(best_offset, 1.0, 5)
 
         for i in range(mol.GetNumAtoms()):
             conf.SetAtomPosition(i, Point3D(*(pos[i] + best_offset)))
@@ -419,6 +448,11 @@ class SBDDGenerator:
                 )
         if not candidates:
             return 0
+        multifunctional = [
+            idx for idx in candidates if self.catalog.get_handle_count(idx) >= 2
+        ]
+        if multifunctional:
+            candidates = multifunctional
         return int(self.seed_rng.choice(candidates))
 
     @staticmethod
