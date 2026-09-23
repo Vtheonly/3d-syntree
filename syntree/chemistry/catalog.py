@@ -236,6 +236,7 @@ class SynthonCatalog:
         device: Optional[torch.device] = None,
         core_handle: Optional[str] = None,
         require_remaining_handle: bool = False,
+        allow_terminal: bool = True,
     ) -> torch.Tensor:
         """Return a [F] mask for reaction families legal for a core handle."""
         values = []
@@ -244,12 +245,12 @@ class SynthonCatalog:
                 core_handle in REACTION_SIDES[reaction]
                 for reaction in REACTION_FAMILY_MEMBERS[family]
             )
-            if legal and require_remaining_handle:
+            if legal and (require_remaining_handle or not allow_terminal):
                 family_mask = self.get_reaction_family_mask(
                     family,
                     core_handle=core_handle,
                     require_remaining_handle=True,
-                    allow_terminal=allow_terminal if 'allow_terminal' in locals() else True,
+                    allow_terminal=allow_terminal,
                 )
                 legal = bool(torch.any(family_mask > -1e8).item())
             values.append(0.0 if legal else -1e9)
