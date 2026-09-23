@@ -298,13 +298,15 @@ class SynTreePolicy(nn.Module):
 
         reaction_logits = out["reaction_logits"]
         if sample:
-            reaction_probs = torch.softmax(
-                reaction_logits / max(temperature, 1e-6), dim=-1
+            sampling_temperature = max(temperature, 1e-6)
+            reaction_log_probs_for_action = F.log_softmax(
+                reaction_logits / sampling_temperature, dim=-1
             )
             reaction_family_idx = torch.multinomial(
-                reaction_probs, 1
+                reaction_log_probs_for_action.exp(), 1
             ).squeeze(-1)
         else:
+            reaction_log_probs_for_action = F.log_softmax(reaction_logits, dim=-1)
             reaction_family_idx = reaction_logits.argmax(dim=-1)
 
         logits = out["synthon_logits"]
@@ -329,9 +331,15 @@ class SynTreePolicy(nn.Module):
             )
 
         if sample:
-            probs = torch.softmax(logits / max(temperature, 1e-6), dim=-1)
-            action_idx = torch.multinomial(probs, 1).squeeze(-1)
+            sampling_temperature = max(temperature, 1e-6)
+            action_log_probs_for_action = F.log_softmax(
+                logits / sampling_temperature, dim=-1
+            )
+            action_idx = torch.multinomial(
+                action_log_probs_for_action.exp(), 1
+            ).squeeze(-1)
         else:
+            action_log_probs_for_action = F.log_softmax(logits, dim=-1)
             action_idx = logits.argmax(dim=-1)
         stop = action_idx.eq(synthon_embeddings.size(0))
         synthon_idx = torch.where(
@@ -339,10 +347,10 @@ class SynTreePolicy(nn.Module):
             torch.full_like(action_idx, -1),
             action_idx,
         )
-        reaction_log_probs = out["reaction_log_probs"].gather(
+        reaction_log_probs = reaction_log_probs_for_action.gather(
             -1, reaction_family_idx.unsqueeze(-1)
         ).squeeze(-1)
-        action_log_probs = torch.log_softmax(logits, dim=-1).gather(
+        action_log_probs = action_log_probs_for_action.gather(
             -1, action_idx.unsqueeze(-1)
         ).squeeze(-1)
         joint_log_prob = torch.where(
