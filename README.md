@@ -216,11 +216,11 @@ pip install -e .
 ### Prepare thesis data
 
 ```bash
-python scripts/build_synthon_catalog.py \\\n    --input /path/to/real_building_blocks.sdf \\\n    --output ./data/enamine_3d_subset.parquet \\\n    --min-fsp3 0.40 \\\n    --max-mw 220 \\\n    --strict-min-size 50000
+python scripts/build_synthon_catalog.py --input /path/to/real_building_blocks.sdf --output ./data/enamine_3d_subset.parquet --min-fsp3 0.40 --max-mw 220 --strict-min-size 50000
 
-python scripts/prepare_multidataset.py \\\n    --input-manifest /path/to/structural_sources.jsonl \\\n    --output-dir ./data/unified \\\n    --radius 10 \\\n    --min-seq-id 0.30 \\\n    --coverage 0.80
+python scripts/prepare_multidataset.py --input-manifest /path/to/structural_sources.jsonl --output-dir ./data/unified --radius 10 --min-seq-id 0.30 --coverage 0.80
 
-python scripts/download_assets.py \\\n    --target-dataset unified_multisource \\\n    --output-dir ./data
+python scripts/download_assets.py --target-dataset unified_multisource --output-dir ./data
 ```
 
 Production mode never fabricates a training catalog or silently falls back to mock pockets. The unified stage standardizes every source, aligns ligand/pocket coordinates, writes rejection and split manifests, and performs leakage-resistant protein clustering. Use `--offline-smoke` only for plumbing tests.
@@ -234,8 +234,7 @@ python main.py --mode train --config configs/default_config.json --resume-auto
 ### Generate pocket-conditioned ligands + synthesis recipes
 
 ```bash
-python main.py --mode generate --config configs/default_config.json \\
-    --pocket data/crossdocked/sample_pocket.pdb --num-ligands 8 --resume-auto
+python main.py --mode generate --config configs/default_config.json --pocket ./data/unified/pairs/<complex_id>_pocket.pdb --num-ligands 8 --resume-auto
 ```
 
 ### Evaluate

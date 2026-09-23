@@ -178,14 +178,13 @@ def main(argv=None) -> int:
         mmseqs_bin=args.mmseqs_bin,
     )
 
+    accepted_ids = {str(row["complex_id"]) for row in normalized}
     locked_splits = {
         str(row["complex_id"]): str(row["split"])
         for row in rows
-        if row.get("split") and str(row["split"]) not in {"train", "val", "test"}
-        and any(
-            str(item["complex_id"]) == str(row["complex_id"])
-            for item in normalized
-        )
+        if row.get("split")
+        and str(row["split"]) not in {"train", "val", "test"}
+        and str(row["complex_id"]) in accepted_ids
     }
     assignments = assign_with_locked_splits(
         clusters,
