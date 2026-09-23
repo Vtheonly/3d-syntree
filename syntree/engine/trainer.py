@@ -309,7 +309,7 @@ class ResilientTrainer:
             f"layers={m.get('num_equivariant_layers', 4)}, "
             f"heads={m.get('num_attention_heads', 4)} | "
             f"batch={self.batch_size} x accum={self.accum_steps} | "
-            f"amp={self.use_amp}"
+            f"steps/epoch={len(self.loader)} | amp={self.use_amp}"
         )
 
         history = []

@@ -132,7 +132,13 @@ class PaiNNMixing(nn.Module):
         self, scalar: torch.Tensor, vector: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         vec_proj = self.vec_proj(vector)                        # [N, 3, H]
-        v_norm = torch.norm(vec_proj + self.epsilon, dim=1)     # [N, H]
+        # AMP/fp16 safety: torch.norm squares its inputs and fp16 overflows
+        # above 65,504, so vector features that grow during training would
+        # turn v_norm into inf and poison BOTH channels. Compute the norm in
+        # fp32 with a saturation cap, then return to the ambient dtype.
+        v_norm = torch.norm(vec_proj.float() + self.epsilon, dim=1)   # [N, H]
+        v_norm = torch.nan_to_num(v_norm, nan=0.0, posinf=1e4, neginf=0.0)
+        v_norm = v_norm.clamp(max=1e4).to(scalar.dtype)              # [N, H]
 
         h = torch.cat([scalar, v_norm], dim=-1)                 # [N, 2H]
         u = self.update_mlp(h)                                  # [N, 3H]

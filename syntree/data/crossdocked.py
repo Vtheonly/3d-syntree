@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import glob
 import logging
+import math
 import os
+import zlib
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -166,25 +168,52 @@ class CrossDockedDataset(InMemoryDataset):
         return self._build_real()
 
     def _build_synthetic(self) -> List[Data]:
-        rng = np.random.default_rng(self.seed + (hash(self.split) % 10000))
+        # NOTE: zlib.crc32 (not the builtin hash()) -- str hashing is salted
+        # per process, which would silently change the synthetic data on
+        # every fresh Python invocation.
+        rng = np.random.default_rng(self.seed + (zlib.crc32(self.split.encode()) % 10000))
         n_catalog = len(self.catalog) if self.catalog is not None else 50
+
+        # Supervision signal: the targets are fixed smooth functions of the
+        # sample's own features (handle vector + pocket statistics), NOT fresh
+        # noise. With pure-random targets the optimal policy is the uniform
+        # distribution, so synthon_ce pins to ln(K) and torsion_nll to
+        # ln(2*pi) -- nothing can be learned and the run only verifies
+        # plumbing. A deterministic learnable mapping instead verifies that
+        # gradients actually flow through handle -> attention -> heads, while
+        # staying fully reproducible (fixed projection vectors, seeded once,
+        # independent of the sampling rng). Real CrossDocked pairs replace
+        # all of this in production.
+        g = torch.Generator().manual_seed(self.seed + 7919)
+        n_feat = 64 + 5  # handle features + pocket summary statistics
+        w_syn = torch.randn(n_feat, generator=g)
+        w_dih = torch.randn(n_feat, generator=g)
+        scale = float(math.sqrt(n_feat))  # keeps dot ~ N(0, 1)
 
         samples: List[Data] = []
         for _ in range(self.num_synthetic):
             n_pocket = int(rng.integers(24, 72))
             pos, z = _synthetic_pocket(rng, n_pocket)
             handle_feat = torch.from_numpy(rng.normal(size=64).astype(np.float32))
+            pocket_stats = torch.stack(
+                [
+                    pos[:, 0].mean(), pos[:, 1].mean(), pos[:, 2].mean(),
+                    pos.abs().mean(), z.float().mean(),
+                ]
+            )
+            feats = torch.cat([handle_feat, pocket_stats])
+            target_synthon = int(
+                torch.floor(torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale) * n_catalog)
+                .clamp(0, n_catalog - 1)
+            )
+            target_dihedral = math.pi * math.tanh(2.0 * torch.dot(feats, w_dih) / scale)
             samples.append(
                 Data(
                     pocket_pos=pos,
                     pocket_z=z,
                     handle_features=handle_feat,
-                    target_synthon=torch.tensor(
-                        int(rng.integers(0, max(n_catalog, 1))), dtype=torch.long
-                    ),
-                    target_dihedral=torch.tensor(
-                        float(rng.uniform(-np.pi, np.pi)), dtype=torch.float32
-                    ),
+                    target_synthon=torch.tensor(target_synthon, dtype=torch.long),
+                    target_dihedral=torch.tensor(target_dihedral, dtype=torch.float32),
                 )
             )
         return samples
