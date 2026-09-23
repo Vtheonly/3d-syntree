@@ -20,14 +20,28 @@ def catalog(assets_dir):
 
 
 class TestSyntheticMode:
-    def test_default_when_no_pairs(self, tmp_path, catalog):
-        ds = CrossDockedDataset(str(tmp_path), split="train", catalog=catalog,
-                                num_synthetic=10)
+    def test_synthetic_mode_is_explicit(self, tmp_path, catalog):
+        with pytest.raises(RuntimeError, match="No CrossDocked pocket-ligand pairs"):
+            CrossDockedDataset(
+                str(tmp_path),
+                split="train",
+                catalog=catalog,
+                num_synthetic=10,
+            )
+
+    def test_explicit_synthetic_mode(self, tmp_path, catalog):
+        ds = CrossDockedDataset(
+            str(tmp_path),
+            synthetic=True,
+            split="train",
+            catalog=catalog,
+            num_synthetic=10,
+        )
         assert ds.use_synthetic
         assert len(ds) == 10
 
     def test_sample_structure(self, tmp_path, catalog):
-        ds = CrossDockedDataset(str(tmp_path), split="train", catalog=catalog,
+        ds = CrossDockedDataset(str(tmp_path), synthetic=True, split="train", catalog=catalog,
                                 num_synthetic=6, seed=7)
         sample = ds[0]
         assert sample.pocket_pos.shape[1] == 3
@@ -44,57 +58,57 @@ class TestSyntheticMode:
         assert -np.pi <= sample.target_dihedral.item() < np.pi
 
     def test_deterministic_given_seed(self, tmp_path, catalog):
-        d1 = CrossDockedDataset(str(tmp_path / "a"), catalog=catalog,
+        d1 = CrossDockedDataset(str(tmp_path / "a"), synthetic=True, catalog=catalog,
                                 num_synthetic=5, seed=11)
-        d2 = CrossDockedDataset(str(tmp_path / "b"), catalog=catalog,
+        d2 = CrossDockedDataset(str(tmp_path / "b"), synthetic=True, catalog=catalog,
                                 num_synthetic=5, seed=11)
         assert torch.allclose(d1[2].pocket_pos, d2[2].pocket_pos)
         assert d1[3].target_synthon == d2[3].target_synthon
 
     def test_different_seeds_differ(self, tmp_path, catalog):
-        d1 = CrossDockedDataset(str(tmp_path / "a"), catalog=catalog,
+        d1 = CrossDockedDataset(str(tmp_path / "a"), synthetic=True, catalog=catalog,
                                 num_synthetic=5, seed=1)
-        d2 = CrossDockedDataset(str(tmp_path / "b"), catalog=catalog,
+        d2 = CrossDockedDataset(str(tmp_path / "b"), synthetic=True, catalog=catalog,
                                 num_synthetic=5, seed=2)
         p1, p2 = d1[0].pocket_pos, d2[0].pocket_pos
         assert p1.shape != p2.shape or not torch.allclose(p1, p2)
 
     def test_splits_differ(self, tmp_path, catalog):
-        train = CrossDockedDataset(str(tmp_path), split="train", catalog=catalog,
+        train = CrossDockedDataset(str(tmp_path), synthetic=True, split="train", catalog=catalog,
                                    num_synthetic=8, seed=3)
-        val = CrossDockedDataset(str(tmp_path), split="val", catalog=catalog,
+        val = CrossDockedDataset(str(tmp_path), synthetic=True, split="val", catalog=catalog,
                                  num_synthetic=8, seed=3)
         p1, p2 = train[0].pocket_pos, val[0].pocket_pos
         assert p1.shape != p2.shape or not torch.allclose(p1, p2)
 
     def test_invalid_split_raises(self, tmp_path, catalog):
         with pytest.raises(ValueError, match="train/val/test"):
-            CrossDockedDataset(str(tmp_path), split="valid", catalog=catalog)
+            CrossDockedDataset(str(tmp_path), synthetic=True, split="valid", catalog=catalog)
 
     def test_targets_within_catalog(self, tmp_path, catalog):
-        ds = CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=20)
+        ds = CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=20)
         for i in range(len(ds)):
             assert 0 <= ds[i].target_synthon.item() < len(catalog)
 
     def test_processed_cache_reuse(self, tmp_path, catalog):
-        CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=10, seed=5)
+        CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=10, seed=5)
         mtime = os.path.getmtime(os.path.join(str(tmp_path), "processed"))
-        ds2 = CrossDockedDataset(str(tmp_path), catalog=catalog,
+        ds2 = CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog,
                                  num_synthetic=10, seed=5)
         assert len(ds2) == 10
         # No reprocessing (same mtime bucket) — files unchanged.
         assert os.path.getmtime(os.path.join(str(tmp_path), "processed")) >= mtime
 
     def test_force_rebuild(self, tmp_path, catalog):
-        CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=10, seed=5)
-        ds = CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=10,
+        CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=10, seed=5)
+        ds = CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=10,
                                 seed=5, force_rebuild=True)
         assert len(ds) == 10
 
 
 class TestBatching:
     def test_batch_collation(self, tmp_path, catalog):
-        ds = CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=12)
+        ds = CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=12)
         batch = Batch.from_data_list([ds[i] for i in range(4)],
                                      follow_batch=["pocket_pos"])
         assert batch.pocket_pos.shape[1] == 3
@@ -103,7 +117,7 @@ class TestBatching:
         assert batch.target_synthon.shape == (4,)
 
     def test_dataloader(self, tmp_path, catalog):
-        ds = CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=12)
+        ds = CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=12)
         loader = DataLoader(ds, batch_size=4, shuffle=False)
         batches = list(loader)
         assert len(batches) == 3
@@ -178,7 +192,7 @@ class TestRealMode:
             CrossDockedDataset(str(data_dir), catalog=None)
 
     def test_summary(self, tmp_path, catalog):
-        ds = CrossDockedDataset(str(tmp_path), catalog=catalog, num_synthetic=7)
+        ds = CrossDockedDataset(str(tmp_path), synthetic=True, catalog=catalog, num_synthetic=7)
         s = ds.summary()
         assert s["mode"] == "synthetic"
         assert s["num_samples"] == 7
