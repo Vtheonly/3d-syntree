@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+import zlib
 
 import numpy as np
 import torch
@@ -36,6 +37,39 @@ class TrajectoryStep:
     reaction_name: str
     core_handle_type: str
     target_dihedral: float
+
+
+class TrajectoryDataset(torch.utils.data.Dataset):
+    """Load cached PyG expert states with deterministic trajectory splits."""
+
+    def __init__(self, path: str, split: str = "train"):
+        if split not in ("train", "val", "test"):
+            raise ValueError("split must be train/val/test")
+        self.path = str(path)
+        self.split = split
+        self.states = torch.load(self.path, map_location="cpu", weights_only=False)
+        self.states = [
+            state for state in self.states
+            if self._belongs_to_split(state)
+        ]
+        if not self.states:
+            raise RuntimeError(f"No trajectory states found for split={split!r} in {path}")
+
+    def _belongs_to_split(self, state: Data) -> bool:
+        raw = int(getattr(state, "trajectory_hash", torch.tensor(0)).item())
+        bucket = raw % 1000
+        assigned = "train" if bucket < 800 else "val" if bucket < 900 else "test"
+        return assigned == self.split
+
+    def __len__(self):
+        return len(self.states)
+
+    def __getitem__(self, index):
+        return self.states[index]
+
+    @property
+    def num_synthetic(self):
+        return 0
 
 
 class RetrosyntheticTrajectoryBuilder:
@@ -146,6 +180,10 @@ class RetrosyntheticTrajectoryBuilder:
                     target_stop=torch.tensor(False, dtype=torch.bool),
                     stop_mask=torch.tensor(0.0, dtype=torch.float32),
                     trajectory_step=torch.tensor(step_idx, dtype=torch.long),
+                    trajectory_hash=torch.tensor(
+                        zlib.crc32(str(trajectory_id).encode("utf-8")),
+                        dtype=torch.long,
+                    ),
                     is_real_sample=torch.tensor(True, dtype=torch.bool),
                 )
             )
@@ -183,6 +221,10 @@ class RetrosyntheticTrajectoryBuilder:
                     trajectory_step=torch.tensor(
                         len(samples), dtype=torch.long
                     ),
+                    trajectory_hash=torch.tensor(
+                        zlib.crc32(str(trajectory_id).encode("utf-8")),
+                        dtype=torch.long,
+                    ),
                     is_real_sample=torch.tensor(True, dtype=torch.bool),
                 )
             )
@@ -203,4 +245,4 @@ class RetrosyntheticTrajectoryBuilder:
         }
 
 
-__all__ = ["TrajectoryStep", "RetrosyntheticTrajectoryBuilder"]
+__all__ = ["TrajectoryStep", "TrajectoryDataset", "RetrosyntheticTrajectoryBuilder"]
