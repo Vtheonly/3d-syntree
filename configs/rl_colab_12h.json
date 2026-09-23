@@ -1,0 +1,112 @@
+{
+  "system": {
+    "project_name": "3D-SynTree",
+    "seed": 42,
+    "device": "auto",
+    "mixed_precision": "fp16",
+    "tf32": true,
+    "num_workers": 2
+  },
+  "huggingface": {
+    "enabled": true,
+    "repo_id": "JJKK1212/3d-syntree-checkpoints",
+    "push_every_n_epochs": 2,
+    "private": false
+  },
+  "data": {
+    "dataset_name": "crossdocked2020",
+    "data_dir": "./data/crossdocked",
+    "synthon_catalog_path": "./data/enamine_3d_subset.parquet",
+    "max_pocket_distance": 8,
+    "max_steps_per_molecule": 3,
+    "batch_size": 16,
+    "accumulate_grad_batches": 2,
+    "val_fraction": 0.1,
+    "synthetic_fallback": false,
+    "trajectory_dataset_path": null,
+    "terminal_cap_min_mw": 250,
+    "backend": "huggingface",
+    "huggingface": {
+      "repo_id": "JJKK1212/3d-syntree-multidataset",
+      "revision": "main",
+      "cache_dir": "./hf_cache",
+      "max_cached_shards": 2
+    },
+    "multidataset": {
+      "processed_manifest_path": "./data/multidataset/processed_manifest.jsonl",
+      "split_manifest_path": "./data/multidataset/unified_splits_30seq_id.parquet",
+      "max_resolution": 2.5,
+      "pocket_radius_angstrom": 10,
+      "min_pocket_atoms": 100
+    }
+  },
+  "model": {
+    "hidden_dim": 128,
+    "num_equivariant_layers": 4,
+    "num_radial_basis": 20,
+    "cutoff_radius": 5,
+    "synthon_embedding_dim": 128,
+    "num_attention_heads": 4,
+    "max_atomic_number": 100,
+    "dropout": 0.1
+  },
+  "training": {
+    "max_epochs": 40,
+    "time_budget_hours": 11.5,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.00001,
+    "lr_scheduler": "cosine_warmup",
+    "warmup_epochs": 2,
+    "grad_clip_norm": 1,
+    "keep_last_n_checkpoints": 3,
+    "loss_weights": {
+      "synthon_ce": 1,
+      "torsion_nll": 0.5,
+      "steric_clash": 0.1,
+      "reaction_ce": 0.5
+    },
+    "eval_interval_epochs": 1,
+    "auto_scale": {
+      "enabled": true,
+      "target_vram_fraction": 0.85,
+      "max_batch_size": 8192,
+      "scale_model": true,
+      "lr_scale_rule": "linear"
+    }
+  },
+  "reinforcement_learning": {
+    "enabled": true,
+    "episodes": 512,
+    "ppo_epochs": 4,
+    "clip_epsilon": 0.2,
+    "gamma": 0.99,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "learning_rate": 0.00001,
+    "max_grad_norm": 1,
+    "temperature": 1,
+    "checkpoint_every": 16,
+    "reward": {
+      "docking_weight": 1,
+      "clash_weight": 0.25,
+      "fsp3_weight": 0.15,
+      "qed_weight": 0.15,
+      "validity_weight": 0.5,
+      "docking_scale": 10,
+      "clash_scale": 25
+    }
+  },
+  "evaluation": {
+    "num_test_pockets": 100,
+    "docking_engine": "gnina",
+    "exhaustiveness": 8,
+    "run_posebusters": true,
+    "run_aizynthfinder": true,
+    "aizynthfinder_config": null
+  },
+  "research": {
+    "stage": "stage2_ppo",
+    "note": "Run after Stage 1 behavioral cloning. Docking is an external oracle; if GNINA/Vina is unavailable, docking contribution remains zero and is reported unavailable.",
+    "seed": 42
+  }
+}
