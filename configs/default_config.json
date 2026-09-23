@@ -23,7 +23,9 @@
     "accumulate_grad_batches": 2,
     "val_fraction": 0.1,
     "synthetic_fallback": false,
-    "synthetic_samples": 100
+    "synthetic_samples": 100,
+    "trajectory_dataset_path": null,
+    "terminal_cap_min_mw": 250.0
   },
   "model": {
     "hidden_dim": 128,
@@ -57,6 +59,24 @@
       "max_batch_size": 8192,
       "scale_model": true,
       "lr_scale_rule": "linear"
+    }
+  },
+  "reinforcement_learning": {
+    "enabled": false,
+    "episodes": 256,
+    "ppo_epochs": 4,
+    "clip_epsilon": 0.2,
+    "gamma": 0.99,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "learning_rate": 0.00001,
+    "max_grad_norm": 1.0,
+    "reward": {
+      "docking_weight": 1.0,
+      "clash_weight": 0.25,
+      "fsp3_weight": 0.15,
+      "qed_weight": 0.15,
+      "validity_weight": 0.5
     }
   },
   "evaluation": {
