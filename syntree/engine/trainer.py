@@ -472,7 +472,7 @@ class ResilientTrainer:
             }
 
         total, reaction, synthon, torsion = 0.0, 0.0, 0.0, 0.0
-        reaction_correct, synthon_correct, n = 0, 0, 0
+        reaction_correct, synthon_correct, oracle_synthon_correct_total, n = 0, 0, 0, 0
         for batch in self.val_loader:
             batch = batch.to(self.device)
             target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
@@ -502,15 +502,40 @@ class ResilientTrainer:
             reaction += float(l_reaction.item())
             synthon += float(l_synthon.item())
             torsion += float(l_torsion.item())
+
+            predicted_family = preds["reaction_logits"].argmax(-1)
             reaction_correct += int(
-                (
-                    preds["reaction_logits"].argmax(-1)
-                    == batch.target_reaction_family_idx
-                ).sum().item()
+                (predicted_family == batch.target_reaction_family_idx).sum().item()
             )
-            synthon_correct += int(
-                (preds["synthon_logits"].argmax(-1) == target).sum().item()
+            oracle_synthon = preds["synthon_logits"].argmax(-1)
+            synthon_oracle_correct = (oracle_synthon == target)
+
+            predicted_masks = []
+            for family_idx, handle_idx in zip(
+                predicted_family.tolist(),
+                batch.target_core_handle_idx.tolist(),
+            ):
+                family = REACTION_FAMILY_NAMES[int(family_idx)]
+                handle = HANDLE_NAMES[int(handle_idx)]
+                predicted_masks.append(
+                    self.catalog.get_reaction_family_mask(
+                        family,
+                        device=self.device,
+                        core_handle=handle,
+                    )
+                )
+            predicted_masks = torch.stack(predicted_masks)
+            predicted_synthon_logits, _ = self.model.synthon_head(
+                preds["pocket_context"],
+                self.catalog.embeddings.to(self.device),
+                predicted_masks,
             )
+            joint_synthon = predicted_synthon_logits.argmax(-1)
+            synthon_correct += int((joint_synthon == target).sum().item())
+            oracle_synthon_correct_count = int(synthon_oracle_correct.sum().item())
+            if "oracle_synthon_correct" not in locals():
+                oracle_synthon_correct_total = 0
+            oracle_synthon_correct_total += oracle_synthon_correct_count
             n += int(target.numel())
 
         self.model.train()
@@ -521,6 +546,8 @@ class ResilientTrainer:
             "val_torsion_nll": torsion / max(1, len(self.val_loader)),
             "val_reaction_acc": reaction_correct / max(1, n),
             "val_synthon_acc": synthon_correct / max(1, n),
+            "val_synthon_acc_oracle_family": oracle_synthon_correct_total / max(1, n),
+            "val_joint_action_acc": 0.0,
         }
 
     # ------------------------------------------------------------------
