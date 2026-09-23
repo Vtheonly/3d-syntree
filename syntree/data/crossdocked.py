@@ -1,30 +1,13 @@
-"""PyTorch Geometric dataset for CrossDocked2020 pocket-ligand complexes.
+"""CrossDocked2020 dataset with reaction-validated supervision.
 
-Two operating modes are supported:
+Real-mode examples are supervised only when a CrossDocked ligand can be
+decomposed into a catalog synthon plus a reaction-compatible core and that
+decomposition replays forward through the real RDKit reaction engine to the
+same molecular connectivity. No random synthon or random dihedral labels are
+ever created for real complexes.
 
-**Real mode** – the directory ``root_dir`` contains ``*_pocket.pdb`` /
-``*_ligand.sdf`` *pairs* produced by the CrossDocked2020 preprocessing
-(RMSD < 1.0 A, 30% sequence-identity clustering). A directory holding only
-pocket files (e.g. the generation-time ``sample_pocket.pdb``) does NOT
-qualify – training targets require the ligand too.
-
-**Synthetic mode** – when the directory holds no pocket files (or
-``synthetic=True``), a deterministic, seeded mock dataset is produced so the
-full training / generation / evaluation pipeline can be exercised end-to-end
-without the multi-gigabyte external download (CI, smoke tests, Colab dry
-runs).
-
-Every sample is a :class:`torch_geometric.data.Data` object with:
-
-======================  =====================================================
-Field                   Content
-======================  =====================================================
-``pocket_pos``          ``[N_p, 3]`` centroid-centered pocket coordinates
-``pocket_z``            ``[N_p]`` pocket atomic numbers
-``handle_features``     ``[64]`` attachment-handle feature vector
-``target_synthon``      scalar catalog index of the ground-truth synthon
-``target_dihedral``     scalar target dihedral in ``[-pi, pi)``
-======================  =====================================================
+Synthetic mode is retained strictly as a deterministic plumbing/smoke-test
+dataset and is explicitly marked as synthetic in each sample.
 """
 
 from __future__ import annotations
@@ -42,14 +25,22 @@ from rdkit import Chem
 from torch_geometric.data import Data, InMemoryDataset
 
 from syntree.data.featurizer import MolecularFeaturizer
+from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
+from syntree.data.fragmenter import ReactionConstrainedFragmenter
 
 logger = logging.getLogger(__name__)
 
 
-def _synthetic_pocket(rng: np.random.Generator, n_pocket: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def _synthetic_pocket(
+    rng: np.random.Generator, n_pocket: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Deterministic mock pocket: clustered C/N/O point cloud."""
-    pos = torch.from_numpy(rng.normal(scale=3.0, size=(n_pocket, 3)).astype(np.float32))
-    z = torch.from_numpy(rng.choice([6, 7, 8], size=n_pocket, p=[0.6, 0.2, 0.2]).astype(np.int64))
+    pos = torch.from_numpy(
+        rng.normal(scale=3.0, size=(n_pocket, 3)).astype(np.float32)
+    )
+    z = torch.from_numpy(
+        rng.choice([6, 7, 8], size=n_pocket, p=[0.6, 0.2, 0.2]).astype(np.int64)
+    )
     pos = pos - pos.mean(dim=0, keepdim=True)
     return pos, z
 
@@ -67,6 +58,7 @@ class CrossDockedDataset(InMemoryDataset):
         num_synthetic: int = 100,
         synthetic: Optional[bool] = None,
         seed: int = 42,
+        synthetic_fallback: bool = False,
         transform=None,
         pre_transform=None,
         pre_filter=None,
@@ -74,34 +66,36 @@ class CrossDockedDataset(InMemoryDataset):
     ):
         if split not in ("train", "val", "test"):
             raise ValueError(f"split must be train/val/test, got '{split}'")
+
         self.root_dir = str(root_dir)
         self.split = split
         self.catalog = catalog
         self.seed = int(seed)
+        self.synthetic_fallback = bool(synthetic_fallback)
         self.force_rebuild = bool(force_rebuild)
+        self.num_synthetic = int(num_synthetic)
 
         os.makedirs(self.root_dir, exist_ok=True)
         self.pocket_files = sorted(
             glob.glob(os.path.join(self.root_dir, self._POCKET_GLOB))
         )
-        # Real mode requires pocket-ligand PAIRS (training data); pockets
-        # without ligands (e.g. generation-time sample pockets) do not
-        # qualify.
-        self.pair_files = [
-            p for p in self.pocket_files
+        self.all_pair_files = [
+            p
+            for p in self.pocket_files
             if os.path.exists(p.replace("_pocket.pdb", "_ligand.sdf"))
         ]
+        self.has_real_pairs = bool(self.all_pair_files)
+        self.pair_files = [
+            p for p in self.all_pair_files if self._belongs_to_split(p)
+        ]
+
         self.use_synthetic = (
-            (len(self.pair_files) == 0) if synthetic is None else bool(synthetic)
+            (not self.has_real_pairs) if synthetic is None else bool(synthetic)
         )
-        self.num_synthetic = int(num_synthetic)
 
         super().__init__(self.root_dir, transform, pre_transform, pre_filter)
         self._load_or_process()
 
-    # ------------------------------------------------------------------
-    # PyG plumbing
-    # ------------------------------------------------------------------
     @property
     def raw_dir(self) -> str:
         return self.root_dir
@@ -111,48 +105,34 @@ class CrossDockedDataset(InMemoryDataset):
         return os.path.join(self.root_dir, "processed")
 
     @property
-    def raw_file_names(self) -> List[str]:  # informational
+    def raw_file_names(self) -> List[str]:
         return [os.path.basename(p) for p in self.pocket_files]
 
     @property
     def processed_file_names(self) -> List[str]:
         mode = "synthetic" if self.use_synthetic else "real"
-        if self.use_synthetic:
-            # Cache key MUST include the sample count: a re-run with a
-            # different num_synthetic would otherwise silently load the
-            # stale tensor of the previous size.
-            return [f"{self.split}_{mode}_n{self.num_synthetic}.pt"]
-        return [f"{self.split}_{mode}.pt"]
+        catalog_key = len(self.catalog) if self.catalog is not None else 0
+        return [
+            f"{self.split}_{mode}_n{self.num_synthetic}_s{self.seed}_k{catalog_key}.pt"
+        ]
 
-    def download(self):  # handled by scripts/download_assets.py
+    def download(self):
         pass
 
     def process(self):
         data_list = self._build_samples()
-        if hasattr(self, "save"):
-            self.save(data_list, self.processed_paths[0])
-        else:  # pragma: no cover - very old PyG
-            self._data, self.slices = self.collate(data_list)
+        self.save(data_list, self.processed_paths[0])
 
     def _load_or_process(self):
         os.makedirs(self.processed_dir, exist_ok=True)
         path = self.processed_paths[0]
         if self.force_rebuild or not os.path.exists(path):
             self.process()
-        if hasattr(self, "load"):
-            try:
-                self.load(path)
-                return
-            except Exception:  # pragma: no cover - rebuild fallback
-                self.process()
-                self.load(path)
-                return
-        # PyG < 2.4 fallback
         try:
-            self._data, self.slices = torch.load(path, weights_only=False)
+            self.load(path)
         except Exception:
             self.process()
-            self._data, self.slices = torch.load(path, weights_only=False)
+            self.load(path)
 
     def __len__(self) -> int:
         if self.use_synthetic:
@@ -160,53 +140,86 @@ class CrossDockedDataset(InMemoryDataset):
         return super().__len__()
 
     # ------------------------------------------------------------------
+    # Splitting
+    # ------------------------------------------------------------------
+    def _belongs_to_split(self, pocket_path: str) -> bool:
+        """Stable 80/10/10 split with no cross-split duplication."""
+        key = os.path.basename(pocket_path).encode("utf-8")
+        bucket = zlib.crc32(key) % 1000
+        assigned = (
+            "train" if bucket < 800 else "val" if bucket < 900 else "test"
+        )
+        return assigned == self.split
+
+    # ------------------------------------------------------------------
     # Sample construction
     # ------------------------------------------------------------------
     def _build_samples(self) -> List[Data]:
-        if self.use_synthetic:
-            return self._build_synthetic()
-        return self._build_real()
+        return self._build_synthetic() if self.use_synthetic else self._build_real()
 
     def _build_synthetic(self) -> List[Data]:
-        # NOTE: zlib.crc32 (not the builtin hash()) -- str hashing is salted
-        # per process, which would silently change the synthetic data on
-        # every fresh Python invocation.
-        rng = np.random.default_rng(self.seed + (zlib.crc32(self.split.encode()) % 10000))
+        rng = np.random.default_rng(
+            self.seed + (zlib.crc32(self.split.encode()) % 10000)
+        )
         n_catalog = len(self.catalog) if self.catalog is not None else 50
 
-        # Supervision signal: the targets are fixed smooth functions of the
-        # sample's own features (handle vector + pocket statistics), NOT fresh
-        # noise. With pure-random targets the optimal policy is the uniform
-        # distribution, so synthon_ce pins to ln(K) and torsion_nll to
-        # ln(2*pi) -- nothing can be learned and the run only verifies
-        # plumbing. A deterministic learnable mapping instead verifies that
-        # gradients actually flow through handle -> attention -> heads, while
-        # staying fully reproducible (fixed projection vectors, seeded once,
-        # independent of the sampling rng). Real CrossDocked pairs replace
-        # all of this in production.
         g = torch.Generator().manual_seed(self.seed + 7919)
-        n_feat = 64 + 5  # handle features + pocket summary statistics
+        n_feat = 69
         w_syn = torch.randn(n_feat, generator=g)
         w_dih = torch.randn(n_feat, generator=g)
-        scale = float(math.sqrt(n_feat))  # keeps dot ~ N(0, 1)
+        w_rxn = torch.randn(n_feat, generator=g)
+        scale = float(math.sqrt(n_feat))
+
+        family_handles = {
+            "amide_coupling": ("carboxylic_acid", "primary_secondary_amine"),
+            "reductive_amination": ("aldehyde", "primary_secondary_amine"),
+            "suzuki_coupling": ("aryl_halide", "boronic_acid"),
+            "aryl_amination": ("aryl_halide", "primary_secondary_amine"),
+            "urea_formation": ("primary_secondary_amine",),
+            "esterification": ("carboxylic_acid", "alcohol"),
+            "click_triazole": ("alkyne", "azide"),
+        }
 
         samples: List[Data] = []
         for _ in range(self.num_synthetic):
             n_pocket = int(rng.integers(24, 72))
             pos, z = _synthetic_pocket(rng, n_pocket)
-            handle_feat = torch.from_numpy(rng.normal(size=64).astype(np.float32))
+            handle_feat = torch.from_numpy(
+                rng.normal(size=64).astype(np.float32)
+            )
             pocket_stats = torch.stack(
                 [
-                    pos[:, 0].mean(), pos[:, 1].mean(), pos[:, 2].mean(),
-                    pos.abs().mean(), z.float().mean(),
+                    pos[:, 0].mean(),
+                    pos[:, 1].mean(),
+                    pos[:, 2].mean(),
+                    pos.abs().mean(),
+                    z.float().mean(),
                 ]
             )
             feats = torch.cat([handle_feat, pocket_stats])
+
             target_synthon = int(
-                torch.floor(torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale) * n_catalog)
-                .clamp(0, n_catalog - 1)
+                torch.floor(
+                    torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale)
+                    * n_catalog
+                ).clamp(0, n_catalog - 1)
             )
-            target_dihedral = math.pi * math.tanh(2.0 * torch.dot(feats, w_dih) / scale)
+            target_dihedral = math.pi * math.tanh(
+                2.0 * torch.dot(feats, w_dih) / scale
+            )
+            family_idx = int(
+                torch.floor(
+                    torch.sigmoid(torch.dot(feats, w_rxn) / scale)
+                    * len(REACTION_FAMILY_NAMES)
+                ).clamp(0, len(REACTION_FAMILY_NAMES) - 1)
+            )
+            handles = family_handles[REACTION_FAMILY_NAMES[family_idx]]
+            handle_idx = int(
+                abs(int(torch.round(handle_feat[0] * 17).item()))
+                % len(handles)
+            )
+            core_handle_idx = HANDLE_NAMES.index(handles[handle_idx])
+
             samples.append(
                 Data(
                     pocket_pos=pos,
@@ -214,6 +227,13 @@ class CrossDockedDataset(InMemoryDataset):
                     handle_features=handle_feat,
                     target_synthon=torch.tensor(target_synthon, dtype=torch.long),
                     target_dihedral=torch.tensor(target_dihedral, dtype=torch.float32),
+                    target_reaction_family_idx=torch.tensor(
+                        family_idx, dtype=torch.long
+                    ),
+                    target_core_handle_idx=torch.tensor(
+                        core_handle_idx, dtype=torch.long
+                    ),
+                    is_real_sample=torch.tensor(False, dtype=torch.bool),
                 )
             )
         return samples
@@ -221,80 +241,136 @@ class CrossDockedDataset(InMemoryDataset):
     def _build_real(self) -> List[Data]:
         if self.catalog is None:
             raise ValueError(
-                "Real-mode CrossDockedDataset requires a SynthonCatalog to "
-                "compute ground-truth synthon targets."
+                "Real-mode CrossDockedDataset requires a SynthonCatalog "
+                "to compute validated synthon targets."
             )
-        from syntree.chemistry.reactions import ReactionEngine
 
-        engine = ReactionEngine()
-        rng = np.random.default_rng(self.seed)
+        fragmenter = ReactionConstrainedFragmenter(self.catalog)
         samples: List[Data] = []
+        skipped_invalid = 0
+        skipped_unmatched = 0
 
         for pocket_path in self.pair_files:
             ligand_path = pocket_path.replace("_pocket.pdb", "_ligand.sdf")
-            pocket_mol = Chem.MolFromPDBFile(pocket_path, removeHs=False)
+            try:
+                pocket_mol = Chem.MolFromPDBFile(pocket_path, removeHs=False)
+            except Exception:
+                pocket_mol = None
             if pocket_mol is None or pocket_mol.GetNumAtoms() == 0:
+                skipped_invalid += 1
                 continue
-            ligand_mol = (
-                Chem.SDMolSupplier(ligand_path, removeHs=False)[0]
-                if os.path.exists(ligand_path)
-                else None
-            )
 
             try:
-                feats = MolecularFeaturizer.featurize_pocket(pocket_mol)
+                ligand_supplier = Chem.SDMolSupplier(
+                    ligand_path, removeHs=False, sanitize=True
+                )
+                ligand_mol = next(
+                    (m for m in ligand_supplier if m is not None), None
+                )
             except Exception:
+                ligand_mol = None
+
+            if ligand_mol is None or ligand_mol.GetNumAtoms() == 0:
+                skipped_invalid += 1
+                continue
+            if ligand_mol.GetNumConformers() == 0:
+                skipped_invalid += 1
                 continue
 
-            handle_feat = torch.zeros(64, dtype=torch.float32)
-            target_synthon = int(rng.integers(0, len(self.catalog)))
-            target_dihedral = float(rng.uniform(-np.pi, np.pi))
+            try:
+                center = MolecularFeaturizer.ligand_center(ligand_mol)
+                feats = MolecularFeaturizer.featurize_pocket(
+                    pocket_mol, center=center
+                )
+                target = fragmenter.find_target(ligand_mol)
+            except Exception as exc:
+                logger.debug(
+                    "Skipping %s after target extraction failure: %s",
+                    os.path.basename(pocket_path),
+                    exc,
+                )
+                skipped_invalid += 1
+                continue
 
-            if ligand_mol is not None:
-                try:
-                    center = MolecularFeaturizer.ligand_center(ligand_mol)
-                    feats = MolecularFeaturizer.featurize_pocket(
-                        pocket_mol, center=center
-                    )
-                except Exception:
-                    pass
-                handles = engine.detect_handles(ligand_mol)
-                if handles:
-                    info = handles[0]
-                    handle_feat = MolecularFeaturizer.featurize_handle(
-                        ligand_mol, info.atom_indices, info.handle_type
-                    )
+            if target is None:
+                skipped_unmatched += 1
+                continue
+
+            handle_info = next(
+                (
+                    h
+                    for h in fragmenter.engine.detect_handles(target.core_mol)
+                    if h.handle_type == target.core_handle_type
+                ),
+                None,
+            )
+            if handle_info is None:
+                skipped_unmatched += 1
+                continue
 
             samples.append(
                 Data(
                     pocket_pos=feats["pocket_pos"],
                     pocket_z=feats["pocket_z"],
-                    handle_features=handle_feat,
-                    target_synthon=torch.tensor(target_synthon, dtype=torch.long),
-                    target_dihedral=torch.tensor(target_dihedral, dtype=torch.float32),
+                    handle_features=MolecularFeaturizer.featurize_handle(
+                        target.core_mol,
+                        handle_info.atom_indices,
+                        target.core_handle_type,
+                    ),
+                    target_synthon=torch.tensor(
+                        target.synthon_index, dtype=torch.long
+                    ),
+                    target_dihedral=torch.tensor(
+                        target.target_dihedral, dtype=torch.float32
+                    ),
+                    target_reaction_family_idx=torch.tensor(
+                        REACTION_FAMILY_NAMES.index(target.reaction_family),
+                        dtype=torch.long,
+                    ),
+                    target_core_handle_idx=torch.tensor(
+                        HANDLE_NAMES.index(target.core_handle_type),
+                        dtype=torch.long,
+                    ),
+                    is_real_sample=torch.tensor(True, dtype=torch.bool),
                 )
             )
 
-        if not samples:
+        logger.info(
+            "CrossDocked %s split: pairs=%d, matched=%d, invalid=%d, unmatched=%d",
+            self.split,
+            len(self.pair_files),
+            len(samples),
+            skipped_invalid,
+            skipped_unmatched,
+        )
+
+        if not samples and self.pair_files and not self.synthetic_fallback:
+            raise RuntimeError(
+                f"No reaction-validated training targets were extracted from "
+                f"{len(self.pair_files)} {self.split} CrossDocked pairs. "
+                "Real data is never replaced with random or synthetic labels. "
+                "Enable data.synthetic_fallback only for an explicit smoke run."
+            )
+
+        if not samples and self.pair_files and self.synthetic_fallback:
             logger.warning(
-                "No usable complexes under %s; falling back to synthetic mode.",
-                self.root_dir,
+                "No real targets matched the catalog; explicit synthetic "
+                "fallback is enabled for this run."
             )
             self.use_synthetic = True
             return self._build_synthetic()
+
         return samples
 
-    # ------------------------------------------------------------------
-    # Convenience
-    # ------------------------------------------------------------------
     def summary(self) -> Dict[str, object]:
-        """Human-readable dataset summary for logging."""
         return {
             "root": self.root_dir,
             "split": self.split,
             "mode": "synthetic" if self.use_synthetic else "real",
             "num_samples": len(self),
             "num_pocket_files": len(self.pocket_files),
+            "num_pair_files": len(self.all_pair_files),
+            "num_split_pairs": len(self.pair_files),
         }
 
 
