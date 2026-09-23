@@ -272,7 +272,7 @@ class SynTreePolicy(nn.Module):
     # ------------------------------------------------------------------
     # Convenience inference helpers
     # ------------------------------------------------------------------
-        def act(
+    def act(
         self,
         batch_data,
         synthon_embeddings: torch.Tensor,
