@@ -27,7 +27,8 @@ from rdkit.Chem import Descriptors
 from torch_geometric.data import Data
 
 from syntree.chemistry.catalog import SynthonCatalog
-from syntree.chemistry.hotspots import PocketHotspotFeaturizerfrom syntree.chemistry.conformer import ConformerEngine, vdw_radius
+from syntree.chemistry.hotspots import PocketHotspotFeaturizer
+from syntree.chemistry.conformer import ConformerEngine, vdw_radius
 from syntree.chemistry.reactions import (
     REACTION_FAMILY_MEMBERS,
     REACTION_FAMILY_NAMES,
