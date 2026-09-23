@@ -71,6 +71,8 @@
     "entropy_coef": 0.01,
     "learning_rate": 0.00001,
     "max_grad_norm": 1.0,
+    "temperature": 1.0,
+    "checkpoint_every": 16,
     "reward": {
       "docking_weight": 1.0,
       "clash_weight": 0.25,
