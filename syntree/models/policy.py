@@ -124,6 +124,11 @@ class SynTreePolicy(nn.Module):
 
         # 5. Torsion head.
         self.torsion_head = ContinuousTorsionHead(hidden_dim)
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
 
     # ------------------------------------------------------------------
     # Pocket encoding (exposed for generators / probing)
@@ -267,6 +272,7 @@ class SynTreePolicy(nn.Module):
             "torsion_mu": mu,
             "torsion_kappa": kappa,
             "pocket_context": context,
+            "state_value": self.value_head(context).squeeze(-1),
         }
 
     # ------------------------------------------------------------------
@@ -339,7 +345,11 @@ class SynTreePolicy(nn.Module):
         action_log_probs = torch.log_softmax(logits, dim=-1).gather(
             -1, action_idx.unsqueeze(-1)
         ).squeeze(-1)
-        joint_log_prob = reaction_log_probs + action_log_probs
+        joint_log_prob = torch.where(
+            stop,
+            action_log_probs,
+            reaction_log_probs + action_log_probs,
+        )
 
         phi = ContinuousTorsionHead.sample(
             out["torsion_mu"], out["torsion_kappa"]
@@ -352,6 +362,7 @@ class SynTreePolicy(nn.Module):
             "dihedral": phi,
             "joint_log_prob": joint_log_prob,
             "synthon_log_prob": action_log_probs,
+            "state_value": out["state_value"],
             "reaction_logits": reaction_logits,
             "logits": logits,
             "torsion_mu": out["torsion_mu"],
