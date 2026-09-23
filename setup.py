@@ -29,6 +29,7 @@ setup(
     extras_require={
         "test": ["pytest>=7.4.0"],
         "hdf5": ["h5py>=3.10.0"],
+        "evaluation": ["aizynthfinder>=4.0.0"],
     },
     entry_points={
         "console_scripts": [
