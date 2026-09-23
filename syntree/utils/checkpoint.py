@@ -196,7 +196,16 @@ class CheckpointManager:
                 return 0, 0, float("inf")
 
         checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        missing, unexpected = model.load_state_dict(
+            checkpoint["model_state_dict"], strict=False
+        )
+        if missing or unexpected:
+            logger.warning(
+                "Checkpoint architecture mismatch: missing=%s unexpected=%s. "
+                "New modules keep their initialized weights.",
+                missing,
+                unexpected,
+            )
         if optimizer is not None and checkpoint.get("optimizer_state_dict"):
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if scheduler is not None and checkpoint.get("scheduler_state_dict"):
