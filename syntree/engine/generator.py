@@ -185,14 +185,12 @@ class SBDDGenerator:
                 handle_features=handle_feat,
             )
 
-            require_remaining_handle = step < steps
             current_mw = float(Descriptors.MolWt(Chem.RemoveHs(Chem.Mol(current_mol))))
-            allow_terminal = (
-                current_mw >= float(
-                    self.config.get("data", {}).get("terminal_cap_min_mw", 250.0)
-                )
-                or not require_remaining_handle
+            cap_min_mw = float(
+                self.config.get("data", {}).get("terminal_cap_min_mw", 250.0)
             )
+            require_remaining_handle = step < steps and current_mw < cap_min_mw
+            allow_terminal = not require_remaining_handle
             reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
                 device=self.device,
                 core_handle=target_handle.handle_type,
@@ -257,7 +255,7 @@ class SBDDGenerator:
                 reaction_family,
                 device=self.device,
                 core_handle=target_handle.handle_type,
-                require_remaining_handle=(step < steps),
+                require_remaining_handle=require_remaining_handle,
                 allow_terminal=allow_terminal,
             )
             if selected_mask[selected_synthon_idx].item() < -1e8:
