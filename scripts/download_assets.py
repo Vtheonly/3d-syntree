@@ -58,6 +58,34 @@ _SP3_RICH_SYNTHONS = [
     ("CC(C)CCN=[N+]=[N-]", "azide"),                    # branched alkyl azide
 ]
 
+# --- genuinely multifunctional synthons: at least two independently
+# reactive handles so autoregressive assembly can continue after one reaction
+# consumes one handle. -------------------------------------------------------
+_BIFUNCTIONAL_SYNTHONS = [
+    ("N[C@@H](C)C(=O)O", "carboxylic_acid"),
+    ("N[C@@H](CC)C(=O)O", "carboxylic_acid"),
+    ("N[C@@H](CC(C)C)C(=O)O", "carboxylic_acid"),
+    ("N[C@@H](CO)C(=O)O", "carboxylic_acid"),
+    ("N[C@@H](CCO)C(=O)O", "carboxylic_acid"),
+    ("NCCO", "primary_secondary_amine"),
+    ("NCCCO", "primary_secondary_amine"),
+    ("NCC(C)O", "primary_secondary_amine"),
+    ("NCCN", "primary_secondary_amine"),
+    ("NCCCN", "primary_secondary_amine"),
+    ("OCC(=O)O", "carboxylic_acid"),
+    ("CC(O)C(=O)O", "carboxylic_acid"),
+    ("OCCC(=O)O", "carboxylic_acid"),
+    ("O=C(O)CC(=O)O", "carboxylic_acid"),
+    ("O=C(O)CCC(=O)O", "carboxylic_acid"),
+    ("OCCO", "alcohol"),
+    ("OCCCO", "alcohol"),
+    ("CC(O)CO", "alcohol"),
+    ("C#CCO", "alkyne"),
+    ("C#CCN", "alkyne"),
+    ("N=[N+]=[N-]CCO", "azide"),
+    ("N=[N+]=[N-]CC#C", "azide"),
+]
+
 # --- aryl coupling partners (Fsp3-exempt: aromatic by chemistry) ----------
 _ARYL_SYNTHONS = [
     ("BrC1=CC=C(Cl)C=C1", "aryl_halide"),
@@ -109,7 +137,8 @@ def build_synthetic_catalog(output_dir: str, num_copies: int = 40) -> str:
 
     engine = ReactionEngine()
     rows = []
-    for base_idx, (smiles, handle) in enumerate(_SP3_RICH_SYNTHONS + _ARYL_SYNTHONS):
+    all_synthons = _SP3_RICH_SYNTHONS + _BIFUNCTIONAL_SYNTHONS + _ARYL_SYNTHONS
+    for base_idx, (smiles, handle) in enumerate(all_synthons):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             print(f"  ! skipping unparseable SMILES: {smiles}")
@@ -138,9 +167,13 @@ def build_synthetic_catalog(output_dir: str, num_copies: int = 40) -> str:
     df.to_parquet(catalog_path, index=False)
 
     n_sp3 = len(_SP3_RICH_SYNTHONS) * num_copies
+    n_bifunctional = len(_BIFUNCTIONAL_SYNTHONS) * num_copies
     n_aryl = len(_ARYL_SYNTHONS) * num_copies
     print(f"  Synthetic Enamine 3D catalog: {catalog_path}")
-    print(f"    {len(df)} synthons ({n_sp3} sp3-rich + {n_aryl} aryl partners)")
+    print(
+        f"    {len(df)} synthons ({n_sp3} sp3-rich + "
+        f"{n_bifunctional} multifunctional + {n_aryl} aryl partners)"
+    )
     return catalog_path
 
 
