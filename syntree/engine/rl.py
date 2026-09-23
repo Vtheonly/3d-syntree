@@ -50,6 +50,7 @@ class ThreeDReward:
         self,
         mol: Chem.Mol,
         pocket_pdb_path: Optional[str] = None,
+        clash_score: float = 0.0,
     ) -> Dict[str, float]:
         components: Dict[str, float] = {
             "docking": 0.0,
@@ -87,7 +88,7 @@ class ThreeDReward:
         except Exception:
             components["qed"] = 0.0
 
-        clash_score = float(descriptors.get("clash_score", 0.0))
+        clash_score = float(clash_score)
         components["clash"] = float(np.exp(-max(0.0, clash_score) / self.cfg.clash_scale))
 
         docking_engine = None
