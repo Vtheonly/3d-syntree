@@ -138,8 +138,9 @@ class SynTreePolicy(nn.Module):
         pocket_pos: torch.Tensor,
         pocket_z: torch.Tensor,
         pocket_batch: Optional[torch.Tensor] = None,
+        pocket_charge: Optional[torch.Tensor] = None,
     ):
-        return self.pocket_encoder(pocket_pos, pocket_z, pocket_batch)
+        return self.pocket_encoder(pocket_pos, pocket_z, pocket_batch, pocket_charge)
 
     # ------------------------------------------------------------------
     # Full forward
@@ -178,6 +179,9 @@ class SynTreePolicy(nn.Module):
             pocket_batch = torch.zeros(
                 pocket_pos.size(0), dtype=torch.long, device=pocket_pos.device
             )
+        # Protonation-aware pocket features (pH 7.4 formal charges);
+        # optional so legacy neutral-only checkpoints keep working.
+        pocket_charge = getattr(batch_data, "pocket_charge", None)
 
         handle_features = batch_data.handle_features
         if handle_features.dim() == 1:
@@ -203,7 +207,7 @@ class SynTreePolicy(nn.Module):
 
         # 1. Pocket encoding.
         pocket_s, pocket_v, pocket_pooled = self.encode_pocket(
-            pocket_pos, pocket_z, pocket_batch
+            pocket_pos, pocket_z, pocket_batch, pocket_charge
         )
         num_graphs = pocket_pooled.size(0)
         if num_graphs != batch_size:

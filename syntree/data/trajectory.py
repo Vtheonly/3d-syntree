@@ -162,6 +162,7 @@ class RetrosyntheticTrajectoryBuilder:
                 Data(
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
+                    pocket_charge=pocket_features["pocket_charge"],
                     handle_features=handle_features,
                     target_synthon=torch.tensor(
                         int(target.synthon_index), dtype=torch.long
@@ -203,6 +204,7 @@ class RetrosyntheticTrajectoryBuilder:
                 Data(
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
+                    pocket_charge=pocket_features["pocket_charge"],
                     handle_features=terminal_features,
                     target_synthon=torch.tensor(0, dtype=torch.long),
                     target_reaction_family_idx=torch.tensor(

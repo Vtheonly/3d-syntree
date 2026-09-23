@@ -211,6 +211,7 @@ class SBDDGenerator:
             batch_data = Data(
                 pocket_pos=pocket_pos.to(self.device),
                 pocket_z=pocket_z.to(self.device),
+                pocket_charge=feats["pocket_charge"].to(self.device),
                 pocket_batch=torch.zeros(
                     pocket_pos.size(0), dtype=torch.long, device=self.device
                 ),
@@ -332,8 +333,16 @@ class SBDDGenerator:
                 break
 
             core_atom, synthon_atom = result.junction_bond
-            self.conformer_engine.set_dihedral(
-                product, (core_atom, synthon_atom), dihedral_pred
+            # Resonance-aware torsion application: amide/ester junctions snap
+            # to planar {trans, cis} (choosing the lower-LJ-energy option)
+            # and the policy angle propagates to the adjacent true single
+            # bond, exactly like protein phi/psi angles.
+            _, junction_angle, rotated_bond = self.conformer_engine.apply_junction_torsion(
+                product,
+                (core_atom, synthon_atom),
+                dihedral_pred,
+                pocket_coords=pocket_coords_np,
+                pocket_vdw=pocket_vdw,
             )
 
             if optimize_torsion_grid:
@@ -356,6 +365,13 @@ class SBDDGenerator:
                     "synthon_id": self.catalog.get_id(selected_synthon_idx),
                     "synthon_smiles": self.catalog.get_smiles(selected_synthon_idx),
                     "dihedral_applied_rad": dihedral_pred,
+                    "junction_angle_rad": junction_angle,
+                    "torsion_mode": (
+                        "planar_snap_adjacent"
+                        if rotated_bond != (core_atom, synthon_atom)
+                        else "direct"
+                    ),
+                    "rotated_bond": list(rotated_bond) if rotated_bond else None,
                     "new_atoms": len(result.synthon_atom_map) + len(result.new_atoms),
                 }
             )
@@ -368,6 +384,27 @@ class SBDDGenerator:
         )
         smiles = Chem.MolToSmiles(Chem.RemoveHs(Chem.Mol(current_mol)))
 
+        # Lennard-Jones contact energy (soft-core 6-12 with an attractive
+        # dispersion well): unlike the clash score, this penalises both
+        # steric overlap AND drifting into open solvent, so it is the
+        # physically meaningful pocket-occupation signal for the RL reward.
+        try:
+            ligand_noH = Chem.RemoveHs(Chem.Mol(current_mol))
+            ligand_coords = np.array(
+                ligand_noH.GetConformer().GetPositions(), dtype=np.float64
+            )
+            ligand_vdw = np.array(
+                [vdw_radius(int(a.GetAtomicNum())) for a in ligand_noH.GetAtoms()],
+                dtype=np.float64,
+            )
+            contact_energy = float(
+                self.conformer_engine.compute_lennard_jones_np(
+                    ligand_coords, pocket_coords_np, ligand_vdw, pocket_vdw
+                )
+            )
+        except Exception:
+            contact_energy = 0.0
+
         return {
             "rdkit_mol": current_mol,
             "recipe": recipe,
@@ -375,6 +412,7 @@ class SBDDGenerator:
             "checks": checks,
             "smiles": smiles,
             "clash_score": float(total_clash),
+            "contact_energy": contact_energy,
             "descriptors": self.validator.descriptors(current_mol),
             "policy_trace": policy_trace if return_trace else None,
         }

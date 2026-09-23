@@ -33,6 +33,12 @@ class PocketEncoder(nn.Module):
         cutoff: interaction cutoff radius (Angstrom).
         max_atomic_number: size of the element embedding table.
         dropout: dropout applied to the final scalar features.
+
+    The encoder optionally consumes per-atom formal charges (kcal/mol-side
+    protonation states at pH 7.4, e.g. Asp/Glu -1, Arg/Lys +1). Charges are
+    injected through a small MLP added to the element embedding so the
+    network can learn salt-bridge formation that raw atomic numbers cannot
+    express.
     """
 
     def __init__(
@@ -53,6 +59,17 @@ class PocketEncoder(nn.Module):
         self.atomic_embedding = nn.Embedding(max_atomic_number, hidden_dim)
         nn.init.xavier_uniform_(self.atomic_embedding.weight)
 
+        # Formal-charge encoder: two-signed scalar -> hidden modulation.
+        # tanh saturates at extreme charges so a misassigned +4 iron never
+        # explodes the activation scale. Bias-free on purpose: a neutral
+        # pocket (all charges 0) must reproduce the legacy charge-unaware
+        # forward pass exactly, for any weight values.
+        self.charge_proj = nn.Sequential(
+            nn.Linear(1, hidden_dim, bias=False),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+        )
+
         self.rbf = RadialBasis(num_radial, cutoff)
         self.layers = nn.ModuleList(
             [BatchedPaiNNLayer(hidden_dim, num_radial) for _ in range(num_layers)]
@@ -65,8 +82,19 @@ class PocketEncoder(nn.Module):
         pos: torch.Tensor,                       # [N, 3]
         atomic_nums: torch.Tensor,               # [N]
         batch: Optional[torch.Tensor] = None,    # [N]
+        charges: Optional[torch.Tensor] = None,  # [N] formal charges (pH 7.4)
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encode a (possibly batched) pocket point cloud.
+
+        Args:
+            pos: atom positions ``[N, 3]``.
+            atomic_nums: element identifiers ``[N]``.
+            batch: graph assignment ``[N]`` (optional; single graph assumed
+                when ``None``).
+            charges: per-atom formal charges at physiological pH ``[N]``
+                (optional). ``None`` is treated as all-neutral, which keeps
+                the encoder shape-compatible with legacy checkpoints that
+                were trained before protonation-aware featurization.
 
         Returns:
             ``(scalars, vectors, pooled)`` where ``scalars`` is ``[N, d]``,
@@ -79,6 +107,10 @@ class PocketEncoder(nn.Module):
             raise ValueError(
                 f"atomic_nums length {atomic_nums.shape[0]} != num atoms {pos.size(0)}"
             )
+        if charges is not None and charges.numel() != pos.size(0):
+            raise ValueError(
+                f"charges length {charges.numel()} != num atoms {pos.size(0)}"
+            )
         if batch is None:
             batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
 
@@ -89,6 +121,9 @@ class PocketEncoder(nn.Module):
         edge_rbf = self.rbf(edge_dist)                     # [E, num_radial]
 
         scalar = self.atomic_embedding(atomic_nums)
+        if charges is not None:
+            charge_feat = charges.to(scalar.dtype).reshape(-1, 1)
+            scalar = scalar + self.charge_proj(charge_feat)
         vector = torch.zeros(
             pos.size(0), 3, self.hidden_dim,
             device=pos.device, dtype=scalar.dtype,

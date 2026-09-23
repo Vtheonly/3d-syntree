@@ -1,9 +1,12 @@
 """Atomic featurization for protein pockets and ligand attachment handles.
 
-Pocket atoms are encoded as ``(position, atomic number)`` point clouds,
-centroid-centered for translation invariance. Attachment handles are encoded
-as fixed-length flat feature vectors summarising the reacting atom and its
-chemical environment.
+Pocket atoms are encoded as ``(position, atomic number, formal charge)``
+point clouds, centroid-centered for translation invariance. X-ray pockets
+arrive without hydrogens and with neutral heavy atoms; formal charges at
+physiological pH (Asp/Glu -1, Arg/Lys +1, protonated His +1) are assigned
+from PDB residue/atom names so the policy can learn salt bridges.
+Attachment handles are encoded as fixed-length flat feature vectors
+summarising the reacting atom and its chemical environment.
 """
 
 from __future__ import annotations
@@ -49,6 +52,52 @@ _HANDLE_CLASSES = [
     "azide",
 ]
 
+# ---------------------------------------------------------------------------
+# Physiological protonation states (pH 7.4) for standard amino-acid
+# residues, expressed as formal charges assigned to the side-chain heavy
+# atoms that carry the residue's charge. X-ray PDB files do not resolve
+# hydrogens and RDKit parses their heavy atoms as neutral, which would make
+# a PaiNN encoder blind to salt-bridge formation.
+# ---------------------------------------------------------------------------
+_PROTONATION_RULES = {
+    # residue: {atom name -> fractional formal charge}; the values sum to the
+    # residue's net charge at pH 7.4.
+    "ASP": {"OD1": -0.5, "OD2": -0.5},
+    "GLU": {"OE1": -0.5, "OE2": -0.5},
+    "ARG": {"NE": 1.0 / 3.0, "NH1": 1.0 / 3.0, "NH2": 1.0 / 3.0},
+    "LYS": {"NZ": 1.0},
+    # Protonated histidine (HIP) only; neutral HID/HIE carry no net charge.
+    "HIP": {"ND1": 0.5, "NE2": 0.5},
+}
+
+
+def assign_pocket_formal_charges(pocket_mol: Chem.Mol) -> np.ndarray:
+    """Per-atom formal charges at pH 7.4 for a PDB-derived pocket.
+
+    Charge assignment mirrors the PDB2PQR convention for standard residues
+    (Asp/Glu carboxylates -1 shared by both oxygens, Arg guanidinium +1
+    shared across the three nitrogens, Lys ammonium +1 on NZ, protonated His
+    +1 shared by both ring nitrogens). Atoms with no PDB residue info keep
+    their RDKit formal charge (SMILES-derived molecules are unaffected).
+
+    Returns:
+        ``[N]`` float32 array of formal charges.
+    """
+    charges = np.zeros(pocket_mol.GetNumAtoms(), dtype=np.float32)
+    for atom in pocket_mol.GetAtoms():
+        info = atom.GetPDBResidueInfo()
+        if info is None:
+            charges[atom.GetIdx()] = float(atom.GetFormalCharge())
+            continue
+        residue = info.GetResidueName().strip().upper()
+        name = info.GetName().strip().upper()
+        rule = _PROTONATION_RULES.get(residue)
+        if rule and name in rule:
+            charges[atom.GetIdx()] = rule[name]
+        else:
+            charges[atom.GetIdx()] = float(atom.GetFormalCharge())
+    return charges
+
 
 class MolecularFeaturizer:
     """Static helpers turning RDKit objects into model-ready tensors."""
@@ -74,7 +123,7 @@ class MolecularFeaturizer:
 
         Returns:
             Dict with ``pocket_pos`` ``[N, 3]``, ``pocket_z`` ``[N]`` and
-            ``centroid`` ``[1, 3]``.
+            ``pocket_charge`` ``[N]`` (formal charges at pH 7.4).
         """
         if pocket_mol is None:
             raise ValueError("featurize_pocket requires a valid Mol")
@@ -92,6 +141,7 @@ class MolecularFeaturizer:
 
         pos_t = torch.tensor(positions, dtype=torch.float32)
         z_t = torch.tensor(atomic_nums, dtype=torch.long)
+        charge_t = torch.from_numpy(assign_pocket_formal_charges(pocket_mol))
 
         if center is None:
             centroid = pos_t.mean(dim=0, keepdim=True)
@@ -102,6 +152,7 @@ class MolecularFeaturizer:
         return {
             "pocket_pos": pos_t,
             "pocket_z": z_t,
+            "pocket_charge": charge_t,
             "centroid": centroid,
         }
 

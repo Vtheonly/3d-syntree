@@ -292,6 +292,8 @@ class CrossDockedDataset(InMemoryDataset):
                 Data(
                     pocket_pos=pos,
                     pocket_z=z,
+                    # Synthetic pockets carry no residue identity -> neutral.
+                    pocket_charge=torch.zeros(z.size(0), dtype=torch.float32),
                     handle_features=handle_feat,
                     target_synthon=torch.tensor(target_synthon, dtype=torch.long),
                     target_dihedral=torch.tensor(target_dihedral, dtype=torch.float32),
@@ -382,6 +384,7 @@ class CrossDockedDataset(InMemoryDataset):
                 Data(
                     pocket_pos=feats["pocket_pos"],
                     pocket_z=feats["pocket_z"],
+                    pocket_charge=feats["pocket_charge"],
                     handle_features=MolecularFeaturizer.featurize_handle(
                         target.core_mol,
                         handle_info.atom_indices,

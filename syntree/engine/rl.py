@@ -31,11 +31,13 @@ from syntree.engine.evaluator import EvaluationPipeline
 class ThreeDRewardConfig:
     docking_weight: float = 1.0
     clash_weight: float = 0.25
+    contact_weight: float = 0.25
     fsp3_weight: float = 0.15
     qed_weight: float = 0.15
     validity_weight: float = 0.5
     docking_scale: float = 10.0
     clash_scale: float = 25.0
+    contact_scale: float = 5.0
 
 
 class ThreeDReward:
@@ -46,11 +48,13 @@ class ThreeDReward:
         self.cfg = ThreeDRewardConfig(
             docking_weight=float(cfg.get("docking_weight", 1.0)),
             clash_weight=float(cfg.get("clash_weight", 0.25)),
+            contact_weight=float(cfg.get("contact_weight", 0.25)),
             fsp3_weight=float(cfg.get("fsp3_weight", 0.15)),
             qed_weight=float(cfg.get("qed_weight", 0.15)),
             validity_weight=float(cfg.get("validity_weight", 0.5)),
             docking_scale=float(cfg.get("docking_scale", 10.0)),
             clash_scale=float(cfg.get("clash_scale", 25.0)),
+            contact_scale=float(cfg.get("contact_scale", 5.0)),
         )
 
     def compute(
@@ -58,10 +62,12 @@ class ThreeDReward:
         mol: Chem.Mol,
         pocket_pdb_path: Optional[str] = None,
         clash_score: float = 0.0,
+        contact_energy: float = 0.0,
     ) -> Dict[str, float]:
         components: Dict[str, float] = {
             "docking": 0.0,
             "clash": 0.0,
+            "contact": 0.0,
             "fsp3": 0.0,
             "qed": 0.0,
             "validity": 0.0,
@@ -98,6 +104,17 @@ class ThreeDReward:
             np.exp(-max(0.0, clash_score) / self.cfg.clash_scale)
         )
 
+        # Lennard-Jones contact energy: negative when the ligand occupies the
+        # pocket at van der Waals contact (favourable dispersion), positive
+        # under steric overlap, and ~0 when the ligand drifts into solvent.
+        # tanh maps it to a bounded reward that is maximal for a well-packed
+        # pose and *negative* for a clashing one, so the agent can no longer
+        # "win" by leaving the pocket.
+        contact_energy = float(contact_energy)
+        components["contact"] = float(
+            np.tanh(-contact_energy / max(self.cfg.contact_scale, 1e-6))
+        )
+
         docking_available = False
         if pocket_pdb_path:
             try:
@@ -130,6 +147,7 @@ class ThreeDReward:
         reward = (
             self.cfg.docking_weight * components["docking"]
             + self.cfg.clash_weight * components["clash"]
+            + self.cfg.contact_weight * components["contact"]
             + self.cfg.fsp3_weight * components["fsp3"]
             + self.cfg.qed_weight * components["qed"]
             + self.cfg.validity_weight * components["validity"]

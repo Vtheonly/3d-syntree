@@ -229,6 +229,7 @@ def main(argv=None) -> int:
                 result["rdkit_mol"],
                 pocket,
                 clash_score=float(result.get("clash_score", 0.0)),
+                contact_energy=float(result.get("contact_energy", 0.0)),
             )
             model.train()
             stats = finetuner.update_episode(

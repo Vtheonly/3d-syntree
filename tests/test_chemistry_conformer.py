@@ -91,7 +91,12 @@ class TestEmbedProduct:
             engine.embed_product(None)
 
     def test_scaffold_lock_preserves_coordinates(self, engine):
-        """Core atoms must keep their exact positions through embedding."""
+        """Non-junction core atoms stay tethered to their exact positions;
+        the junction core atom is free to relax its bond geometry (harmonic
+        restraints instead of rigid freezing - Mistake 2 in the chemistry
+        audit)."""
+        from syntree.chemistry.conformer import _junction_atoms_of
+
         rxn = ReactionEngine()
         core = Chem.MolFromSmiles("OC(=O)C1CCCCC1")
         core3d = engine.embed_product(core)
@@ -107,9 +112,43 @@ class TestEmbedProduct:
             result.product, core_atom_map=result.core_atom_map, core_reference=core_noH
         )
         assert product is not None
-        prod_pos = np.array(product.GetConformer().GetPositions())
+        prod_noH = Chem.RemoveHs(Chem.Mol(product))
+        prod_pos = np.array(prod_noH.GetConformer().GetPositions())
+
+        junction = {
+            prod_idx
+            for prod_idx in _junction_atoms_of(product, result.core_atom_map)
+            if prod_idx < prod_noH.GetNumAtoms()
+        }
         for core_idx, prod_idx in result.core_atom_map.items():
-            assert np.allclose(prod_pos[prod_idx], ref_pos[core_idx], atol=1e-6)
+            drift = float(
+                np.linalg.norm(prod_pos[prod_idx] - ref_pos[core_idx])
+            )
+            if prod_idx in junction:
+                # Junction atom relaxes to heal the new bond (bounded sanity).
+                assert drift < 1.0, f"junction atom drifted {drift:.2f} A"
+            else:
+                # Harmonic tether: essentially rigid for the pocket anchor.
+                assert drift < 0.15, f"core atom drifted {drift:.2f} A"
+
+    def test_junction_bond_length_physical(self, engine):
+        """The newly formed C-N amide bond must relax into the physical
+        1.2-1.6 A window instead of being stretched/compressed by the
+        scaffold lock."""
+        rxn = ReactionEngine()
+        core = Chem.MolFromSmiles("OC(=O)C1CCCCC1")
+        core3d = engine.embed_product(core)
+        core_noH = Chem.RemoveHs(core3d)
+        result = rxn.apply_reaction(
+            core_noH, Chem.MolFromSmiles("C1CC(N)CC1"), "amide_coupling"
+        )
+        product = engine.embed_product(
+            result.product, core_atom_map=result.core_atom_map, core_reference=core_noH
+        )
+        pos = np.array(product.GetConformer().GetPositions())
+        a1, a2 = result.junction_bond
+        d = float(np.linalg.norm(pos[a1] - pos[a2]))
+        assert 1.2 < d < 1.6, f"junction C-N bond length {d:.2f} A is unphysical"
 
     def test_no_torn_bonds_after_lock(self, engine):
         """Bond lengths between locked core and new atoms must be sane."""

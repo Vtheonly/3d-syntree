@@ -33,13 +33,17 @@ logger = logging.getLogger(__name__)
 # as negations (``!H0``/``!H3``) for the same reason.
 # --------------------------------------------------------------------------
 REACTION_TEMPLATES: Dict[str, str] = {
-    "amide_coupling": "[C:1](=O)[OH].[N;!H0;!H3;!$(NC=O):2]>>[C:1](=O)[N:2]",
+    # The carbonyl oxygen is atom-mapped (:3) so its identity (and 3D position)
+    # is carried into the product; unmapped template atoms are recreated fresh
+    # by RDKit, which would leave the C=O oxygen unanchored during scaffold
+    # locking and let the whole amide plane swing away.
+    "amide_coupling": "[C:1](=[O:3])[OH].[N;!H0;!H3;!$(NC=O):2]>>[C:1](=[O:3])[N:2]",
     "reductive_amination": "[C;H1:1]=O.[N;!H0;!H3;!$(NC=O):2]>>[C:1][N:2]",
     "suzuki_coupling": "[c:1][Br,I,Cl].[c:2][B]([OH,O])[OH,O]>>[c:1][c:2]",
     "snar": "[c:1][F,Cl].[N;!H0;!H3;!$(NC=O):2]>>[c:1][N:2]",
     "urea_formation": "[N;!H0;!H3:1].[N;!H0;!H3:2]>>[N:1]C(=O)[N:2]",
     "buchwald_hartwig": "[c:1][Br,I,Cl].[N;!H0;!H3:2]>>[c:1][N:2]",
-    "esterification": "[C:1](=O)[OH].[O;H1;!$(O[B]):2]>>[C:1](=O)[O:2]",
+    "esterification": "[C:1](=[O:3])[OH].[O;H1;!$(O[B]):2]>>[C:1](=[O:3])[O:2]",
     "click_triazole": "[C:1]C#C.[N:2]=[N+]=[N-]>>[C:1]c1cn([N:2])nn1",
 }
 
@@ -354,6 +358,13 @@ class ReactionEngine:
         # Tag provenance on copies so the inputs remain untouched.
         tagged_a = _tag_atoms(reactant_a, _CORE_MAP_OFFSET if reactant_a is core_mol else _SYNTHON_MAP_OFFSET)
         tagged_b = _tag_atoms(reactant_b, _CORE_MAP_OFFSET if reactant_b is core_mol else _SYNTHON_MAP_OFFSET)
+        # Stereochemical integrity: refresh CIP labels on both reactants so
+        # RunReactants propagates (R)/(S) tags onto the product instead of
+        # silently stripping them near the reacting handles.
+        for tagged in (tagged_a, tagged_b):
+            Chem.AssignStereochemistry(
+                tagged, cleanIt=True, force=True, flagPossibleStereoCenters=True
+            )
 
         rxn = self.reactions[reaction_name]
         try:
