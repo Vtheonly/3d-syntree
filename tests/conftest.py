@@ -49,6 +49,7 @@ def tiny_config() -> dict:
             "batch_size": 4,
             "accumulate_grad_batches": 1,
             "val_fraction": 0.25,
+            "synthetic_fallback": true,
             "synthetic_samples": 12,
         },
         "model": {
