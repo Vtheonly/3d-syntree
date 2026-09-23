@@ -89,8 +89,12 @@ class CrossDockedDataset(InMemoryDataset):
             p for p in self.all_pair_files if self._belongs_to_split(p)
         ]
 
+        # Synthetic data is explicit. With synthetic=None it is enabled
+        # only when the caller explicitly opted into synthetic_fallback.
         self.use_synthetic = (
-            (not self.has_real_pairs) if synthetic is None else bool(synthetic)
+            bool(synthetic)
+            if synthetic is not None
+            else (not self.has_real_pairs and self.synthetic_fallback)
         )
 
         super().__init__(self.root_dir, transform, pre_transform, pre_filter)
@@ -369,6 +373,13 @@ class CrossDockedDataset(InMemoryDataset):
             skipped_invalid,
             skipped_unmatched,
         )
+
+        if not samples and not self.has_real_pairs and not self.synthetic_fallback:
+            raise RuntimeError(
+                "No CrossDocked pocket-ligand pairs were found. Real training "
+                "requires the actual CrossDocked pairs. Set synthetic=True or "
+                "enable data.synthetic_fallback only for an explicit smoke run."
+            )
 
         if not samples and self.pair_files and not self.synthetic_fallback:
             raise RuntimeError(
