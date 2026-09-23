@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Lipinski
+from rdkit.Chem import Descriptors, Lipinski, AllChem, DataStructs
 
 from syntree.chemistry.validator import ChemicalValidator
 
@@ -115,6 +115,48 @@ class EvaluationPipeline:
         report["recipe_completeness"] = float(
             np.mean([m["recipe_complete"] for m in per_mol])
         )
+
+        # Distribution/novelty metrics used by modern SBDD benchmarks. These
+        # are computed independently of docking so a model cannot obtain a
+        # "good" result merely by producing larger molecules.
+        smiles = [m["smiles"] for m in per_mol if m["smiles"]]
+        unique_smiles = list(dict.fromkeys(smiles))
+        report["uniqueness"] = len(unique_smiles) / max(1, len(smiles))
+        fps = []
+        for mol in mols:
+            if mol is None:
+                continue
+            try:
+                fps.append(AllChem.GetMorganFingerprintAsBitVect(
+                    Chem.RemoveHs(Chem.Mol(mol)), 2, nBits=2048
+                ))
+            except Exception:
+                continue
+        if len(fps) > 1:
+            pairwise = []
+            for i in range(len(fps)):
+                for j in range(i + 1, len(fps)):
+                    pairwise.append(DataStructs.TanimotoSimilarity(fps[i], fps[j]))
+            report["mean_pairwise_tanimoto"] = float(np.mean(pairwise))
+            report["mean_pairwise_tanimoto_distance"] = float(1.0 - np.mean(pairwise))
+        else:
+            report["mean_pairwise_tanimoto"] = None
+            report["mean_pairwise_tanimoto_distance"] = None
+
+        reference_path = self.config.get("evaluation", {}).get("reference_smiles_path")
+        if reference_path and os.path.isfile(reference_path):
+            with open(reference_path, encoding="utf-8") as ref:
+                reference = {
+                    line.strip() for line in ref
+                    if line.strip() and not line.startswith("#")
+                }
+            report["novelty"] = float(
+                np.mean([s not in reference for s in smiles])
+            ) if smiles else 0.0
+            report["reference_smiles_count"] = len(reference)
+        else:
+            report["novelty"] = None
+            report["novelty_status"] = "unavailable_missing_reference_smiles"
 
         # Retrosynthetic feasibility.
         report["retrosynthetic_feasibility"] = self._retro_feasibility(per_mol)

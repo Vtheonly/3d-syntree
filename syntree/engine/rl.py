@@ -1,15 +1,22 @@
 """Policy-gradient fine-tuning for 3D-SynTree.
 
-Stage 2 reuses the exact reaction-constrained generator. Chemistry execution is
-non-differentiable, while the policy probabilities over reaction/synthon/STOP
-actions remain differentiable, which makes PPO suitable for optimizing
-black-box 3D rewards.
+Stage 2 reuses the chemistry-constrained generator. The environment is
+non-differentiable, but the factorized policy
+
+    pi(a_t|s_t) = pi(r_t|s_t) pi(b_t|r_t,s_t) pi(phi_t|b_t,r_t,s_t)
+
+is differentiable with respect to its discrete action probabilities and the
+terminal reward. PPO therefore optimizes the actual synthesis-constrained
+policy rather than a post-hoc molecular score.
+
+The implementation deliberately reports when docking is unavailable instead
+of substituting a fabricated score.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import torch
@@ -32,7 +39,7 @@ class ThreeDRewardConfig:
 
 
 class ThreeDReward:
-    """Bounded multi-objective reward for generated ligands."""
+    """Bounded terminal reward for a generated ligand."""
 
     def __init__(self, config: Optional[Dict] = None):
         cfg = config or {}
@@ -60,17 +67,15 @@ class ThreeDReward:
             "validity": 0.0,
         }
         if mol is None:
-            return {"reward": 0.0, **components}
+            return {"reward": 0.0, **components, "docking_available": 0.0}
 
-        smiles = None
         try:
-            smiles = Chem.MolToSmiles(Chem.RemoveHs(Chem.Mol(mol)))
-            Chem.SanitizeMol(Chem.Mol(mol))
+            heavy = Chem.RemoveHs(Chem.Mol(mol))
+            Chem.SanitizeMol(Chem.Mol(heavy))
             components["validity"] = 1.0
         except Exception:
-            return {"reward": 0.0, **components}
+            return {"reward": 0.0, **components, "docking_available": 0.0}
 
-        descriptors = {}
         try:
             from syntree.chemistry.validator import ChemicalValidator
 
@@ -84,14 +89,16 @@ class ThreeDReward:
         fsp3 = float(descriptors.get("fsp3", 0.0))
         components["fsp3"] = float(np.tanh(max(0.0, fsp3 - 0.42) / 0.20))
         try:
-            components["qed"] = float(QED.qed(Chem.RemoveHs(Chem.Mol(mol))))
+            components["qed"] = float(QED.qed(heavy))
         except Exception:
             components["qed"] = 0.0
 
         clash_score = float(clash_score)
-        components["clash"] = float(np.exp(-max(0.0, clash_score) / self.cfg.clash_scale))
+        components["clash"] = float(
+            np.exp(-max(0.0, clash_score) / self.cfg.clash_scale)
+        )
 
-        docking_engine = None
+        docking_available = False
         if pocket_pdb_path:
             try:
                 evaluator = EvaluationPipeline(
@@ -104,19 +111,21 @@ class ThreeDReward:
                     output_dir="./experiments/rl_docking",
                 )
                 available = evaluator._tool_availability()
-                docking_engine = "gnina" if available.get("gnina") else (
+                engine = "gnina" if available.get("gnina") else (
                     "vina" if available.get("vina") else None
                 )
-                if docking_engine:
+                if engine:
+                    docking_available = True
                     result = evaluator._dock([mol], pocket_pdb_path)
                     scores = [s for s in result.get("scores", []) if s is not None]
                     if scores:
-                        # More negative docking energies become larger bounded rewards.
                         components["docking"] = float(
                             np.tanh(-float(scores[0]) / self.cfg.docking_scale)
                         )
+                    else:
+                        docking_available = False
             except Exception:
-                docking_engine = None
+                docking_available = False
 
         reward = (
             self.cfg.docking_weight * components["docking"]
@@ -128,7 +137,7 @@ class ThreeDReward:
         return {
             "reward": float(reward),
             **components,
-            "docking_available": float(docking_engine is not None),
+            "docking_available": float(docking_available),
         }
 
 
@@ -146,7 +155,12 @@ class PPOTransition:
 
 
 class PPOFineTuner:
-    """Clipped PPO optimizer over chemistry-constrained SBDD trajectories."""
+    """Clipped PPO optimizer over chemistry-constrained SBDD trajectories.
+
+    Returns are terminal-reward returns: for a trajectory of length T, the
+    reward at transition t is gamma**(T-1-t) * R. This avoids accidentally
+    counting the same terminal reward once per preceding transition.
+    """
 
     def __init__(
         self,
@@ -191,7 +205,27 @@ class PPOFineTuner:
             reaction_log_prob = out["reaction_log_probs"][0, family]
             joint_log_prob = reaction_log_prob + action_log_prob
 
-        return joint_log_prob, out["state_value"][0], out["synthon_log_probs"][0]
+        reaction_probs = out["reaction_log_probs"][0].exp()
+        synthon_probs = out["synthon_log_probs"][0].exp()
+        reaction_entropy = -(reaction_probs * out["reaction_log_probs"][0]).sum()
+        synthon_entropy = -(synthon_probs * out["synthon_log_probs"][0]).sum()
+
+        return (
+            joint_log_prob,
+            out["state_value"][0],
+            reaction_entropy + synthon_entropy,
+        )
+
+    @staticmethod
+    def terminal_returns(reward: float, horizon: int, gamma: float) -> torch.Tensor:
+        """Return discounted terminal rewards for a trajectory."""
+        if horizon <= 0:
+            return torch.empty(0, dtype=torch.float32)
+        return torch.tensor(
+            [float(reward) * (float(gamma) ** (horizon - 1 - i))
+             for i in range(horizon)],
+            dtype=torch.float32,
+        )
 
     def update_episode(
         self,
@@ -199,7 +233,12 @@ class PPOFineTuner:
         reward: float,
     ) -> Dict[str, float]:
         if not trace:
-            return {"loss": 0.0, "reward": float(reward), "steps": 0.0}
+            return {
+                "loss": 0.0,
+                "reward": float(reward),
+                "steps": 0.0,
+                "mean_advantage": 0.0,
+            }
 
         transitions = [
             PPOTransition(
@@ -214,14 +253,10 @@ class PPOFineTuner:
             for item in trace
         ]
 
-        returns = []
-        discounted = 0.0
-        for _ in range(len(transitions)):
-            discounted = float(reward) + self.gamma * discounted
-            returns.append(discounted)
-        returns.reverse()
-        returns_t = torch.tensor(returns, dtype=torch.float32, device=self.device)
-
+        horizon = len(transitions)
+        returns_t = self.terminal_returns(
+            reward, horizon, self.gamma
+        ).to(self.device)
         old_values = torch.stack(
             [t.old_value.float() for t in transitions]
         ).to(self.device)
@@ -232,13 +267,14 @@ class PPOFineTuner:
             )
 
         last_loss = 0.0
+        last_entropy = 0.0
         for _ in range(self.ppo_epochs):
             policy_terms = []
             value_terms = []
             entropy_terms = []
 
             for idx, transition in enumerate(transitions):
-                new_log_prob, new_value, synthon_log_probs = self._log_prob_and_value(
+                new_log_prob, new_value, entropy = self._log_prob_and_value(
                     transition
                 )
                 old_log_prob = transition.old_log_prob.to(self.device)
@@ -252,9 +288,7 @@ class PPOFineTuner:
                 ) * adv
                 policy_terms.append(-torch.minimum(unclipped, clipped))
                 value_terms.append(F.mse_loss(new_value, returns_t[idx]))
-
-                probs = synthon_log_probs.exp()
-                entropy_terms.append(-(probs * synthon_log_probs).sum())
+                entropy_terms.append(entropy)
 
             policy_loss = torch.stack(policy_terms).mean()
             value_loss = torch.stack(value_terms).mean()
@@ -272,12 +306,14 @@ class PPOFineTuner:
             )
             self.optimizer.step()
             last_loss = float(loss.detach().item())
+            last_entropy = float(entropy.detach().item())
 
         return {
             "loss": last_loss,
             "reward": float(reward),
             "steps": float(len(transitions)),
             "mean_advantage": float(advantages.mean().detach().item()),
+            "policy_entropy": last_entropy,
         }
 
 

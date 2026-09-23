@@ -483,3 +483,185 @@ reaction provenance is available.
 ## 11. License
 
 MIT — see [LICENSE](LICENSE).
+
+
+## 12. Research-grade contribution boundary
+
+3D-SynTree is not claimed to be novel merely because it combines PaiNN, RDKit,
+reaction SMARTS, cross-attention, or a synthon catalog. Those are established
+components. The research contribution must be demonstrated empirically by
+showing what the **chemistry-constrained 3D policy** adds beyond each component
+and by using a leakage-safe benchmark.
+
+The current research hypothesis is:
+
+> A reaction-constrained autoregressive policy can learn target-conditioned
+> choices over reaction family, purchasable synthon, and periodic junction
+> torsion while retaining hard chemical validity, and PPO can optimize the
+> resulting 3D designs against an external pocket oracle without relaxing the
+> synthesis grammar.
+
+This is a falsifiable hypothesis, not an acceptance claim.
+
+### 12.1 What is actually novel here
+
+The defensible unit of contribution is the **integrated constrained decision
+process**, not the individual neural layers:
+
+1. **Discrete reaction family** conditioned on the current reactive handle and
+   protein-pocket context.
+2. **Catalog-scale discrete synthon selection** under a reaction grammar.
+3. **Continuous periodic torsion** for the newly created bond.
+4. **Deterministic chemical execution** between policy decisions.
+5. **Terminal multi-objective optimization** with PPO while preserving the same
+   reaction/action constraints.
+6. **Evaluation of the entire synthesis-and-geometry trajectory**, rather than
+   reporting only a molecular validity percentage.
+
+The repository therefore reports reaction accuracy, oracle-family synthon
+accuracy, joint action accuracy, circular torsion NLL, chemical validity,
+3D validity, diversity, novelty, docking, and independent retrosynthetic
+solvability separately.
+
+This distinction matters because recent 3D SBDD benchmarks show that generated
+3D conformations can be invalid even when conventional docking scores look
+strong. A valid relaxed pose and a low docking score are therefore not
+interchangeable claims.
+
+### 12.2 Required ablations
+
+A thesis/paper run should contain at least these controlled variants:
+
+| Variant | Reaction grammar | 3D pocket conditioning | Learned torsion | PPO |
+| :--- | :---: | :---: | :---: | :---: |
+| Random constrained | Yes | No | No | No |
+| Catalog policy | Yes | Yes | No | No |
+| 3D-SynTree BC | Yes | Yes | Yes | No |
+| 3D-SynTree PPO | Yes | Yes | Yes | Yes |
+
+Additional ablations should remove the handle-to-pocket distance features,
+remove the reaction-family head, and replace the learned torsion with a
+deterministic torsion diagnostic. These experiments establish whether each
+architectural commitment contributes measurable information.
+
+### 12.3 Baseline protocol
+
+Published baselines such as TargetDiff, DiffSBDD, Pocket2Mol, SyntheMol, or
+other contemporary SBDD systems should not be reimplemented inside this
+repository merely to manufacture a comparison. Their official released
+checkpoints/configurations should generate outputs for the **same target
+manifest**, after which this repository evaluates the exported structures with
+the same metric code.
+
+Use:
+
+```bash
+python scripts/run_comparative_benchmark.py \
+  --manifest ./benchmarks/targets.jsonl \
+  --outputs ./benchmarks/outputs \
+  --methods 3d-syntree,targetdiff,diffsbbd,synthemol \
+  --limit 100
+```
+
+The target manifest must be frozen before model outputs are inspected. Target
+selection, sequence clustering, ligand filtering, docking protocol, and
+external retrosynthesis configuration must be shared across methods.
+
+Do not call a model's self-reported benchmark numbers a head-to-head result.
+A valid comparison requires the same targets, preprocessing, output budget,
+docking protocol, and metric implementation.
+
+### 12.4 Required primary metrics
+
+The comparative report should include:
+
+- chemical validity;
+- 3D validity / PoseBusters-style validity;
+- uniqueness;
+- pairwise molecular diversity;
+- novelty relative to the training corpus;
+- mean and distributional Fsp3;
+- molecular weight and other drug-like descriptors;
+- independent retrosynthetic solve rate;
+- docking score **only when the same external docking engine is available for
+  every method**;
+- target-conditioned success rate;
+- synthesis-step statistics and action-space failure rate.
+
+For a 3D generative model, docking alone is insufficient. The benchmark should
+also examine bond-length, angle, torsion, and pocket-distance distributions
+and, where appropriate, interaction recovery against the reference complex.
+
+### 12.5 Pareto analysis
+
+The phrase "break the Pareto frontier" is reserved for an observed result, not
+an architectural assumption.
+
+The final paper should plot at least:
+
+- docking/pose quality vs independent synthesis success;
+- docking/pose quality vs Fsp3;
+- synthesis success vs molecular diversity;
+- 3D validity vs docking score.
+
+Confidence intervals or bootstrap intervals should be reported across targets.
+A model occupies a useful trade-off region only if the observed data support
+that statement.
+
+### 12.6 Stage 2 PPO
+
+Stage 1 is behavioral cloning from reaction-validated crystal decompositions.
+Stage 2 is optional PPO fine-tuning:
+
+```bash
+python main.py \
+  --mode rl \
+  --config configs/rl_colab_12h.json \
+  --resume-auto
+```
+
+PPO uses a terminal reward. The reward is decomposed into docking, clash,
+Fsp3, QED, and chemical validity components. Docking is an external oracle:
+when GNINA/Vina is unavailable, the repository does **not** fabricate a docking
+score.
+
+The action space remains chemistry-constrained throughout RL. PPO therefore
+cannot directly propose an arbitrary atom graph or arbitrary bond geometry;
+every non-STOP action still passes through the same reaction grammar and RDKit
+reaction engine.
+
+### 12.7 Important scientific limitation
+
+The hybrid action space itself should not be presented as an unprecedented
+mathematical construction. SynCoGen has already demonstrated joint
+synthesis-aware 3D generation, while SHARP has demonstrated fragment-based
+hierarchical action-space reinforcement learning for synthesizable molecular
+optimization. The defensible contribution is therefore the particular
+reaction-family -> catalog-synthon -> periodic-torsion factorization, explicit
+RDKit reaction execution, target-conditioned torsion modeling, PPO training
+protocol, and empirical evidence produced by this repository.
+
+Likewise, high Fsp3 is not synonymous with good medicinal chemistry, and a
+catalog membership guarantee is not equivalent to successful laboratory
+synthesis. Independent retrosynthesis and, ultimately, experimental validation
+remain necessary.
+
+### 12.8 Reproducibility requirements
+
+Every reported experiment should archive:
+
+- exact Git commit;
+- dataset repository revision and manifest hashes;
+- synthon catalog hash;
+- target manifest hash;
+- model configuration;
+- random seeds;
+- checkpoint;
+- docking executable/version and command configuration;
+- PoseBusters version/configuration;
+- AiZynthFinder version/configuration;
+- generated SDFs and synthesis recipes;
+- per-target raw metrics.
+
+A paper table should never be produced from an unversioned mixture of local
+datasets, checkpoints, and generated outputs.
