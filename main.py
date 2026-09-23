@@ -178,15 +178,24 @@ def main(argv=None) -> int:
             print("[main] reinforcement_learning.enabled is false; enable it for Stage 2.", file=sys.stderr)
             return 2
 
-        manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
-        saved_model_cfg = manager.read_model_config()
+        stage1_manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
+        saved_model_cfg = stage1_manager.read_model_config()
         if saved_model_cfg:
             config["model"] = saved_model_cfg
             print("[main] restored model architecture from Stage 1 checkpoint")
 
         model = build_model(config).to(device)
-        start_epoch, _, _ = manager.restore_latest(model)
-        print(f"[main] Stage 2 PPO starting from checkpoint epoch {start_epoch - 1}")
+
+        # Keep PPO checkpoints separate from Stage 1 epoch checkpoints so the
+        # two training stages never overwrite one another.
+        rl_output_dir = args.output_dir or "./rl_outputs"
+        rl_ckpt_dir = os.path.join(rl_output_dir, "checkpoints")
+        rl_checkpoint_config = {**config, "huggingface": {"enabled": False}}
+        rl_manager = CheckpointManager(rl_checkpoint_config, ckpt_dir=rl_ckpt_dir)
+        rl_start_episode, _, _ = rl_manager.restore_latest(model)
+        print(
+            f"[main] Stage 2 PPO starting at episode {rl_start_episode}"
+        )
 
         generator = SBDDGenerator(
             model, config, device, output_dir=args.output_dir or "./rl_outputs"
@@ -207,7 +216,7 @@ def main(argv=None) -> int:
         temperature = float(rl_cfg.get("temperature", 1.0))
         checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
         history = []
-        for episode in range(start_epoch, episodes):
+        for episode in range(rl_start_episode, episodes):
             pocket = pocket_paths[episode % len(pocket_paths)]
             model.eval()
             result = generator.generate_ligand(
@@ -239,7 +248,7 @@ def main(argv=None) -> int:
                 f"loss={entry['loss']:.4f} | steps={entry['steps']:.0f}"
             )
             if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
-                manager.save_checkpoint(
+                rl_manager.save_checkpoint(
                     epoch=episode,
                     step=episode + 1,
                     model=model,
