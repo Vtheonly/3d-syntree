@@ -123,6 +123,7 @@ class ResilientTrainer:
 
         # GPU auto-scaling: grow the batch until the card is ~85% full.
         self.batch_size = max(1, int(data_cfg.get("batch_size", 16)))
+        self.lr_scale_factor = 1.0
         self._autoscale_batch(train_cfg)
 
         self.loader = self._make_loader(self.dataset, shuffle=True)
@@ -131,7 +132,7 @@ class ResilientTrainer:
         # Optimization.
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=float(train_cfg.get("learning_rate", 3e-4)),
+            lr=float(train_cfg.get("learning_rate", 3e-4)) * self.lr_scale_factor,
             weight_decay=float(train_cfg.get("weight_decay", 1e-5)),
         )
         self.total_steps = max(1, len(self.loader) // self.accum_steps * self.max_epochs)
@@ -265,11 +266,21 @@ class ResilientTrainer:
                   f"batch={self.batch_size}")
             return
 
-        # Rebalance accumulation to keep the effective batch roughly constant.
+        # Rebalance accumulation toward the configured effective batch, then
+        # scale the learning rate to the effective batch actually achieved.
         effective = self.batch_size * self.accum_steps
         new_accum = max(1, int(round(effective / tuned)))
         old_batch, old_accum = self.batch_size, self.accum_steps
+        old_effective = max(1, old_batch * old_accum)
         self.batch_size, self.accum_steps = tuned, new_accum
+        new_effective = max(1, self.batch_size * self.accum_steps)
+        auto_lr_rule = str(auto.get("lr_scale_rule", "linear")).lower()
+        if auto_lr_rule == "linear":
+            self.lr_scale_factor = new_effective / old_effective
+        elif auto_lr_rule == "sqrt":
+            self.lr_scale_factor = math.sqrt(new_effective / old_effective)
+        else:
+            self.lr_scale_factor = 1.0
 
         print(
             f"[trainer] auto-scale: free VRAM {free_gb:.2f} GB | "
@@ -278,6 +289,8 @@ class ResilientTrainer:
         print(
             f"[trainer] auto-scale: batch {old_batch} -> {tuned} | "
             f"accum {old_accum} -> {new_accum} | "
+            f"effective {old_effective} -> {new_effective} | "
+            f"lr scale {self.lr_scale_factor:.3f} | "
             f"probe peak {peak_gb:.2f} GB ({100.0 * peak_gb / max(free_gb, 1e-9):.0f}% of free)"
         )
         hard_cap = min(max_batch, len(self.dataset))
