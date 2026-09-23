@@ -34,3 +34,12 @@ env/
 # Secrets
 *.env
 .secrets/
+
+# Large external data, caches, experiments, and runtime secrets
+raw_data/
+data/multidataset/raw/
+data/multidataset/mmseqs_tmp/
+data/shards/
+hf_cache/
+experiments/
+runtime_config.json

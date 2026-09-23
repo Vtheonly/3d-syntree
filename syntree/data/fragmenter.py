@@ -52,6 +52,7 @@ class RetrosyntheticTarget:
     reaction_name: str
     core_handle_type: str
     target_dihedral: float
+    junction_bond: Tuple[int, int]
     core_mol: Chem.Mol
 
 
@@ -184,6 +185,7 @@ class ReactionConstrainedFragmenter:
                                     reaction_name=backend,
                                     core_handle_type=core_role,
                                     target_dihedral=float(target_dihedral),
+                                    junction_bond=(int(left), int(right)),
                                     core_mol=Chem.Mol(core_mol),
                                 )
         return None

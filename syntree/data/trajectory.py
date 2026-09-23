@@ -23,7 +23,7 @@ from torch_geometric.data import Data
 
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES, ReactionEngine
 from syntree.data.featurizer import MolecularFeaturizer
-from syntree.data.fragmenter import ReactionConstrainedFragmenter, SUPPORTED_RETRO_FAMILIES
+from syntree.data.decomposer import RetrosyntheticTrajectoryExtractor, SUPPORTED_RETRO_FAMILIES
 
 
 @dataclass(frozen=True)
@@ -78,10 +78,10 @@ class RetrosyntheticTrajectoryBuilder:
     def __init__(self, catalog, max_steps: int = 4):
         self.catalog = catalog
         self.max_steps = int(max_steps)
-        self.engine = ReactionEngine()
-        self.fragmenter = ReactionConstrainedFragmenter(
-            catalog, reaction_engine=self.engine
+        self.extractor = RetrosyntheticTrajectoryExtractor(
+            catalog, max_steps=self.max_steps
         )
+        self.engine = self.extractor.fragmenter.engine
 
     def build(
         self,
@@ -125,7 +125,7 @@ class RetrosyntheticTrajectoryBuilder:
                 break
             seen.add(key)
 
-            target = self.fragmenter.find_target(current)
+            target = self.extractor.extract_step(current)
             if target is None:
                 break
             reverse_records.append((Chem.Mol(current), target))

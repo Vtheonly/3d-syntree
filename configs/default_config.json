@@ -25,7 +25,21 @@
     "synthetic_fallback": false,
     "synthetic_samples": 100,
     "trajectory_dataset_path": null,
-    "terminal_cap_min_mw": 250.0
+    "terminal_cap_min_mw": 250,
+    "backend": "local",
+    "huggingface": {
+      "repo_id": "username/cleaned-sbdd-multidataset",
+      "revision": "main",
+      "cache_dir": "./hf_cache",
+      "max_cached_shards": 2
+    },
+    "multidataset": {
+      "processed_manifest_path": "./data/multidataset/processed_manifest.jsonl",
+      "split_manifest_path": "./data/multidataset/unified_splits_30seq_id.parquet",
+      "max_resolution": 2.5,
+      "pocket_radius_angstrom": 10,
+      "min_pocket_atoms": 100
+    }
   },
   "model": {
     "hidden_dim": 128,
@@ -70,11 +84,11 @@
     "value_coef": 0.5,
     "entropy_coef": 0.01,
     "learning_rate": 0.00001,
-    "max_grad_norm": 1.0,
-    "temperature": 1.0,
+    "max_grad_norm": 1,
+    "temperature": 1,
     "checkpoint_every": 16,
     "reward": {
-      "docking_weight": 1.0,
+      "docking_weight": 1,
       "clash_weight": 0.25,
       "fsp3_weight": 0.15,
       "qed_weight": 0.15,

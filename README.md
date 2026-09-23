@@ -387,6 +387,91 @@ The synthon policy outputs K + 1 actions, where index K is the learned STOP acti
   never from committed configuration.
 * **Testing** – run python -m pytest tests/ -q before treating a benchmark as
   valid.
+## 10.1 Unified multi-dataset thesis dataset pipeline
+
+The production data path can combine CrossDocked2020, BindingMOAD, and PDBbind
+without changing the model input schema. Raw sources remain local inputs because
+their licensing and distribution layouts differ.
+
+```mermaid
+flowchart LR
+    A[CrossDocked2020] --> D[Manifest normalization]
+    B[BindingMOAD] --> D
+    C[PDBbind refined] --> D
+    D --> E[RDKit sanitization + ligand filters]
+    E --> F[10 Å protein-only pocket extraction]
+    F --> G[Protein chain FASTA]
+    G --> H[MMseqs2 30% identity / 80% coverage]
+    H --> I[Component-level train / val / test assignment]
+    F --> J[Reaction-validated retrosynthetic labels]
+    I --> J
+    J --> K[Pre-featurized PyG states]
+    K --> L[500 MiB compressed shards + SHA-256 manifest]
+    L --> M[Hugging Face Dataset Hub]
+    M --> N[Lazy shard loader + shard-aware sampler]
+    N --> O[Training]
+```
+
+### Input manifest
+
+For heterogeneous source layouts, a CSV or JSONL row should contain at least:
+
+`source,complex_id,protein_path,ligand_path,resolution,subset`
+
+`preprocess_multidataset.py` also supports recursive discovery when a source
+uses a conventional <id>_protein.pdb and <id>_ligand.sdf|mol2 layout.
+
+### Build sequence-cluster-safe splits
+
+```bash
+python scripts/preprocess_multidataset.py \
+  --crossdocked-manifest ./raw_data/crossdocked.csv \
+  --bindingmoad-manifest ./raw_data/bindingmoad.csv \
+  --pdbbind-manifest ./raw_data/pdbbind_refined.csv \
+  --output-dir ./data/multidataset
+
+bash scripts/run_mmseqs_split.sh \
+  ./data/multidataset/processed_manifest.jsonl \
+  ./data/multidataset
+```
+
+The split stage links complexes that share a clustered protein chain and assigns
+the resulting connected components to train, validation, or test. This prevents
+a clustered protein chain from appearing in multiple splits. A 30% sequence
+identity split supports sequence-level generalization claims; it does not by
+itself prove unseen structural folds.
+
+### Build real supervision and shard it
+
+```bash
+python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split-manifest ./data/multidataset/unified_splits_30seq_id.parquet --split train --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_train.pt --max-steps 4
+python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split val --split-manifest ./data/multidataset/unified_splits_30seq_id.parquet --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_val.pt --max-steps 4
+python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split test --split-manifest ./data/multidataset/unified_splits_30seq_id.parquet --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_test.pt --max-steps 4
+python scripts/shard_and_upload.py --input ./data/trajectories_train.pt --split train --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50
+python scripts/shard_and_upload.py --input ./data/trajectories_val.pt --split val --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50
+python scripts/shard_and_upload.py --input ./data/trajectories_test.pt --split test --output-dir ./data/shards --repo-id Vtheonly/cleaned-sbdd-multidataset --max-shard-gb 0.50
+```
+
+Shards are bounded by compressed byte size rather than fixed sample count.
+The manifest stores sample ranges, compressed sizes, and SHA-256 hashes. The
+training loader downloads a shard on first access and keeps a bounded local
+LRU cache. The shard-aware sampler shuffles within each shard before moving
+to another shard, avoiding pathological global random cross-shard access.
+
+### Retrosynthesis coverage
+
+The forward reaction engine defines eight certified reaction SMARTS, but a
+co-crystallized product graph does not always contain enough information to
+recover the experimental precursor uniquely. The current product-only
+retrosynthesis implementation therefore accepts the five families declared in
+`SUPPORTED_RETRO_FAMILIES` and requires exact forward replay after catalog matching.
+Urea formation and click triazole are not silently converted into ground truth
+without additional reaction provenance.
+
+This distinction should remain explicit in the thesis: eight forward reaction
+templates are available to the generator, while only product-invertible
+transformations are used as supervised retrosynthetic labels unless external
+reaction provenance is available.
 ## 11. License
 
 MIT — see [LICENSE](LICENSE).
