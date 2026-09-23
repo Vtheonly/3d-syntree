@@ -20,11 +20,13 @@ from typing import Dict, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
 from syntree.data.crossdocked import CrossDockedDataset
+from syntree.data.trajectory import TrajectoryDataset
 from syntree.models.torsion_head import ContinuousTorsionHead
 from syntree.utils.checkpoint import CheckpointManager
 from syntree.utils.hardware import autotune_batch_size, free_vram_bytes
@@ -100,20 +102,25 @@ class ResilientTrainer:
             max_mw=float(config.get("catalog", {}).get("max_mw", 220.0)),
         )
         val_fraction = float(data_cfg.get("val_fraction", 0.1))
-        self.dataset = CrossDockedDataset(
-            data_cfg["data_dir"],
-            split="train",
-            catalog=self.catalog,
-            num_synthetic=int(data_cfg.get("synthetic_samples", 100)),
-            synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
-        )
-        self.val_dataset = CrossDockedDataset(
-            data_cfg["data_dir"],
-            split="val",
-            catalog=self.catalog,
-            num_synthetic=max(8, int(self.dataset.num_synthetic * val_fraction)),
-            synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
-        )
+        trajectory_path = data_cfg.get("trajectory_dataset_path")
+        if trajectory_path:
+            self.dataset = TrajectoryDataset(trajectory_path, split="train")
+            self.val_dataset = TrajectoryDataset(trajectory_path, split="val")
+        else:
+            self.dataset = CrossDockedDataset(
+                data_cfg["data_dir"],
+                split="train",
+                catalog=self.catalog,
+                num_synthetic=int(data_cfg.get("synthetic_samples", 100)),
+                synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
+            )
+            self.val_dataset = CrossDockedDataset(
+                data_cfg["data_dir"],
+                split="val",
+                catalog=self.catalog,
+                num_synthetic=max(8, int(self.dataset.num_synthetic * val_fraction)),
+                synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
+            )
 
         # Mixed-precision flags (needed by the auto-scale probe below).
         self.use_amp = bool(config.get("system", {}).get("mixed_precision") in ("fp16", "bf16")) and \
