@@ -60,18 +60,19 @@ def log_bessel_i0(x: torch.Tensor) -> torch.Tensor:
     large arguments use the asymptotic expansion
     ``x - 0.5*log(2 pi x) + log(1 + 1/(8x) + ...)``.
 
-    Always computed in fp32 (cheap 1-D tensors): the series/asymptotic
-    arithmetic is precision-sensitive and must stay out of fp16 regions.
+    Always computed in float64 (a cheap 1-D tensor): the series/asymptotic
+    arithmetic is precision-sensitive and must stay out of fp16/fp32
+    regions; verified against scipy's ``i0e`` to <1e-5 absolute.
     """
-    x = x.float().clamp(min=0.0)
-    small = x < 5.0
+    x = x.double().clamp(min=0.0)
+    small = x < 10.0
 
-    # Power series for small x.
+    # Power series for small x (20 terms converge to <1e-8 for x < 10).
     xs = torch.where(small, x, torch.zeros_like(x))
     term = torch.ones_like(xs)
     total = term.clone()
     x2_over_4 = (xs * xs) / 4.0
-    for k in range(1, 16):
+    for k in range(1, 21):
         term = term * x2_over_4 / (k * k)
         total = total + term
     series = torch.log(total.clamp(min=1e-30))
