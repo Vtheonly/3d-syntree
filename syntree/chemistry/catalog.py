@@ -234,6 +234,7 @@ class SynthonCatalog:
         self,
         device: Optional[torch.device] = None,
         core_handle: Optional[str] = None,
+        require_remaining_handle: bool = False,
     ) -> torch.Tensor:
         """Return a [F] mask for reaction families legal for a core handle."""
         values = []
@@ -242,6 +243,13 @@ class SynthonCatalog:
                 core_handle in REACTION_SIDES[reaction]
                 for reaction in REACTION_FAMILY_MEMBERS[family]
             )
+            if legal and require_remaining_handle:
+                family_mask = self.get_reaction_family_mask(
+                    family,
+                    core_handle=core_handle,
+                    require_remaining_handle=True,
+                )
+                legal = bool(torch.any(family_mask > -1e8).item())
             values.append(0.0 if legal else -1e9)
         mask = torch.tensor(values, dtype=torch.float32)
         return mask.to(device) if device is not None else mask
@@ -376,7 +384,7 @@ class SynthonCatalog:
 
     @property
     def multifunctional_indices(self) -> np.ndarray:
-        """Catalog indices exposing at least two reactive handles."""
+        """Catalog indices exposing at least two reactive handle instances."""
         return np.nonzero(self._handle_counts >= 2)[0]
 
     @property
