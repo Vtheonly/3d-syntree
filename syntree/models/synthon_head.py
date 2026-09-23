@@ -46,6 +46,8 @@ class SynthonHead(nn.Module):
         self.k_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.v_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.stop_embedding = nn.Parameter(torch.randn(hidden_dim) * (hidden_dim ** -0.5))
+        self.stop_bias = nn.Parameter(torch.zeros(1))
         self.dropout = nn.Dropout(float(dropout))
 
     def forward(
@@ -53,6 +55,7 @@ class SynthonHead(nn.Module):
         query: torch.Tensor,                 # [B, d] handle/pocket context
         synthon_embeddings: torch.Tensor,    # [K, d] catalog embeddings
         rxn_compatibility_mask: Optional[torch.Tensor] = None,  # [B, K]
+        stop_mask: Optional[torch.Tensor] = None,               # [B] or [B, 1]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute masked synthon logits and log-probabilities.
 
@@ -63,7 +66,7 @@ class SynthonHead(nn.Module):
                 synthon legal, ``-1e9`` (or any large negative) removes it.
 
         Returns:
-            ``(logits, log_probs)`` both ``[B, K]``.
+            ``(logits, log_probs)`` both ``[B, K + 1]``. Index ``K`` is STOP.
         """
         if query.dim() != 2:
             raise ValueError(f"query must be [B, d], got {tuple(query.shape)}")
@@ -106,6 +109,16 @@ class SynthonHead(nn.Module):
         logits = torch.matmul(out, synthon_embeddings.t()) / math.sqrt(self.hidden_dim)
         if rxn_compatibility_mask is not None:
             logits = logits + rxn_compatibility_mask
+
+        # Explicit STOP action. It is conditioned on the same policy context
+        # and receives its own learned embedding/bias, making termination a
+        # learned action instead of an implicit “no handles left” side effect.
+        stop_logit = (out * self.stop_embedding.unsqueeze(0)).sum(-1) / math.sqrt(self.hidden_dim)
+        stop_logit = stop_logit + self.stop_bias
+        if stop_mask is not None:
+            stop_mask = stop_mask.view(b, 1).to(logits.dtype)
+            stop_logit = stop_logit + stop_mask.squeeze(1)
+        logits = torch.cat([logits, stop_logit.unsqueeze(-1)], dim=-1)
 
         log_probs = F.log_softmax(logits, dim=-1)
         return logits, log_probs
