@@ -83,6 +83,7 @@ class SBDDGenerator:
         sample: bool = False,
         temperature: float = 1.0,
         optimize_torsion_grid: bool = False,
+        return_trace: bool = False,
     ) -> Dict:
         """Generate one ligand inside the pocket at ``pocket_pdb_path``.
 
@@ -155,6 +156,7 @@ class SBDDGenerator:
         ]
 
         total_clash = 0.0
+        policy_trace: List[Dict] = []
         # 2. Autoregressive growth.
         for step in range(1, steps + 1):
             handles = self.rxn_engine.detect_handles(current_mol)
@@ -204,20 +206,41 @@ class SBDDGenerator:
                 allow_terminal=allow_terminal,
             ).unsqueeze(0)
 
-            decision = self.model.act(
-                batch_data,
-                self.catalog.embeddings.to(self.device),
-                reaction_compatibility_mask=reaction_mask,
-                synthon_masks_by_reaction=synthon_masks,
-                sample=sample,
-                temperature=temperature,
-            )
+            if return_trace:
+                with torch.enable_grad():
+                    decision = self.model.act(
+                        batch_data,
+                        self.catalog.embeddings.to(self.device),
+                        reaction_compatibility_mask=reaction_mask,
+                        synthon_masks_by_reaction=synthon_masks,
+                        sample=sample,
+                        temperature=temperature,
+                    )
+            else:
+                decision = self.model.act(
+                    batch_data,
+                    self.catalog.embeddings.to(self.device),
+                    reaction_compatibility_mask=reaction_mask,
+                    synthon_masks_by_reaction=synthon_masks,
+                    sample=sample,
+                    temperature=temperature,
+                )
             selected_family_idx = int(decision["reaction_family_idx"][0].item())
             reaction_family = REACTION_FAMILY_NAMES[selected_family_idx]
             chosen_rxn = self._preferred_reaction(
                 reaction_family, target_handle.handle_type
             )
             if bool(decision["stop"][0].item()):
+                if return_trace:
+                    policy_trace.append({
+                        "state": batch_data.clone(),
+                        "reaction_mask": reaction_mask.detach().clone(),
+                        "synthon_masks": synthon_masks.detach().clone(),
+                        "family_idx": int(decision["reaction_family_idx"][0].item()),
+                        "action_idx": int(decision["action_idx"][0].item()),
+                        "old_log_prob": decision["joint_log_prob"][0],
+                        "old_value": decision["state_value"][0],
+                    })
                 recipe.append({
                     "step": step,
                     "action": "stop",
@@ -238,10 +261,21 @@ class SBDDGenerator:
                 allow_terminal=allow_terminal,
             )
             if selected_mask[selected_synthon_idx].item() < -1e8:
-                candidates = torch.nonzero(selected_mask > -1e8).view(-1)
-                if candidates.numel() == 0:
-                    break
-                selected_synthon_idx = int(candidates[0].item())
+                logger.warning(
+                    "Policy emitted an action that violates the deterministic chemistry mask; stopping this rollout."
+                )
+                break
+
+            if return_trace:
+                policy_trace.append({
+                    "state": batch_data.clone(),
+                    "reaction_mask": reaction_mask.detach().clone(),
+                    "synthon_masks": synthon_masks.detach().clone(),
+                    "family_idx": selected_family_idx,
+                    "action_idx": int(decision["action_idx"][0].item()),
+                    "old_log_prob": decision["joint_log_prob"][0],
+                    "old_value": decision["state_value"][0],
+                })
 
             synthon_mol = self.catalog.get_mol(selected_synthon_idx, explicit_hs=False)
 
@@ -317,6 +351,7 @@ class SBDDGenerator:
             "smiles": smiles,
             "clash_score": float(total_clash),
             "descriptors": self.validator.descriptors(current_mol),
+            "policy_trace": policy_trace if return_trace else None,
         }
 
     # ------------------------------------------------------------------
