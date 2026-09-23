@@ -8,6 +8,7 @@ from syntree.models.equivariant import (
     build_radius_graph,
 )
 from syntree.models.torsion_head import ContinuousTorsionHead
+from syntree.models.reaction_head import ReactionHead
 from syntree.models.policy import SynTreePolicy
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "RadialBasis",
     "build_radius_graph",
     "ContinuousTorsionHead",
+    "ReactionHead",
     "SynTreePolicy",
 ]
