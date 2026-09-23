@@ -5,7 +5,7 @@ Guarantees progress preservation across Colab/Kaggle runtime preemptions:
 * every epoch (and every ``push_every_n_epochs`` epochs) a checkpoint
   containing model, optimizer, scheduler, RNG and metric state is written
   locally,
-* checkpoints are asynchronously uploaded to a private HF Hub repository,
+* checkpoints are asynchronously uploaded to the configured HF Hub model repository,
 * ``restore_latest`` auto-resumes: local manifest first, HF Hub fallback,
 * stale local checkpoints are pruned to ``keep_last_n``.
 

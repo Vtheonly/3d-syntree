@@ -10,7 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import torch
 from huggingface_hub import HfApi
@@ -105,9 +105,27 @@ def upload_split(
     repo_id: str,
     token: str,
     delete_after_upload: bool = False,
+    catalog_path: Optional[str] = None,
 ) -> None:
     api = HfApi(token=token)
-    api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True, token=token)
+    api.create_repo(
+        repo_id=repo_id,
+        repo_type="dataset",
+        exist_ok=True,
+        token=token,
+        private=False,
+    )
+    if catalog_path:
+        catalog = Path(catalog_path)
+        if not catalog.is_file():
+            raise FileNotFoundError(f"Catalog not found: {catalog}")
+        api.upload_file(
+            path_or_fileobj=str(catalog),
+            path_in_repo="enamine_3d_subset.parquet",
+            repo_id=repo_id,
+            repo_type="dataset",
+            token=token,
+        )
     split = manifest["split"]
     for shard in manifest["shards"]:
         path = split_dir / shard["name"]
@@ -138,6 +156,10 @@ def main() -> int:
     parser.add_argument("--max-shard-gb", type=float, default=0.50)
     parser.add_argument("--delete-after-upload", action="store_true")
     parser.add_argument("--metadata-json", help="Optional JSON metadata merged into the split manifest.")
+    parser.add_argument(
+        "--catalog",
+        help="Optional exact synthon catalog to upload to the dataset repo root.",
+    )
     args = parser.parse_args()
 
     samples = torch.load(args.input, map_location="cpu", weights_only=False)
@@ -171,6 +193,7 @@ def main() -> int:
             args.repo_id,
             token,
             delete_after_upload=args.delete_after_upload,
+            catalog_path=args.catalog,
         )
         print(f"Uploaded split {args.split} to {args.repo_id}")
     return 0

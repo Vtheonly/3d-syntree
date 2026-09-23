@@ -9,9 +9,9 @@
   },
   "huggingface": {
     "enabled": true,
-    "repo_id": "username/3d-syntree-checkpoints",
+    "repo_id": "JJKK1212/3d-syntree-checkpoints",
     "push_every_n_epochs": 2,
-    "private": true
+    "private": false
   },
   "data": {
     "dataset_name": "crossdocked2020",
@@ -23,12 +23,11 @@
     "accumulate_grad_batches": 2,
     "val_fraction": 0.1,
     "synthetic_fallback": false,
-    "synthetic_samples": 65536,
     "trajectory_dataset_path": null,
     "terminal_cap_min_mw": 250,
     "backend": "huggingface",
     "huggingface": {
-      "repo_id": "Vtheonly/cleaned-sbdd-multidataset",
+      "repo_id": "JJKK1212/3d-syntree-multidataset",
       "revision": "main",
       "cache_dir": "./hf_cache",
       "max_cached_shards": 2

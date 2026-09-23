@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Headless asset retriever for 3D-SynTree.
+"""Headless asset retriever and Hugging Face dataset synchronizer for 3D-SynTree.
 
-Responsibilities:
-1. **Real datasets** – attempt to download the CrossDocked2020 pocket-ligand
-   benchmark and the Enamine 3D synthon subset when their remote sources are
-   reachable (HF Hub / Zenodo).
-2. **Offline fallback** – synthesize a chemically valid, deterministic
-   catalog of building blocks (Fsp3/MW computed with RDKit, handles
-   detected with the real reaction engine) plus sample protein pockets, so
-   the entire pipeline runs end-to-end with zero network access.
+Production mode is selected with --dataset-repo. In that mode the script:
+* verifies train/val/test shard manifests in the dedicated HF Dataset repo,
+* downloads the exact synthon catalog used by preprocessing,
+* records provenance in assets_manifest.json,
+* never synthesizes fallback data.
 
-Usage:
-    python scripts/download_assets.py --target-dataset crossdocked2020 \
-        --synthon-subset 3d-diversity-15k --output-dir ./data
+Legacy local/CPU smoke-test behavior remains available when --dataset-repo is
+not supplied.
 """
 
 from __future__ import annotations
@@ -20,7 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -193,6 +192,122 @@ def build_sample_pockets(output_dir: str, data_subdir: str = "crossdocked") -> s
     return pocket_path
 
 
+def sync_hf_dataset(
+    repo_id: str,
+    output_dir: str,
+    revision: str = "main",
+    token: Optional[str] = None,
+    catalog_file: Optional[str] = None,
+) -> dict:
+    """Verify and sync production dataset assets from a HF Dataset repo.
+
+    Training shards are intentionally not eagerly downloaded. The training
+    loader pulls individual shards on first access and keeps a bounded local
+    cache, which keeps notebook disk usage stable for large datasets.
+    """
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "huggingface_hub is required for --dataset-repo mode"
+        ) from exc
+
+    api = HfApi(token=token)
+    files = set(api.list_repo_files(
+        repo_id=repo_id,
+        repo_type="dataset",
+        revision=revision,
+    ))
+
+    required_manifests = {
+        split: f"data/{split}/manifest.json"
+        for split in ("train", "val", "test")
+    }
+    missing_manifests = [
+        path for path in required_manifests.values() if path not in files
+    ]
+    if missing_manifests:
+        raise RuntimeError(
+            f"HF dataset {repo_id}@{revision} is missing required shard "
+            f"manifests: {missing_manifests}"
+        )
+
+    catalog_candidates = []
+    if catalog_file:
+        catalog_candidates.append(catalog_file)
+    catalog_candidates.extend([
+        "enamine_3d_subset.parquet",
+        "catalog/enamine_3d_subset.parquet",
+        "assets/enamine_3d_subset.parquet",
+        "data/enamine_3d_subset.parquet",
+    ])
+    catalog_source = next((path for path in catalog_candidates if path in files), None)
+    if catalog_source is None:
+        raise RuntimeError(
+            f"HF dataset {repo_id}@{revision} does not contain the exact synthon "
+            "catalog. Upload enamine_3d_subset.parquet before training; synthetic "
+            "catalog generation is intentionally disabled in production mode."
+        )
+
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    catalog_target = output_root / "enamine_3d_subset.parquet"
+    downloaded_catalog = Path(hf_hub_download(
+        repo_id=repo_id,
+        filename=catalog_source,
+        repo_type="dataset",
+        revision=revision,
+        token=token,
+        local_dir=str(output_root / "_hf_assets"),
+    ))
+    catalog_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(downloaded_catalog, catalog_target)
+
+    split_stats = {}
+    for split, manifest_file in required_manifests.items():
+        local_manifest = Path(hf_hub_download(
+            repo_id=repo_id,
+            filename=manifest_file,
+            repo_type="dataset",
+            revision=revision,
+            token=token,
+            local_dir=str(output_root / "_hf_manifests"),
+        ))
+        manifest = json.loads(local_manifest.read_text(encoding="utf-8"))
+        shards = manifest.get("shards", [])
+        total = int(manifest.get("total_samples", -1))
+        declared = sum(int(s["sample_count"]) for s in shards)
+        if total != declared or not shards:
+            raise RuntimeError(
+                f"Invalid {split} manifest in {repo_id}: "
+                f"total_samples={total}, shard_count={len(shards)}, declared={declared}"
+            )
+        split_stats[split] = {
+            "total_samples": total,
+            "shard_count": len(shards),
+            "max_shard_bytes": manifest.get("max_shard_bytes"),
+            "manifest": manifest_file,
+        }
+
+    result = {
+        "backend": "huggingface",
+        "repo_id": repo_id,
+        "revision": revision,
+        "catalog_source": catalog_source,
+        "catalog_path": str(catalog_target),
+        "splits": split_stats,
+        "lazy_shards": True,
+        "synthetic_fallback_used": False,
+    }
+    manifest_path = output_root / "assets_manifest.json"
+    manifest_path.write_text(
+        json.dumps(result, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    print(json.dumps(result, indent=2))
+    return result
+
+
 def try_download_crossdocked(output_dir: str, data_subdir: str = "crossdocked") -> bool:
     """Attempt the real CrossDocked2020 download (best-effort).
 
@@ -222,6 +337,11 @@ def try_download_crossdocked(output_dir: str, data_subdir: str = "crossdocked") 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="3D-SynTree asset downloader")
+    parser.add_argument("--dataset-repo", type=str, default=None,
+                        help="Production HF Dataset repo containing preprocessed shards.")
+    parser.add_argument("--dataset-revision", type=str, default="main")
+    parser.add_argument("--catalog-file", type=str, default=None,
+                        help="Optional exact catalog path inside the HF Dataset repo.")
     parser.add_argument("--target-dataset", type=str, default="crossdocked2020")
     parser.add_argument("--synthon-subset", type=str, default="3d-diversity-15k")
     parser.add_argument("--output-dir", type=str, default="./data")
@@ -232,10 +352,21 @@ def main() -> int:
                         help="always use the offline synthetic fallback")
     args = parser.parse_args()
 
+    if args.dataset_repo:
+        token = os.environ.get("HF_TOKEN") or None
+        sync_hf_dataset(
+            repo_id=args.dataset_repo,
+            output_dir=args.output_dir,
+            revision=args.dataset_revision,
+            token=token,
+            catalog_file=args.catalog_file,
+        )
+        return 0
+
     print(f"[assets] target dataset: {args.target_dataset}")
     print(f"[assets] synthon subset: {args.synthon_subset}")
 
-    # 1. Synthon catalog (synthetic fallback is always available offline).
+    # Legacy local/smoke-test path.
     catalog_path = os.path.join(args.output_dir, "enamine_3d_subset.parquet")
     if not os.path.exists(catalog_path):
         print("[assets] building offline synthon catalog (RDKit-verified) ...")
