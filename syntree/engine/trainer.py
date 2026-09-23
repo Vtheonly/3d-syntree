@@ -23,6 +23,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from syntree.chemistry.catalog import SynthonCatalog
+from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
 from syntree.data.crossdocked import CrossDockedDataset
 from syntree.models.torsion_head import ContinuousTorsionHead
 from syntree.utils.checkpoint import CheckpointManager
@@ -81,6 +82,7 @@ class ResilientTrainer:
         self.warmup_epochs = int(train_cfg.get("warmup_epochs", 2))
         self.eval_interval = int(train_cfg.get("eval_interval_epochs", 1))
         self.loss_weights = dict(train_cfg.get("loss_weights", {}))
+        self.reaction_loss_weight = float(self.loss_weights.get("reaction_ce", 0.5))
         self.keep_last_n = int(train_cfg.get("keep_last_n_checkpoints", 3))
 
         self.start_time = time.time()
@@ -103,12 +105,14 @@ class ResilientTrainer:
             split="train",
             catalog=self.catalog,
             num_synthetic=int(data_cfg.get("synthetic_samples", 100)),
+            synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
         )
         self.val_dataset = CrossDockedDataset(
             data_cfg["data_dir"],
             split="val",
             catalog=self.catalog,
             num_synthetic=max(8, int(self.dataset.num_synthetic * val_fraction)),
+            synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
         )
 
         # Mixed-precision flags (needed by the auto-scale probe below).
@@ -211,16 +215,18 @@ class ResilientTrainer:
             )
             batch = next(iter(loader)).to(self.device)
             target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
-            rxn_mask = torch.zeros(
-                batch.num_graphs, len(self.catalog),
-                device=self.device, dtype=torch.float32,
-            )
+            synthon_mask, reaction_mask = self._build_training_masks(batch)
             with torch.autocast(device_type="cuda", enabled=self.use_amp):
                 preds = self.model(
-                    batch, self.catalog.embeddings.to(self.device), rxn_mask
+                    batch,
+                    self.catalog.embeddings.to(self.device),
+                    synthon_mask,
+                    reaction_mask,
                 )
-                loss = self.criterion(preds["synthon_logits"], target) + 0.5 * (
-                    ContinuousTorsionHead.loss_fn(
+                loss = (
+                    self.criterion(preds["reaction_logits"], batch.target_reaction_family_idx)
+                    + self.criterion(preds["synthon_logits"], target)
+                    + 0.5 * ContinuousTorsionHead.loss_fn(
                         preds["torsion_mu"], preds["torsion_kappa"],
                         batch.target_dihedral,
                     )
@@ -315,7 +321,7 @@ class ResilientTrainer:
         history = []
         for epoch in range(self.start_epoch, self.max_epochs):
             self.model.train()
-            epoch_loss, epoch_synthon, epoch_torsion = 0.0, 0.0, 0.0
+            epoch_loss, epoch_reaction, epoch_synthon, epoch_torsion = 0.0, 0.0, 0.0, 0.0
             n_batches = 0
 
             for batch_idx, batch in enumerate(self.loader):
@@ -335,17 +341,20 @@ class ResilientTrainer:
                 # Clamp targets into the catalog range (synthetic data may
                 # have been built against a different catalog size).
                 target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
-
-                rxn_mask = torch.zeros(
-                    batch.num_graphs, len(self.catalog),
-                    device=self.device, dtype=torch.float32,
-                )
+                synthon_mask, reaction_mask = self._build_training_masks(batch)
 
                 with torch.autocast(
                     device_type=self.device.type, enabled=self.use_amp
                 ):
                     preds = self.model(
-                        batch, self.catalog.embeddings.to(self.device), rxn_mask
+                        batch,
+                        self.catalog.embeddings.to(self.device),
+                        synthon_mask,
+                        reaction_mask,
+                    )
+                    l_reaction = self.criterion(
+                        preds["reaction_logits"],
+                        batch.target_reaction_family_idx,
                     )
                     l_synthon = self.criterion(preds["synthon_logits"], target)
                     l_torsion = ContinuousTorsionHead.loss_fn(
@@ -353,7 +362,11 @@ class ResilientTrainer:
                     )
                     w_synthon = float(self.loss_weights.get("synthon_ce", 1.0))
                     w_torsion = float(self.loss_weights.get("torsion_nll", 0.5))
-                    loss = (w_synthon * l_synthon + w_torsion * l_torsion) / self.accum_steps
+                    loss = (
+                        w_synthon * l_synthon
+                        + self.reaction_loss_weight * l_reaction
+                        + w_torsion * l_torsion
+                    ) / self.accum_steps
 
                 self.scaler.scale(loss).backward()
 
@@ -367,6 +380,7 @@ class ResilientTrainer:
                     self.global_step += 1
 
                 epoch_loss += float(loss.item()) * self.accum_steps
+                epoch_reaction += float(l_reaction.item())
                 epoch_synthon += float(l_synthon.item())
                 epoch_torsion += float(l_torsion.item())
                 n_batches += 1
@@ -375,6 +389,7 @@ class ResilientTrainer:
             entry = {
                 "epoch": epoch,
                 "train_loss": avg_loss,
+                "train_reaction_ce": epoch_reaction / max(1, n_batches),
                 "train_synthon_ce": epoch_synthon / max(1, n_batches),
                 "train_torsion_nll": epoch_torsion / max(1, n_batches),
                 "lr": self.optimizer.param_groups[0]["lr"],
@@ -388,6 +403,7 @@ class ResilientTrainer:
             self.struct_logger.log({**entry, "phase": "train"})
             print(
                 f"[trainer] epoch {epoch:03d} | loss {avg_loss:.4f} | "
+                f"reaction_ce {entry['train_reaction_ce']:.4f} | "
                 f"synthon_ce {entry['train_synthon_ce']:.4f} | "
                 f"torsion_nll {entry['train_torsion_nll']:.4f} | "
                 f"val_loss {entry.get('val_loss', float('nan')):.4f}"
@@ -419,33 +435,92 @@ class ResilientTrainer:
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
+    def _build_training_masks(self, batch):
+        """Build reaction-family and synthon masks from validated targets."""
+        reaction_masks = []
+        synthon_masks = []
+        for family_idx, handle_idx in zip(
+            batch.target_reaction_family_idx.tolist(),
+            batch.target_core_handle_idx.tolist(),
+        ):
+            family = REACTION_FAMILY_NAMES[int(family_idx)]
+            handle = HANDLE_NAMES[int(handle_idx)]
+            reaction_masks.append(
+                self.catalog.get_reaction_family_compatibility_mask(
+                    device=self.device, core_handle=handle
+                )
+            )
+            synthon_masks.append(
+                self.catalog.get_reaction_family_mask(
+                    family, device=self.device, core_handle=handle
+                )
+            )
+        return torch.stack(synthon_masks), torch.stack(reaction_masks)
+
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
         self.model.eval()
-        total, synthon, torsion, correct, n = 0.0, 0.0, 0.0, 0, 0
+        if len(self.val_dataset) == 0:
+            self.model.train()
+            return {
+                "val_loss": float("inf"),
+                "val_reaction_ce": float("nan"),
+                "val_synthon_ce": float("nan"),
+                "val_torsion_nll": float("nan"),
+                "val_reaction_acc": float("nan"),
+                "val_synthon_acc": float("nan"),
+            }
+
+        total, reaction, synthon, torsion = 0.0, 0.0, 0.0, 0.0
+        reaction_correct, synthon_correct, n = 0, 0, 0
         for batch in self.val_loader:
             batch = batch.to(self.device)
             target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
-            rxn_mask = torch.zeros(
-                batch.num_graphs, len(self.catalog),
-                device=self.device, dtype=torch.float32,
+            synthon_mask, reaction_mask = self._build_training_masks(batch)
+            preds = self.model(
+                batch,
+                self.catalog.embeddings.to(self.device),
+                synthon_mask,
+                reaction_mask,
             )
-            preds = self.model(batch, self.catalog.embeddings.to(self.device), rxn_mask)
+            l_reaction = self.criterion(
+                preds["reaction_logits"], batch.target_reaction_family_idx
+            )
             l_synthon = self.criterion(preds["synthon_logits"], target)
             l_torsion = ContinuousTorsionHead.loss_fn(
-                preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
+                preds["torsion_mu"],
+                preds["torsion_kappa"],
+                batch.target_dihedral,
             )
-            total += float((l_synthon + 0.5 * l_torsion).item())
+            total += float(
+                (
+                    self.reaction_loss_weight * l_reaction
+                    + l_synthon
+                    + 0.5 * l_torsion
+                ).item()
+            )
+            reaction += float(l_reaction.item())
             synthon += float(l_synthon.item())
             torsion += float(l_torsion.item())
-            correct += int((preds["synthon_logits"].argmax(-1) == target).sum().item())
+            reaction_correct += int(
+                (
+                    preds["reaction_logits"].argmax(-1)
+                    == batch.target_reaction_family_idx
+                ).sum().item()
+            )
+            synthon_correct += int(
+                (preds["synthon_logits"].argmax(-1) == target).sum().item()
+            )
             n += int(target.numel())
+
         self.model.train()
         return {
             "val_loss": total / max(1, len(self.val_loader)),
+            "val_reaction_ce": reaction / max(1, len(self.val_loader)),
             "val_synthon_ce": synthon / max(1, len(self.val_loader)),
             "val_torsion_nll": torsion / max(1, len(self.val_loader)),
-            "val_synthon_acc": correct / max(1, n),
+            "val_reaction_acc": reaction_correct / max(1, n),
+            "val_synthon_acc": synthon_correct / max(1, n),
         }
 
     # ------------------------------------------------------------------
