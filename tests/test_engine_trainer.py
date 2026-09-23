@@ -75,7 +75,11 @@ class TestTrainingRun:
         epochs = [f for f in files if f.startswith("checkpoint_epoch_")]
         assert len(epochs) >= 1
         manifest = json.load(open(os.path.join(ckpt_dir, "manifest.json")))
-        assert manifest["latest_epoch"] >= 1
+        assert manifest["latest_epoch"] == 1
+
+        progress = json.load(open(os.path.join(ckpt_dir, "progress.json")))
+        assert progress["completed_epochs"] == [0, 1]
+        assert progress["last_sequential_epoch"] == 1
 
     def test_checkpoint_content(self, trained_artifacts):
         ckpt_dir = os.path.join(trained_artifacts["output_dir"], "checkpoints")
@@ -136,4 +140,15 @@ class TestTimeBudget:
         summary = trainer.train()
         # The run must terminate without raising and still write artifacts.
         assert "epochs_completed" in summary
-        assert os.path.exists(os.path.join(str(tmp_path), "history.json"))
+        assert summary["epochs_completed"] == 0
+
+        history = json.load(open(os.path.join(str(tmp_path), "history.json")))
+        assert history == []
+
+        ckpt_dir = os.path.join(str(tmp_path), "checkpoints")
+        assert not os.path.exists(os.path.join(ckpt_dir, "manifest.json"))
+        assert not os.path.exists(os.path.join(ckpt_dir, "progress.json"))
+        assert not [
+            name for name in os.listdir(ckpt_dir)
+            if name.startswith("checkpoint_")
+        ]
