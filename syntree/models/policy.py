@@ -25,7 +25,10 @@ from syntree.models.reaction_head import ReactionHead
 from syntree.models.synthon_head import SynthonHead
 from syntree.models.torsion_head import ContinuousTorsionHead
 
-_HANDLE_FEATURE_DIM = 64
+_HANDLE_CHEMICAL_FEATURE_DIM = 64
+_HANDLE_FEATURE_DIM = 67
+_HANDLE_POSITION_OFFSET = 64
+_NUM_DISTANCE_RBF = 16
 
 
 class SynTreePolicy(nn.Module):
@@ -80,10 +83,26 @@ class SynTreePolicy(nn.Module):
         )
 
         # 2. Ligand handle state -> query space.
-        self.handle_proj = nn.Linear(_HANDLE_FEATURE_DIM, hidden_dim)
+        self.handle_proj = nn.Linear(_HANDLE_CHEMICAL_FEATURE_DIM, hidden_dim)
         self.handle_norm = nn.LayerNorm(hidden_dim)
 
-        # Cross-attention: query = handle state, key/value = pocket atoms.
+        # Spatial conditioning uses rotation/translation-invariant radial
+        # basis functions of the distance from each pocket atom to the
+        # current reacting handle. This gives attention an explicit local
+        # geometric signal without injecting frame-dependent absolute xyz.
+        self.register_buffer(
+            "distance_centers", torch.linspace(0.0, cutoff, _NUM_DISTANCE_RBF),
+            persistent=False,
+        )
+        self.distance_width = max(cutoff / (_NUM_DISTANCE_RBF - 1), 0.25)
+        self.spatial_distance_proj = nn.Sequential(
+            nn.Linear(_NUM_DISTANCE_RBF, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+        )
+
+        # Cross-attention: query = chemical handle state, key/value = spatially
+        # enriched pocket atoms.
         self.cross_attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
@@ -173,6 +192,8 @@ class SynTreePolicy(nn.Module):
                 f"got {handle_features.size(-1)}"
             )
         batch_size = handle_features.size(0)
+        chemical_handle_features = handle_features[..., :_HANDLE_CHEMICAL_FEATURE_DIM]
+        handle_position = handle_features[..., _HANDLE_POSITION_OFFSET:_HANDLE_POSITION_OFFSET + 3]
 
         # 1. Pocket encoding.
         pocket_s, pocket_v, pocket_pooled = self.encode_pocket(
@@ -185,7 +206,22 @@ class SynTreePolicy(nn.Module):
             )
 
         # 2. Cross-attention: handle query attends to its graph's pocket atoms.
-        query = self.handle_norm(self.handle_proj(handle_features)).unsqueeze(1)  # [B, 1, d]
+        query = self.handle_norm(self.handle_proj(chemical_handle_features)).unsqueeze(1)  # [B, 1, d]
+
+        # Add handle-to-pocket geometry to each pocket atom before attention.
+        # Distances are invariant under global translation/rotation, while the
+        # resulting learned key enrichment makes the attention local to the
+        # actual attachment point.
+        per_atom_handle = handle_position[pocket_batch]
+        handle_dist = torch.linalg.vector_norm(
+            pocket_pos - per_atom_handle, dim=-1
+        ).clamp(min=0.0, max=self.cutoff)
+        centers = self.distance_centers.to(handle_dist)
+        radial = torch.exp(
+            -0.5 * ((handle_dist.unsqueeze(-1) - centers) / self.distance_width) ** 2
+        )
+        pocket_s = pocket_s + self.spatial_distance_proj(radial)
+
         # Chunked per-graph attention via MultiheadAttention requires [B, N, d];
         # build it by scattering pocket atoms into padded per-graph tensors.
         counts = torch.bincount(pocket_batch, minlength=num_graphs)
