@@ -22,7 +22,7 @@ def catalog(assets_dir):
 def dataset(assets_dir, catalog):
     return CrossDockedDataset(
         assets_dir["crossdocked_dir"], split="train", catalog=catalog,
-        num_synthetic=10, seed=5,
+        synthetic=True, num_synthetic=10, seed=5,
     )
 
 
