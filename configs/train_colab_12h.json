@@ -18,19 +18,21 @@
     "dataset_name": "unified_multidataset",
     "data_dir": "./data/crossdocked",
     "synthon_catalog_path": "./data/enamine_3d_subset.parquet",
+    "require_real_data": true,
+    "min_real_samples": 50,
+    "synthetic_fallback": false,
+    "synthetic_samples": 0,
     "huggingface": {
       "repo_id": "JJKK1212/3d-syntree-multidataset",
       "revision": "main",
       "cache_dir": "./hf_cache",
-      "max_cached_shards": 2
+      "max_cached_shards": 4
     },
-    "batch_size": 16,
+    "batch_size": 32,
     "accumulate_grad_batches": 2,
     "max_steps_per_molecule": 3,
     "terminal_cap_min_mw": 250.0,
     "val_fraction": 0.1,
-    "synthetic_fallback": false,
-    "synthetic_samples": 8192,
     "trajectory_dataset_path": null,
     "multidataset": {
       "processed_manifest_path": "./data/multidataset/processed_manifest.jsonl",
@@ -41,12 +43,12 @@
     }
   },
   "model": {
-    "hidden_dim": 128,
-    "num_equivariant_layers": 4,
+    "hidden_dim": 256,
+    "num_equivariant_layers": 8,
     "num_radial_basis": 20,
     "cutoff_radius": 5.0,
-    "synthon_embedding_dim": 128,
-    "num_attention_heads": 4,
+    "synthon_embedding_dim": 256,
+    "num_attention_heads": 8,
     "max_atomic_number": 100,
     "dropout": 0.1
   },
@@ -58,7 +60,7 @@
     "lr_scheduler": "cosine_warmup",
     "warmup_epochs": 2,
     "grad_clip_norm": 1.0,
-    "keep_last_n_checkpoints": 3,
+    "keep_last_n_checkpoints": 5,
     "loss_weights": {
       "synthon_ce": 1.0,
       "torsion_nll": 0.5,
@@ -105,7 +107,7 @@
     "aizynthfinder_config": null
   },
   "catalog": {
-    "min_fsp3": 0.4,
+    "min_fsp3": 0.40,
     "max_mw": 220.0
   }
 }

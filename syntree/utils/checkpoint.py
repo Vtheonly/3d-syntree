@@ -2,7 +2,14 @@
 
 Guarantees:
 * every fully completed epoch is recorded in an atomic progress.json,
-* progress.json contains strictly monotonic completed epochs/episodes,
+* progress tracking supports two explicit modes:
+  - ``"epoch"`` (trainer): completed epochs must be strictly contiguous
+    (0, 1, 2, ...). A gap means an epoch's completion record was lost, so
+    the whole state is rejected and training restarts from epoch 0.
+  - ``"episode"`` (Stage 2 RL): completed episodes must be strictly
+    monotonic. RL checkpoints only fire every ``checkpoint_every``
+    episodes, so gaps are by design and not corruption.
+  The mode is recorded in progress.json and a mode mismatch is rejected.
 * when Hub sync is enabled, the remote Hub state is authoritative,
 * stale local checkpoints are purged when the remote run was wiped/corrupt,
 * regular uploads may run asynchronously, but final checkpoint uploads are
@@ -39,11 +46,14 @@ class CheckpointManager:
     PROGRESS_NAME = "progress.json"
     PROGRESS_VERSION = 1
 
+    PROGRESS_MODES = ("epoch", "episode")
+
     def __init__(
         self,
         config: dict,
         keep_last_n: int = 3,
         ckpt_dir: str = "./checkpoints",
+        progress_mode: str = "epoch",
     ):
         self.config = config
         hf_cfg = config.get("huggingface", {})
@@ -52,6 +62,12 @@ class CheckpointManager:
         self.private = bool(hf_cfg.get("private", False))
         self.push_freq = max(1, int(hf_cfg.get("push_every_n_epochs", 2)))
         self.keep_last_n = max(1, int(keep_last_n))
+        self.progress_mode = str(progress_mode)
+        if self.progress_mode not in self.PROGRESS_MODES:
+            raise ValueError(
+                f"progress_mode must be one of {self.PROGRESS_MODES}, "
+                f"got {progress_mode!r}"
+            )
 
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -107,9 +123,10 @@ class CheckpointManager:
     # Progress tracking
     # ------------------------------------------------------------------
     @classmethod
-    def _empty_progress(cls) -> Dict:
+    def _empty_progress(cls, mode: str = "epoch") -> Dict:
         return {
             "version": cls.PROGRESS_VERSION,
+            "mode": mode,
             "completed_epochs": [],
             "last_sequential_epoch": -1,
             "history": [],
@@ -118,18 +135,37 @@ class CheckpointManager:
     def _read_progress(self) -> Dict:
         path = self.ckpt_dir / self.PROGRESS_NAME
         if not path.exists():
-            return self._empty_progress()
+            return self._empty_progress(self.progress_mode)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 progress = json.load(f)
-            return progress if isinstance(progress, dict) else self._empty_progress()
+            return progress if isinstance(progress, dict) else self._empty_progress(
+                self.progress_mode
+            )
         except (OSError, json.JSONDecodeError, TypeError):
-            return self._empty_progress()
+            return self._empty_progress(self.progress_mode)
 
     @classmethod
-    def _validate_progress(cls, progress: Dict) -> Tuple[bool, int]:
-        """Return (valid, last_completed_epoch)."""
+    def _validate_progress(
+        cls, progress: Dict, expected_mode: str = "epoch"
+    ) -> Tuple[bool, int]:
+        """Return (valid, last_completed_epoch).
+
+        Validation rules:
+        * the recorded mode must match ``expected_mode`` (a missing mode is
+          treated as the historical default "epoch"),
+        * completed entries must be non-negative ints, strictly increasing,
+          with no duplicates,
+        * ``last_sequential_epoch`` must equal the last completed entry,
+        * in "epoch" mode the entries must additionally be contiguous
+          (``completed[i] == completed[i - 1] + 1``): a gap proves that some
+          completed epoch's record was lost, so the state cannot be trusted.
+        """
         if not isinstance(progress, dict):
+            return False, -1
+
+        recorded_mode = progress.get("mode", "epoch")
+        if recorded_mode not in cls.PROGRESS_MODES or recorded_mode != expected_mode:
             return False, -1
 
         completed = progress.get("completed_epochs")
@@ -144,10 +180,17 @@ class CheckpointManager:
         ):
             return False, -1
 
-        # Checkpoints must be strictly monotonically increasing with no duplicates
+        # Entries must be strictly monotonically increasing with no duplicates.
         for i in range(1, len(completed)):
             if completed[i] <= completed[i - 1]:
                 return False, -1
+
+        # Epoch mode additionally requires contiguity: the trainer records
+        # every completed epoch, so a gap (e.g. [0, 2]) means a lost record.
+        if expected_mode == "epoch":
+            for i in range(1, len(completed)):
+                if completed[i] != completed[i - 1] + 1:
+                    return False, -1
 
         expected_last = completed[-1] if completed else -1
         if last_seq != expected_last:
@@ -157,11 +200,11 @@ class CheckpointManager:
 
     def _record_progress(self, epoch: int, step: int, metrics: Dict) -> Dict:
         progress = self._read_progress()
-        valid, last_seq = self._validate_progress(progress)
+        valid, last_seq = self._validate_progress(progress, self.progress_mode)
         if not valid:
             raise RuntimeError(
-                "progress.json is missing/corrupt/non-monotonic; refusing to "
-                f"record completed epoch {epoch}."
+                "progress.json is missing/corrupt/mode-mismatched/non-monotonic; "
+                f"refusing to record completed epoch {epoch}."
             )
 
         if epoch not in progress["completed_epochs"]:
@@ -205,6 +248,7 @@ class CheckpointManager:
             )
 
         progress["version"] = self.PROGRESS_VERSION
+        progress["mode"] = self.progress_mode
         self._atomic_json_write(self.ckpt_dir / self.PROGRESS_NAME, progress)
         return progress
 
@@ -354,7 +398,9 @@ class CheckpointManager:
                 return 0, 0, float("inf")
 
             progress = self._read_progress()
-            progress_valid, last_seq = self._validate_progress(progress)
+            progress_valid, last_seq = self._validate_progress(
+                progress, self.progress_mode
+            )
             if not progress_valid or last_seq < 0:
                 logger.warning(
                     "[checkpoint] Remote progress.json is missing/corrupt/non-monotonic; "
@@ -418,7 +464,9 @@ class CheckpointManager:
             return 0, 0, float("inf")
 
         progress = self._read_progress()
-        progress_valid, last_seq = self._validate_progress(progress)
+        progress_valid, last_seq = self._validate_progress(
+            progress, self.progress_mode
+        )
         if not progress_valid or last_seq != latest_epoch:
             logger.warning(
                 "[checkpoint] Local manifest/progress state is inconsistent; "
@@ -528,7 +576,9 @@ class CheckpointManager:
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
             progress = self._read_progress()
-            valid, last_seq = self._validate_progress(progress)
+            valid, last_seq = self._validate_progress(
+                progress, self.progress_mode
+            )
             latest_epoch = int(manifest["latest_epoch"])
             if not valid or last_seq != latest_epoch:
                 return None

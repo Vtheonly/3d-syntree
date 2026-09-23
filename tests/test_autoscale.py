@@ -216,7 +216,13 @@ class TestConfigsShipAutoScale:
         auto = cfg["training"]["auto_scale"]
         assert auto["enabled"] is True
         assert 0.5 <= auto["target_vram_fraction"] <= 0.95
-        assert cfg["data"]["synthetic_samples"] >= 4096
+        # Fail-closed production contract (docs/tasklist.md): the Colab
+        # profile must never fall back to synthetic data and must require a
+        # real dataset above the stub threshold.
+        assert cfg["data"]["synthetic_samples"] == 0
+        assert cfg["data"]["synthetic_fallback"] is False
+        assert cfg["data"]["require_real_data"] is True
+        assert cfg["data"]["min_real_samples"] >= 50
 
     def test_default_config_auto_scale_documented(self, repo_root):
         path = os.path.join(repo_root, "configs", "default_config.json")

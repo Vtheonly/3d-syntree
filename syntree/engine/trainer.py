@@ -123,7 +123,7 @@ class ResilientTrainer:
                 cache_dir=str(hf_cfg.get("cache_dir", "./hf_cache")),
                 revision=str(hf_cfg.get("revision", "main")),
                 token=token,
-                max_cached_shards=int(hf_cfg.get("max_cached_shards", 2)),
+                max_cached_shards=int(hf_cfg.get("max_cached_shards", 4)),
             )
             self.val_dataset = ShardedHuggingFaceDataset(
                 repo_id=repo_id,
@@ -131,7 +131,7 @@ class ResilientTrainer:
                 cache_dir=str(hf_cfg.get("cache_dir", "./hf_cache")),
                 revision=str(hf_cfg.get("revision", "main")),
                 token=token,
-                max_cached_shards=int(hf_cfg.get("max_cached_shards", 2)),
+                max_cached_shards=int(hf_cfg.get("max_cached_shards", 4)),
             )
         elif trajectory_path:
             self.data_backend = "trajectory_pt"
@@ -154,6 +154,37 @@ class ResilientTrainer:
                 synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
                 split_manifest_path=data_cfg.get("split_manifest_path"),
             )
+
+        # STRICT REAL-DATA GUARD: Reject toy stubs and synthetic fallbacks in
+        # production mode. The guard fails CLOSED: when data.require_real_data
+        # is unset it defaults to True, so a missing key can never silently
+        # downgrade a production run onto a stub or synthetic dataset.
+        require_real = bool(data_cfg.get("require_real_data", True))
+        min_samples = int(data_cfg.get("min_real_samples", 50))
+        if require_real:
+            if bool(getattr(self.dataset, "use_synthetic", False)):
+                raise RuntimeError(
+                    f"\n{'='*70}\n"
+                    f"FATAL: Production mode (require_real_data=true) refuses to\n"
+                    f"train on the SYNTHETIC smoke dataset (backend "
+                    f"'{self.data_backend}', {len(self.dataset)} samples).\n\n"
+                    f"Training on synthetic data would silently produce a model\n"
+                    f"with no real-chemistry value.\n"
+                    f"To build and upload the complete real dataset, run:\n"
+                    f"  python scripts/build_full_dataset.py --upload\n"
+                    f"{'='*70}"
+                )
+            if len(self.dataset) < min_samples:
+                raise RuntimeError(
+                    f"\n{'='*70}\n"
+                    f"FATAL: Production mode requires a real dataset, but the dataset in\n"
+                    f"'{self.data_backend}' contains only {len(self.dataset)} training "
+                    f"samples (min required: {min_samples}).\n\n"
+                    f"Training will NOT proceed on a stub or placeholder dataset.\n"
+                    f"To build and upload the complete real dataset, run:\n"
+                    f"  python scripts/build_full_dataset.py --upload\n"
+                    f"{'='*70}"
+                )
 
         # Mixed-precision flags.
         self.use_amp = bool(config.get("system", {}).get("mixed_precision") in ("fp16", "bf16")) and \

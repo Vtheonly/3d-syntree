@@ -51,6 +51,10 @@ def tiny_config() -> dict:
             "val_fraction": 0.25,
             "synthetic_fallback": True,
             "synthetic_samples": 12,
+            # Explicit smoke-test opt-out of the production fail-closed guard
+            # (ResilientTrainer refuses synthetic/stub data by default).
+            "require_real_data": False,
+            "min_real_samples": 2,
         },
         "model": {
             "hidden_dim": 32,

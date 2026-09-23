@@ -198,12 +198,18 @@ def sync_hf_dataset(
     revision: str = "main",
     token: Optional[str] = None,
     catalog_file: Optional[str] = None,
+    min_train_samples: int = 0,
 ) -> dict:
     """Verify and sync production dataset assets from a HF Dataset repo.
 
     Training shards are intentionally not eagerly downloaded. The training
     loader pulls individual shards on first access and keeps a bounded local
     cache, which keeps notebook disk usage stable for large datasets.
+
+    Args:
+        min_train_samples: when > 0, fail closed (RuntimeError) if the train
+            split declares fewer samples. Guards against 2-sample stub
+            datasets being used for production training.
     """
     try:
         from huggingface_hub import HfApi, hf_hub_download
@@ -310,6 +316,21 @@ def sync_hf_dataset(
             "manifest": manifest_file,
         }
 
+    # Verify that the dataset is not a 2-sample stub.
+    train_count = split_stats.get("train", {}).get("total_samples", 0)
+    val_count = split_stats.get("val", {}).get("total_samples", 0)
+    print(
+        f"  [assets] Dataset split verified: train={train_count} samples, "
+        f"val={val_count} samples"
+    )
+    if min_train_samples > 0 and train_count < int(min_train_samples):
+        raise RuntimeError(
+            f"HF dataset {repo_id}@{revision} contains only {train_count} training "
+            f"samples (minimum required: {int(min_train_samples)}). This looks like "
+            "a stub dataset. Build and upload the full real dataset with "
+            "python scripts/build_full_dataset.py --upload"
+        )
+
     result = {
         "backend": "huggingface",
         "repo_id": repo_id,
@@ -377,6 +398,9 @@ def main() -> int:
     parser.add_argument("--catalog-copies", type=int, default=40,
                         help="replication factor of the base synthon set for "
                              "the offline catalog")
+    parser.add_argument("--min-train-samples", type=int, default=0,
+                        help="Fail closed if the train split has fewer samples "
+                             "(stub-dataset guard; 0 = report only).")
     parser.add_argument("--skip-download", action="store_true",
                         help="always use the offline synthetic fallback")
     args = parser.parse_args()
@@ -389,6 +413,7 @@ def main() -> int:
             revision=args.dataset_revision,
             token=token,
             catalog_file=args.catalog_file,
+            min_train_samples=args.min_train_samples,
         )
         return 0
 

@@ -199,7 +199,11 @@ def main(argv=None) -> int:
         rl_output_dir = args.output_dir or "./rl_outputs"
         rl_ckpt_dir = os.path.join(rl_output_dir, "checkpoints")
         rl_checkpoint_config = {**config, "huggingface": {"enabled": False}}
-        rl_manager = CheckpointManager(rl_checkpoint_config, ckpt_dir=rl_ckpt_dir)
+        # Stage 2 checkpoints fire every `checkpoint_every` episodes, so
+        # progress entries are monotonic but intentionally non-contiguous.
+        rl_manager = CheckpointManager(
+            rl_checkpoint_config, ckpt_dir=rl_ckpt_dir, progress_mode="episode"
+        )
         rl_start_episode, _, _ = rl_manager.restore_latest(model)
         if rl_start_episode == 0:
             s1_epoch, s1_step, _ = stage1_manager.restore_latest(model)
