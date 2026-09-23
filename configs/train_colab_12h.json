@@ -14,41 +14,37 @@
     "private": false
   },
   "data": {
-    "dataset_name": "crossdocked2020",
+    "backend": "huggingface",
+    "dataset_name": "unified_multidataset",
     "data_dir": "./data/crossdocked",
     "synthon_catalog_path": "./data/enamine_3d_subset.parquet",
-    "max_pocket_distance": 8,
-    "max_steps_per_molecule": 3,
-    "batch_size": 16,
-    "accumulate_grad_batches": 2,
-    "val_fraction": 0.1,
-    "synthetic_fallback": false,
-    "synthetic_samples": 8192,
-    "trajectory_dataset_path": null,
-    "terminal_cap_min_mw": 250,
-    "backend": "huggingface",
     "huggingface": {
       "repo_id": "JJKK1212/3d-syntree-multidataset",
       "revision": "main",
       "cache_dir": "./hf_cache",
       "max_cached_shards": 2
     },
+    "batch_size": 16,
+    "accumulate_grad_batches": 2,
+    "max_steps_per_molecule": 3,
+    "terminal_cap_min_mw": 250.0,
+    "val_fraction": 0.1,
+    "synthetic_fallback": false,
+    "synthetic_samples": 8192,
+    "trajectory_dataset_path": null,
     "multidataset": {
       "processed_manifest_path": "./data/multidataset/processed_manifest.jsonl",
       "split_manifest_path": "./data/multidataset/split_manifest.json",
       "max_resolution": 2.5,
-      "pocket_radius_angstrom": 10,
+      "pocket_radius_angstrom": 10.0,
       "min_pocket_atoms": 100
-    },
-    "split_manifest_path": "./data/multidataset/split_manifest.json",
-    "require_real_data": true,
-    "curated_manifest_path": "./data/multidataset/curated_manifest.jsonl"
+    }
   },
   "model": {
     "hidden_dim": 128,
     "num_equivariant_layers": 4,
     "num_radial_basis": 20,
-    "cutoff_radius": 5,
+    "cutoff_radius": 5.0,
     "synthon_embedding_dim": 128,
     "num_attention_heads": 4,
     "max_atomic_number": 100,
@@ -61,10 +57,10 @@
     "weight_decay": 0.00001,
     "lr_scheduler": "cosine_warmup",
     "warmup_epochs": 2,
-    "grad_clip_norm": 1,
+    "grad_clip_norm": 1.0,
     "keep_last_n_checkpoints": 3,
     "loss_weights": {
-      "synthon_ce": 1,
+      "synthon_ce": 1.0,
       "torsion_nll": 0.5,
       "steric_clash": 0.1,
       "reaction_ce": 0.5
@@ -73,13 +69,14 @@
     "auto_scale": {
       "enabled": true,
       "target_vram_fraction": 0.85,
-      "max_batch_size": 8192,
+      "max_batch_size": 2048,
       "scale_model": true,
       "lr_scale_rule": "linear"
     }
   },
   "reinforcement_learning": {
     "enabled": false,
+    "pocket_dir": "./data/test_pockets",
     "episodes": 256,
     "ppo_epochs": 4,
     "clip_epsilon": 0.2,
@@ -87,12 +84,13 @@
     "value_coef": 0.5,
     "entropy_coef": 0.01,
     "learning_rate": 0.00001,
-    "max_grad_norm": 1,
-    "temperature": 1,
+    "max_grad_norm": 1.0,
+    "temperature": 1.0,
     "checkpoint_every": 16,
     "reward": {
-      "docking_weight": 1,
+      "docking_weight": 1.0,
       "clash_weight": 0.25,
+      "contact_weight": 0.25,
       "fsp3_weight": 0.15,
       "qed_weight": 0.15,
       "validity_weight": 0.5
@@ -103,11 +101,11 @@
     "docking_engine": "gnina",
     "exhaustiveness": 8,
     "run_posebusters": true,
-    "run_aizynthfinder": true,
+    "run_aizynthfinder": false,
     "aizynthfinder_config": null
   },
   "catalog": {
     "min_fsp3": 0.4,
-    "max_mw": 220
+    "max_mw": 220.0
   }
 }
