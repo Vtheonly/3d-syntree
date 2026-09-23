@@ -160,15 +160,46 @@ class SBDDGenerator:
         policy_trace: List[Dict] = []
         # 2. Autoregressive growth.
         for step in range(1, steps + 1):
-            handles = self.rxn_engine.detect_handles(current_mol)
+            # Chemoselectivity: grow through the most reactive handle, not
+            # whichever one a SMARTS iteration happens to find first.
+            handles = self.rxn_engine.rank_handles(current_mol)
             if not handles:
                 break
 
-            # Pick the handle deterministically (first by type order).
             target_handle = handles[0]
             if not target_handle.allowed_reactions:
                 break
-            chosen_rxn = target_handle.allowed_reactions[0]
+
+            current_mw = float(Descriptors.MolWt(Chem.RemoveHs(Chem.Mol(current_mol))))
+            cap_min_mw = float(
+                self.config.get("data", {}).get("terminal_cap_min_mw", 250.0)
+            )
+            # The policy may only terminate once the ligand is drug-like
+            # enough (MW >= cap); the horizon ends the loop instead.
+            below_cap = current_mw < cap_min_mw
+            allow_stop = not below_cap
+            require_remaining_handle = step < steps and below_cap
+
+            reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
+                device=self.device,
+                core_handle=target_handle.handle_type,
+                require_remaining_handle=require_remaining_handle,
+                allow_terminal=allow_stop,
+            ).unsqueeze(0)
+            if not bool((reaction_mask > -1e8).any().item()):
+                # No legal chemistry remains (e.g. every compatible partner
+                # was filtered out): stop instead of feeding an all-masked
+                # distribution to the policy.
+                logger.debug(
+                    "No legal reaction family at step %d; stopping growth.", step
+                )
+                break
+            synthon_masks = self.catalog.get_reaction_family_masks(
+                device=self.device,
+                core_handle=target_handle.handle_type,
+                require_remaining_handle=require_remaining_handle,
+                allow_terminal=allow_stop,
+            ).unsqueeze(0)
 
             # 3. Policy decision: synthon + dihedral.
             handle_feat = MolecularFeaturizer.featurize_handle(
@@ -184,26 +215,14 @@ class SBDDGenerator:
                     pocket_pos.size(0), dtype=torch.long, device=self.device
                 ),
                 handle_features=handle_feat,
+                # Mask STOP out of the action space while the ligand is still
+                # below the terminal molecular-weight cap.
+                stop_mask=torch.tensor(
+                    0.0 if allow_stop else -1e9,
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
             )
-
-            current_mw = float(Descriptors.MolWt(Chem.RemoveHs(Chem.Mol(current_mol))))
-            cap_min_mw = float(
-                self.config.get("data", {}).get("terminal_cap_min_mw", 250.0)
-            )
-            require_remaining_handle = step < steps and current_mw < cap_min_mw
-            allow_terminal = not require_remaining_handle
-            reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
-                device=self.device,
-                core_handle=target_handle.handle_type,
-                require_remaining_handle=require_remaining_handle,
-                allow_terminal=allow_terminal,
-            ).unsqueeze(0)
-            synthon_masks = self.catalog.get_reaction_family_masks(
-                device=self.device,
-                core_handle=target_handle.handle_type,
-                require_remaining_handle=require_remaining_handle,
-                allow_terminal=allow_terminal,
-            ).unsqueeze(0)
 
             if return_trace:
                 with torch.enable_grad():
@@ -229,6 +248,13 @@ class SBDDGenerator:
             chosen_rxn = self._preferred_reaction(
                 reaction_family, target_handle.handle_type
             )
+            if chosen_rxn is None:
+                logger.debug(
+                    "Family %s has no executable backend for handle %s; "
+                    "stopping growth.",
+                    reaction_family, target_handle.handle_type,
+                )
+                break
             if bool(decision["stop"][0].item()):
                 if return_trace:
                     policy_trace.append({
@@ -257,7 +283,7 @@ class SBDDGenerator:
                 device=self.device,
                 core_handle=target_handle.handle_type,
                 require_remaining_handle=require_remaining_handle,
-                allow_terminal=allow_terminal,
+                allow_terminal=allow_stop,
             )
             if selected_mask[selected_synthon_idx].item() < -1e8:
                 logger.warning(
@@ -544,16 +570,16 @@ class SBDDGenerator:
         return int(self.seed_rng.choice(candidates))
 
     @staticmethod
-    def _preferred_reaction(reaction_family: str, core_handle: str) -> str:
-        """Choose a concrete RDKit backend for a predicted reaction family."""
+    def _preferred_reaction(reaction_family: str, core_handle: str) -> Optional[str]:
+        """Choose a concrete RDKit backend for a predicted reaction family.
+
+        Returns ``None`` when no member reaction is compatible with the
+        handle (callers stop the rollout instead of crashing)."""
         members = REACTION_FAMILY_MEMBERS.get(reaction_family, ())
         for reaction in members:
             if core_handle in REACTION_SIDES[reaction]:
                 return reaction
-        raise ValueError(
-            f"Reaction family {reaction_family!r} is incompatible with "
-            f"handle {core_handle!r}"
-        )
+        return None
 
 
 __all__ = ["SBDDGenerator"]

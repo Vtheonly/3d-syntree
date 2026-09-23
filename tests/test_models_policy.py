@@ -61,8 +61,9 @@ class TestForward:
         out = model(batch, catalog.embeddings)
         assert out["reaction_logits"].shape == (4, 7)
         assert out["reaction_log_probs"].shape == (4, 7)
-        assert out["synthon_logits"].shape == (4, len(catalog))
-        assert out["synthon_log_probs"].shape == (4, len(catalog))
+        # K synthons + 1 learned STOP action.
+        assert out["synthon_logits"].shape == (4, len(catalog) + 1)
+        assert out["synthon_log_probs"].shape == (4, len(catalog) + 1)
         assert out["torsion_mu"].shape == (4,)
         assert out["torsion_kappa"].shape == (4,)
         assert out["pocket_context"].shape == (4, 32)
@@ -70,13 +71,13 @@ class TestForward:
     def test_single_graph_forward(self, model, dataset, catalog):
         data = dataset[0]
         out = model(data, catalog.embeddings)
-        assert out["synthon_logits"].shape == (1, len(catalog))
+        assert out["synthon_logits"].shape == (1, len(catalog) + 1)
 
     def test_mask_applied(self, model, batch, catalog):
         mask = torch.zeros(4, len(catalog))
         mask[:, 5:] = -1e9
         out = model(batch, catalog.embeddings, mask)
-        assert (out["synthon_log_probs"][:, 5:] < -1e6).all()
+        assert (out["synthon_log_probs"][:, 5:len(catalog)] < -1e6).all()
 
     def test_backward_gradients(self, model, batch, catalog):
         out = model(batch, catalog.embeddings)
@@ -95,7 +96,7 @@ class TestForward:
 
     def test_batch_graph_mismatch_raises(self, model, dataset, catalog):
         data = dataset[0]
-        data.handle_features = torch.randn(3, 64)  # 3 graphs, 1 pocket
+        data.handle_features = torch.randn(3, 67)  # 3 graphs, 1 pocket
         with pytest.raises(ValueError):
             model(data, catalog.embeddings)
 
@@ -124,11 +125,17 @@ class TestSE3Properties:
                               atol=1e-4)
 
     def test_translation_invariance(self, model, dataset, catalog):
+        """Translating the whole system (pocket + handle) must leave all
+        scalar outputs unchanged - the policy only consumes relative geometry."""
         model.eval()
         data = dataset[1]
         d1 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
         d2 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
-        d2.pocket_pos = d2.pocket_pos + torch.tensor([7.0, -4.0, 2.0])
+        shift = torch.tensor([7.0, -4.0, 2.0])
+        d2.pocket_pos = d2.pocket_pos + shift
+        # The handle position lives in the same frame; translate it too.
+        d2.handle_features = d2.handle_features.clone()
+        d2.handle_features[..., 64:67] = d2.handle_features[..., 64:67] + shift
         with torch.no_grad():
             o1 = model(d1, catalog.embeddings)
             o2 = model(d2, catalog.embeddings)
@@ -144,8 +151,19 @@ class TestAct:
         assert decision["reaction_family_idx"].shape == (1,)
         assert 0 <= decision["reaction_family_idx"][0].item() < 7
         assert decision["synthon_idx"].shape == (1,)
-        assert 0 <= decision["synthon_idx"][0].item() < len(catalog)
+        # STOP (synthon_idx == -1) is a legal argmax action for an untrained
+        # policy; otherwise the index must address the catalog.
+        synthon_idx = decision["synthon_idx"][0].item()
+        assert synthon_idx == -1 or 0 <= synthon_idx < len(catalog)
         assert -math.pi <= decision["dihedral"][0].item() < math.pi
+
+    def test_act_respects_stop_mask(self, model, dataset, catalog):
+        """When STOP is masked out the argmax must select a real synthon."""
+        model.eval()
+        data = dataset[0]
+        data.stop_mask = torch.tensor(-1e9)
+        decision = model.act(data, catalog.embeddings)
+        assert 0 <= decision["synthon_idx"][0].item() < len(catalog)
 
     def test_act_sampled_respects_mask(self, model, dataset, catalog):
         model.eval()

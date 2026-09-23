@@ -20,7 +20,13 @@ def _mol_with_conformer(smiles: str, seed: int = 42):
 
 @pytest.fixture()
 def pipeline(tiny_config, tmp_path):
-    return EvaluationPipeline(tiny_config, output_dir=str(tmp_path / "eval"))
+    # Deep-copy: tests mutate evaluation flags and must not leak state into
+    # the session-scoped tiny_config used by other tests.
+    import copy
+
+    return EvaluationPipeline(
+        copy.deepcopy(tiny_config), output_dir=str(tmp_path / "eval")
+    )
 
 
 class TestEvaluate:
@@ -40,7 +46,10 @@ class TestEvaluate:
         assert report["recipe_completeness"] == pytest.approx(1.0)
         assert report["mean_fsp3"] == pytest.approx((6 / 7 + 12 / 13) / 2)
         assert report["fsp3_ge_0.42_rate"] == pytest.approx(1.0)
-        assert report["retrosynthetic_feasibility"] == pytest.approx(1.0)
+        # AiZynthFinder is unavailable in the test environment: the metric is
+        # reported as None with an explicit status instead of a fake proxy.
+        assert report["retrosynthetic_feasibility"] is None
+        assert "unavailable" in report["retrosynthetic_feasibility_status"]
 
     def test_report_file_written(self, pipeline):
         mols = [_mol_with_conformer("CCO")]
@@ -102,11 +111,38 @@ class TestDockingHelpers:
         ) is None
 
 
-class TestRetroProxy:
-    def test_proxy_uses_recipe_completeness(self, pipeline):
+class TestRetroFeasibility:
+    """The retrosynthesis metric is a genuine AiZynthFinder solve rate or
+    nothing at all: recipe completeness must never masquerade as
+    retrosynthetic feasibility."""
+
+    def test_unavailable_without_aizynthfinder(self, pipeline, monkeypatch):
+        import syntree.engine.evaluator as ev
+
+        monkeypatch.setattr(ev.shutil, "which", lambda name: None)
         per_mol = [
             {"recipe_complete": True, "smiles": "CCO"},
             {"recipe_complete": True, "smiles": "CCC"},
             {"recipe_complete": False, "smiles": "CCCC"},
         ]
-        assert pipeline._retro_feasibility(per_mol) == pytest.approx(2 / 3)
+        assert pipeline._retro_feasibility(per_mol) is None
+        assert pipeline._retro_status == "unavailable_missing_aizynthcli"
+
+    def test_disabled_reports_none(self, pipeline, monkeypatch):
+        import syntree.engine.evaluator as ev
+
+        monkeypatch.setattr(
+            ev.shutil, "which", lambda name: "/usr/bin/aizynthcli"
+        )
+        pipeline.config.setdefault("evaluation", {})["run_aizynthfinder"] = False
+        assert pipeline._retro_feasibility([{"smiles": "CCO"}]) is None
+        assert pipeline._retro_status == "disabled"
+
+    def test_missing_config_reports_none(self, pipeline, monkeypatch):
+        import syntree.engine.evaluator as ev
+
+        monkeypatch.setattr(
+            ev.shutil, "which", lambda name: "/usr/bin/aizynthcli"
+        )
+        assert pipeline._retro_feasibility([{"smiles": "CCO"}]) is None
+        assert pipeline._retro_status == "unavailable_missing_config"

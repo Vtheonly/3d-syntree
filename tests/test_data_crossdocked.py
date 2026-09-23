@@ -49,7 +49,7 @@ class TestSyntheticMode:
         assert 0 <= sample.target_synthon.item() < len(catalog)
         assert 0 <= sample.target_reaction_family_idx.item() < 7
         assert sample.pocket_z.shape[0] == sample.pocket_pos.shape[0]
-        assert sample.handle_features.shape == (64,)
+        assert sample.handle_features.shape == (67,)
         assert sample.target_synthon.dtype == torch.long
         assert sample.target_dihedral.dtype == torch.float32
         assert sample.target_reaction_family_idx.dtype == torch.long
@@ -113,7 +113,7 @@ class TestBatching:
                                      follow_batch=["pocket_pos"])
         assert batch.pocket_pos.shape[1] == 3
         assert batch.pocket_pos_batch.max().item() == 3
-        assert batch.handle_features.numel() == 4 * 64
+        assert batch.handle_features.numel() == 4 * 67
         assert batch.target_synthon.shape == (4,)
 
     def test_dataloader(self, tmp_path, catalog):
@@ -125,10 +125,13 @@ class TestBatching:
 
 
 class TestRealMode:
-    def test_pocket_without_ligand_is_synthetic(self, assets_dir, tmp_path):
-        """A lone sample_pocket.pdb (generation target) must not trigger
-        real mode - training requires pocket-ligand pairs."""
+    def test_pocket_without_ligand_requires_explicit_synthetic(self, assets_dir, tmp_path):
+        """A lone sample_pocket.pdb (generation target) must never be silently
+        used as real training data: real mode fails closed, and the caller must
+        explicitly opt into synthetic mode."""
         import shutil
+
+        from syntree.chemistry.catalog import SynthonCatalog
 
         data_dir = tmp_path / "crossdocked"
         data_dir.mkdir()
@@ -136,7 +139,13 @@ class TestRealMode:
             os.path.join(assets_dir["crossdocked_dir"], "sample_pocket.pdb"),
             data_dir / "sample_pocket.pdb",
         )
-        ds = CrossDockedDataset(str(data_dir), catalog=None, num_synthetic=5)
+        catalog = SynthonCatalog(assets_dir["catalog_path"], embedding_dim=32)
+        with pytest.raises(RuntimeError, match="No CrossDocked pocket-ligand pairs"):
+            CrossDockedDataset(str(data_dir), catalog=catalog, num_synthetic=5)
+        # Explicit opt-in keeps the smoke path available.
+        ds = CrossDockedDataset(
+            str(data_dir), catalog=catalog, num_synthetic=5, synthetic=True
+        )
         assert ds.use_synthetic
 
     def test_real_mode_with_pair(self, assets_dir, tmp_path):
@@ -149,13 +158,14 @@ class TestRealMode:
         pocket_lines = open(
             os.path.join(assets_dir["crossdocked_dir"], "sample_pocket.pdb")
         ).read()
-        (data_dir / "x_pocket.pdb").write_text(pocket_lines)
+        # "lig1" hashes (crc32 % 1000 = 67) into the train bucket.
+        (data_dir / "lig1_pocket.pdb").write_text(pocket_lines)
 
         lig = Chem.AddHs(
             Chem.MolFromSmiles("CC(C)COC(=O)C1CCCCC1")
         )
         AllChem.EmbedMolecule(lig, randomSeed=42)
-        writer = Chem.SDWriter(str(data_dir / "x_ligand.sdf"))
+        writer = Chem.SDWriter(str(data_dir / "lig1_ligand.sdf"))
         writer.write(lig)
         writer.close()
 
@@ -179,12 +189,12 @@ class TestRealMode:
         pocket_lines = open(
             os.path.join(assets_dir["crossdocked_dir"], "sample_pocket.pdb")
         ).read()
-        (data_dir / "x_pocket.pdb").write_text(pocket_lines)
+        (data_dir / "lig1_pocket.pdb").write_text(pocket_lines)
         lig = Chem.AddHs(
             Chem.MolFromSmiles("CC(C)COC(=O)C1CCCCC1")
         )
         AllChem.EmbedMolecule(lig, randomSeed=42)
-        writer = Chem.SDWriter(str(data_dir / "x_ligand.sdf"))
+        writer = Chem.SDWriter(str(data_dir / "lig1_ligand.sdf"))
         writer.write(lig)
         writer.close()
 

@@ -75,7 +75,16 @@ class TestPocketFeaturization:
 
 class TestHandleFeaturization:
     def test_dimension(self):
-        assert HANDLE_FEATURE_DIM == 64
+        # 64 chemical + 3 xyz (pocket-frame position) = 67.
+        assert HANDLE_FEATURE_DIM == 67
+
+    def test_chemical_and_position_layout(self, pocket_mol):
+        feats = MolecularFeaturizer.featurize_handle(pocket_mol, [0])
+        assert feats.shape == (HANDLE_FEATURE_DIM,)
+        # Chemical block is one-hot / count based (small non-negative ints).
+        assert feats[:64].sum() >= 2
+        # Positional block holds finite coordinates.
+        assert torch.isfinite(feats[64:67]).all()
 
     def test_empty_indices_give_zero_vector(self, pocket_mol):
         feats = MolecularFeaturizer.featurize_handle(pocket_mol, [])
@@ -104,7 +113,8 @@ class TestHandleFeaturization:
         assert not torch.equal(fc, fo)
 
     def test_handle_type_slot(self):
-        mol = Chem.MolFromSmiles("OC(=O)C1CCCCC1")
+        mol = Chem.AddHs(Chem.MolFromSmiles("OC(=O)C1CCCCC1"))
+        assert AllChem.EmbedMolecule(mol, randomSeed=42) == 0
         feats = MolecularFeaturizer.featurize_handle(mol, [0], "carboxylic_acid")
         assert feats.sum() > 2  # element + degree + handle class + neighbors
 

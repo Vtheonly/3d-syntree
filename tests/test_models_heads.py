@@ -79,8 +79,9 @@ class TestSynthonHead:
         q = torch.randn(3, 32)
         emb = torch.randn(50, 32)
         logits, log_probs = head(q, emb)
-        assert logits.shape == (3, 50)
-        assert log_probs.shape == (3, 50)
+        # K synthons + 1 learned STOP action.
+        assert logits.shape == (3, 51)
+        assert log_probs.shape == (3, 51)
 
     def test_log_probs_normalized(self, head):
         q = torch.randn(2, 32)
@@ -96,8 +97,22 @@ class TestSynthonHead:
         mask[0, 2:] = -1e9
         with torch.no_grad():
             logits, log_probs = head(q, emb, mask)
-        assert (log_probs[0, 2:] < -1e6).all()
-        assert float(log_probs[0, :2].exp().sum()) == pytest.approx(1.0, abs=1e-4)
+        assert (log_probs[0, 2:6] < -1e6).all()
+        # Mass is shared between the legal synthons and the STOP action.
+        assert float(log_probs[0].exp().sum()) == pytest.approx(1.0, abs=1e-4)
+        assert float(log_probs[0, :2].exp().sum()) < 1.0
+
+    def test_stop_mask_blocks_stop(self, head):
+        """A negative stop_mask removes the STOP action from the support."""
+        head.eval()
+        q = torch.randn(2, 32)
+        emb = torch.randn(6, 32)
+        with torch.no_grad():
+            _, log_probs = head(q, emb, stop_mask=torch.full((2,), -1e9))
+        assert (log_probs[:, 6] < -1e6).all()
+        assert torch.allclose(
+            log_probs[:, :6].exp().sum(dim=-1), torch.ones(2), atol=1e-4
+        )
 
     def test_fully_masked_is_finite(self, head):
         """Even a fully-masked row must not produce NaN (extreme -1e9)."""

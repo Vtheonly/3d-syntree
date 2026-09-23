@@ -209,7 +209,15 @@ class SynthonCatalog:
         require_remaining_handle: bool = False,
         allow_terminal: bool = True,
     ) -> torch.Tensor:
-        """Return a synthon compatibility mask for a reaction family."""
+        """Return a synthon compatibility mask for a reaction family.
+
+        When ``require_remaining_handle`` is set, synthons are restricted to
+        multifunctional building blocks so growth can continue after the
+        reaction. If the catalog contains no multifunctional partner for the
+        family, the filter falls back to the full partner set: a
+        monofunctional cap that terminates the trajectory is strictly better
+        than a dead-ended rollout that can never react.
+        """
         if family not in REACTION_FAMILY_MEMBERS:
             raise ValueError(
                 f"Unknown reaction family '{family}'. "
@@ -226,7 +234,18 @@ class SynthonCatalog:
         mask = self._family_mask_cache[key].clone()
         if require_remaining_handle or not allow_terminal:
             has_remaining = torch.from_numpy(self._handle_counts >= 2)
-            mask[~has_remaining] = -1e9
+            grown = mask.clone()
+            grown[~has_remaining] = -1e9
+            if bool((grown > -1e8).any().item()):
+                mask = grown
+            else:
+                # No multifunctional partner exists for this family: fall
+                # back to monofunctional caps instead of dead-ending growth.
+                logger.debug(
+                    "No multifunctional synthon for family %s (handle %s); "
+                    "allowing monofunctional partners.",
+                    family, core_handle,
+                )
         if device is not None:
             mask = mask.to(device)
         return mask
@@ -394,8 +413,10 @@ class SynthonCatalog:
 
     @property
     def available_handles(self) -> List[str]:
-        """Handle types present in the catalog, sorted."""
-        return sorted(self.handle_masks.keys())
+        """Handle types actually present in the catalog (>=1 synthon), sorted."""
+        return sorted(
+            handle for handle, mask in self.handle_masks.items() if bool(mask.any())
+        )
 
     def __len__(self) -> int:
         return self.num_synthons

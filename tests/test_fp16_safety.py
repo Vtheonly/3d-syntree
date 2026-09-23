@@ -165,7 +165,8 @@ class TestLearnableSyntheticSupervision:
             assets_dir["catalog_path"], embedding_dim=32, validate_handles=False
         )
         return CrossDockedDataset(
-            str(tmp_path / "ds"), catalog=catalog, num_synthetic=256, seed=3
+            str(tmp_path / "ds"), catalog=catalog, num_synthetic=256, seed=3,
+            synthetic=True,
         )
 
     def test_targets_in_range(self, dataset):
@@ -179,6 +180,12 @@ class TestLearnableSyntheticSupervision:
     def test_targets_are_deterministic_functions_of_features(self, dataset):
         """Identical handle features + pocket stats must map to the identical
         target (the mapping is fixed, not resampled per access)."""
+        from syntree.chemistry.reactions import (
+            REACTION_FAMILY_MEMBERS,
+            REACTION_FAMILY_NAMES,
+            REACTION_SIDES,
+        )
+
         a, b = dataset[0], dataset[31]
         # Rebuild the mapping by hand for sample a.
         feats = torch.cat(
@@ -196,17 +203,58 @@ class TestLearnableSyntheticSupervision:
             ]
         )
         g = torch.Generator().manual_seed(3 + 7919)
-        w_syn = torch.randn(69, generator=g)
-        w_dih = torch.randn(69, generator=g)
-        scale = math.sqrt(69)
-        n_catalog = len(dataset.catalog)
-        expect_syn = int(
-            torch.floor(torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale) * n_catalog)
-            .clamp(0, n_catalog - 1)
-        )
+        w_syn = torch.randn(72, generator=g)
+        w_dih = torch.randn(72, generator=g)
+        w_rxn = torch.randn(72, generator=g)
+        scale = math.sqrt(72)
+        n_families = len(REACTION_FAMILY_NAMES)
+
+        # Dihedral: direct deterministic function of the features.
         expect_dih = math.pi * math.tanh(2.0 * torch.dot(feats, w_dih) / scale)
-        assert a.target_synthon.item() == expect_syn
         assert a.target_dihedral.item() == pytest.approx(expect_dih, abs=1e-5)
+
+        # Synthon: deterministic via family -> grammar-compatible candidates.
+        family_idx = int(
+            torch.floor(
+                torch.sigmoid(torch.dot(feats, w_rxn) / scale) * n_families
+            ).clamp(0, n_families - 1)
+        )
+        family_handles = {
+            "amide_coupling": ("carboxylic_acid", "primary_secondary_amine"),
+            "reductive_amination": ("aldehyde", "primary_secondary_amine"),
+            "suzuki_coupling": ("aryl_halide", "boronic_acid"),
+            "aryl_amination": ("aryl_halide", "primary_secondary_amine"),
+            "urea_formation": ("primary_secondary_amine",),
+            "esterification": ("carboxylic_acid", "alcohol"),
+            "click_triazole": ("alkyne", "azide"),
+        }
+        handles = family_handles[REACTION_FAMILY_NAMES[family_idx]]
+        handle_idx = int(
+            abs(int(torch.round(a.handle_features[0] * 17).item())) % len(handles)
+        )
+        core_handle = handles[handle_idx]
+        candidate_handles = set()
+        for reaction in REACTION_FAMILY_MEMBERS[
+            REACTION_FAMILY_NAMES[family_idx]
+        ]:
+            side_a, side_b = REACTION_SIDES[reaction]
+            partner = (
+                side_b if core_handle == side_a
+                else side_a if core_handle == side_b
+                else None
+            )
+            if partner:
+                candidate_handles.add(partner)
+        candidates = dataset.catalog.synthon_indices_for_handles(candidate_handles)
+        if len(candidates) == 0:
+            candidates = np.arange(len(dataset.catalog), dtype=int)
+        raw_idx = int(
+            torch.floor(
+                torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale) * len(candidates)
+            ).clamp(0, len(candidates) - 1)
+        )
+        expect_syn = int(candidates[raw_idx])
+        assert a.target_synthon.item() == expect_syn
         # Sanity: different samples usually differ.
         assert a.target_synthon.item() != b.target_synthon.item() or (
             a.target_dihedral.item() != b.target_dihedral.item()
@@ -247,13 +295,16 @@ class TestLearnableSyntheticSupervision:
         catalog = SynthonCatalog(
             assets_dir["catalog_path"], embedding_dim=32, validate_handles=False
         )
-        d1 = CrossDockedDataset(str(tmp_path / "a"), catalog=catalog, num_synthetic=16, seed=5)
-        d2 = CrossDockedDataset(str(tmp_path / "b"), catalog=catalog, num_synthetic=16, seed=5)
+        d1 = CrossDockedDataset(str(tmp_path / "a"), catalog=catalog, num_synthetic=16, seed=5,
+                                synthetic=True)
+        d2 = CrossDockedDataset(str(tmp_path / "b"), catalog=catalog, num_synthetic=16, seed=5,
+                                synthetic=True)
         for i in range(16):
             assert d1[i].target_synthon == d2[i].target_synthon
             assert d1[i].target_dihedral == d2[i].target_dihedral
         d3 = CrossDockedDataset(
-            str(tmp_path / "c"), catalog=catalog, num_synthetic=16, seed=5, split="val"
+            str(tmp_path / "c"), catalog=catalog, num_synthetic=16, seed=5, split="val",
+            synthetic=True,
         )
         # Different split salt -> different sampling stream.
         assert not torch.equal(d1[0].handle_features, d3[0].handle_features)

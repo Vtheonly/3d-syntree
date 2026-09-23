@@ -67,20 +67,24 @@ def main() -> int:
     )
 
     # Pretty summary.
+    def _fmt(value, fmt):
+        """Format a metric, rendering None (unavailable) explicitly."""
+        return "n/a (unavailable)" if value is None else format(value, fmt)
+
     print("\n" + "=" * 60)
     print("3D-SynTree BENCHMARK SUMMARY")
     print("=" * 60)
     rows = [
         ("Molecules evaluated", summary.get("num_molecules", len(mols))),
-        ("Chemical validity", f"{summary.get('chemical_validity', 0):.1%}"),
-        ("PoseBusters pass rate", f"{summary.get('posebusters_pass_rate', 0):.1%}"),
-        ("Mean Fsp3", f"{summary.get('mean_fsp3', 0):.3f}"),
-        ("Fsp3 >= 0.42 rate", f"{summary.get('fsp3_ge_0.42_rate', 0):.1%}"),
-        ("Mean MW (Da)", f"{summary.get('mean_mw', 0):.1f}"),
-        ("Recipe completeness", f"{summary.get('recipe_completeness', 0):.1%}"),
-        ("Retrosynthesis (proxy)", f"{summary.get('retrosynthetic_feasibility', 0):.1%}"),
+        ("Chemical validity", _fmt(summary.get("chemical_validity", 0), ".1%")),
+        ("PoseBusters pass rate", _fmt(summary.get("posebusters_pass_rate", 0), ".1%")),
+        ("Mean Fsp3", _fmt(summary.get("mean_fsp3", 0), ".3f")),
+        ("Fsp3 >= 0.42 rate", _fmt(summary.get("fsp3_ge_0.42_rate", 0), ".1%")),
+        ("Mean MW (Da)", _fmt(summary.get("mean_mw", 0), ".1f")),
+        ("Recipe completeness", _fmt(summary.get("recipe_completeness", 0), ".1%")),
+        ("Retrosynthesis", _fmt(summary.get("retrosynthetic_feasibility"), ".1%")),
     ]
-    if "mean_vina_score" in summary:
+    if summary.get("mean_vina_score") is not None:
         rows.append(("Mean docking score", f"{summary['mean_vina_score']:.2f} kcal/mol"))
     for label, value in rows:
         print(f"  {label:<26}: {value}")

@@ -113,6 +113,27 @@ _CORE_MAP_OFFSET = 1000
 _SYNTHON_MAP_OFFSET = 2000
 
 
+# Nucleophilicity / chemoselectivity tiers used to rank competing handles on
+# a growing ligand (medicinal-chemistry practice: an aliphatic amine is ~10^6
+# times more reactive in amide couplings than an aniline, so a coupling
+# partner must never be attached through the weaker nucleophile while a
+# stronger one sits idle).
+HANDLE_REACTIVITY_TIERS: Dict[str, int] = {
+    "primary_secondary_amine": 1,  # aliphatic amines (pKa ~10.5)
+    "carboxylic_acid": 3,          # strong electrophile handle
+    "aldehyde": 3,                 # strong electrophile handle
+    "alcohol": 4,                  # weak nucleophile (esterification only)
+    "alkyne": 4,
+    "azide": 4,
+    "aryl_halide": 5,              # metal-catalysed cross-coupling only
+    "boronic_acid": 5,             # metal-catalysed cross-coupling only
+}
+
+# Aromatic (aniline-type) amines are demoted one tier below their aliphatic
+# analogues: the lone pair delocalises into the ring (pKa ~4.5).
+_AROMATIC_AMINE_DEMOTION = 1
+
+
 @dataclass(frozen=True)
 class HandleInfo:
     """A single detected reactive attachment point."""
@@ -125,6 +146,15 @@ class HandleInfo:
     def primary_atom(self) -> int:
         """Index of the atom that participates in the new bond."""
         return self.atom_indices[0]
+
+    @property
+    def reactivity_tier(self) -> int:
+        """Rank within a molecule's competing handles (lower = more reactive).
+
+        Aliphatic amines (tier 1) beat aromatic anilines (tier 2), which beat
+        electrophilic coupling handles (tier 3), weak nucleophiles (tier 4)
+        and metal-catalysed cross-coupling partners (tier 5)."""
+        return HANDLE_REACTIVITY_TIERS.get(self.handle_type, 4)
 
 
 @dataclass
@@ -230,6 +260,29 @@ class ReactionEngine:
                     )
                 )
         return detected
+
+    def rank_handles(self, mol: Chem.Mol) -> List[HandleInfo]:
+        """Order detected handles by chemical reactivity (chemoselectivity).
+
+        Sort key: (effective tier, handle type, primary atom index). Aromatic
+        amines are demoted below aliphatic amines so an acid coupling is
+        always routed through the more nucleophilic nitrogen of a molecule
+        bearing both an aliphatic amine and an aniline.
+        """
+        handles = self.detect_handles(mol)
+
+        def sort_key(info: HandleInfo):
+            tier = info.reactivity_tier
+            if info.handle_type == "primary_secondary_amine":
+                atom = mol.GetAtomWithIdx(info.primary_atom)
+                if atom.GetIsAromatic() or any(
+                    nbr.GetIsAromatic() and nbr.GetAtomicNum() == 6
+                    for nbr in atom.GetNeighbors()
+                ):
+                    tier += _AROMATIC_AMINE_DEMOTION
+            return (tier, info.handle_type, info.primary_atom)
+
+        return sorted(handles, key=sort_key)
 
     def handle_types(self, mol: Chem.Mol) -> set:
         """Set of handle type names present on ``mol``."""
@@ -414,6 +467,7 @@ __all__ = [
     "REACTION_FAMILY_NAMES",
     "REACTION_FAMILY_FOR",
     "HANDLE_NAMES",
+    "HANDLE_REACTIVITY_TIERS",
     "HandleInfo",
     "ReactionResult",
     "ReactionEngine",
