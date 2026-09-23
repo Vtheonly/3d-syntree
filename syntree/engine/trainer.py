@@ -357,9 +357,14 @@ class ResilientTrainer:
                     return self._summary(history, floor=self.start_epoch)
 
                 batch = batch.to(self.device)
-                # Clamp targets into the catalog range (synthetic data may
-                # have been built against a different catalog size).
-                target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
+                # Clamp catalog targets; STOP is represented by index K.
+                target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
+                stop_index = len(self.catalog)
+                target_action = torch.where(
+                    batch.target_stop.bool(),
+                    torch.full_like(target, stop_index),
+                    target,
+                )
                 synthon_mask, reaction_mask = self._build_training_masks(batch)
 
                 with torch.autocast(
@@ -375,7 +380,7 @@ class ResilientTrainer:
                         preds["reaction_logits"],
                         batch.target_reaction_family_idx,
                     )
-                    l_synthon = self.criterion(preds["synthon_logits"], target)
+                    l_synthon = self.criterion(preds["synthon_logits"], target_action)
                     l_torsion = ContinuousTorsionHead.loss_fn(
                         preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
                     )
@@ -497,7 +502,13 @@ class ResilientTrainer:
         oracle_synthon_correct_total, joint_action_correct, n = 0, 0, 0
         for batch in self.val_loader:
             batch = batch.to(self.device)
-            target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
+            target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
+            stop_index = len(self.catalog)
+            target_action = torch.where(
+                batch.target_stop.bool(),
+                torch.full_like(target, stop_index),
+                target,
+            )
             synthon_mask, reaction_mask = self._build_training_masks(batch)
             preds = self.model(
                 batch,
@@ -508,7 +519,7 @@ class ResilientTrainer:
             l_reaction = self.criterion(
                 preds["reaction_logits"], batch.target_reaction_family_idx
             )
-            l_synthon = self.criterion(preds["synthon_logits"], target)
+            l_synthon = self.criterion(preds["synthon_logits"], target_action)
             l_torsion = ContinuousTorsionHead.loss_fn(
                 preds["torsion_mu"],
                 preds["torsion_kappa"],
@@ -530,7 +541,7 @@ class ResilientTrainer:
                 (predicted_family == batch.target_reaction_family_idx).sum().item()
             )
             oracle_synthon = preds["synthon_logits"].argmax(-1)
-            synthon_oracle_correct = (oracle_synthon == target)
+            synthon_oracle_correct = (oracle_synthon == target_action)
 
             predicted_masks = []
             for family_idx, handle_idx in zip(
@@ -553,7 +564,7 @@ class ResilientTrainer:
                 predicted_masks,
             )
             joint_synthon = predicted_synthon_logits.argmax(-1)
-            joint_synthon_correct = joint_synthon == target
+            joint_synthon_correct = joint_synthon == target_action
             synthon_correct += int(joint_synthon_correct.sum().item())
             oracle_synthon_correct_total += int(synthon_oracle_correct.sum().item())
             joint_action_correct += int(
