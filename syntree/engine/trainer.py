@@ -469,10 +469,13 @@ class ResilientTrainer:
                 "val_torsion_nll": float("nan"),
                 "val_reaction_acc": float("nan"),
                 "val_synthon_acc": float("nan"),
+                "val_synthon_acc_oracle_family": float("nan"),
+                "val_joint_action_acc": float("nan"),
             }
 
         total, reaction, synthon, torsion = 0.0, 0.0, 0.0, 0.0
-        reaction_correct, synthon_correct, oracle_synthon_correct_total, n = 0, 0, 0, 0
+        reaction_correct, synthon_correct = 0, 0
+        oracle_synthon_correct_total, joint_action_correct, n = 0, 0, 0
         for batch in self.val_loader:
             batch = batch.to(self.device)
             target = batch.target_synthon.clamp(max=len(self.catalog) - 1)
@@ -531,11 +534,15 @@ class ResilientTrainer:
                 predicted_masks,
             )
             joint_synthon = predicted_synthon_logits.argmax(-1)
-            synthon_correct += int((joint_synthon == target).sum().item())
-            oracle_synthon_correct_count = int(synthon_oracle_correct.sum().item())
-            if "oracle_synthon_correct" not in locals():
-                oracle_synthon_correct_total = 0
-            oracle_synthon_correct_total += oracle_synthon_correct_count
+            joint_synthon_correct = joint_synthon == target
+            synthon_correct += int(joint_synthon_correct.sum().item())
+            oracle_synthon_correct_total += int(synthon_oracle_correct.sum().item())
+            joint_action_correct += int(
+                (
+                    (predicted_family == batch.target_reaction_family_idx)
+                    & joint_synthon_correct
+                ).sum().item()
+            )
             n += int(target.numel())
 
         self.model.train()
@@ -547,7 +554,7 @@ class ResilientTrainer:
             "val_reaction_acc": reaction_correct / max(1, n),
             "val_synthon_acc": synthon_correct / max(1, n),
             "val_synthon_acc_oracle_family": oracle_synthon_correct_total / max(1, n),
-            "val_joint_action_acc": 0.0,
+            "val_joint_action_acc": joint_action_correct / max(1, n),
         }
 
     # ------------------------------------------------------------------
