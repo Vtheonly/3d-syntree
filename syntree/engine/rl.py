@@ -578,6 +578,9 @@ def collect_episode(
         seed_synthon_idx=seed_synthon_idx,
         max_steps=max_steps,
     )
+    device = next(model.parameters()).device
+    synthon_embeddings = catalog.embeddings.to(device)
+
     transitions: List[RolloutTransition] = []
     reward_details: Dict = {}
     while not env.done:
@@ -585,10 +588,10 @@ def collect_episode(
         if not has_handle or not bool((reaction_mask > -1e8).any().item()):
             break
         decision = model.act(
-            observation,
-            catalog.embeddings,
-            reaction_compatibility_mask=reaction_mask,
-            synthon_masks_by_reaction=synthon_masks,
+            observation.to(device),
+            synthon_embeddings,
+            reaction_compatibility_mask=reaction_mask.to(device),
+            synthon_masks_by_reaction=synthon_masks.to(device),
             sample=sample,
             temperature=temperature,
         )
