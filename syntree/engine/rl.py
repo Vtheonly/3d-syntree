@@ -216,6 +216,17 @@ class PPOFineTuner:
             reaction_entropy + synthon_entropy,
         )
 
+    @staticmethod
+    def terminal_returns(reward: float, horizon: int, gamma: float) -> torch.Tensor:
+        """Return discounted terminal rewards for a trajectory."""
+        if horizon <= 0:
+            return torch.empty(0, dtype=torch.float32)
+        return torch.tensor(
+            [float(reward) * (float(gamma) ** (horizon - 1 - i))
+             for i in range(horizon)],
+            dtype=torch.float32,
+        )
+
     def update_episode(
         self,
         trace: Sequence[Dict],
@@ -243,12 +254,9 @@ class PPOFineTuner:
         ]
 
         horizon = len(transitions)
-        returns_t = torch.tensor(
-            [float(reward) * (self.gamma ** (horizon - 1 - i))
-             for i in range(horizon)],
-            dtype=torch.float32,
-            device=self.device,
-        )
+        returns_t = self.terminal_returns(
+            reward, horizon, self.gamma
+        ).to(self.device)
         old_values = torch.stack(
             [t.old_value.float() for t in transitions]
         ).to(self.device)
