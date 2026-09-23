@@ -342,6 +342,12 @@ def main() -> int:
     parser.add_argument("--dataset-revision", type=str, default="main")
     parser.add_argument("--catalog-file", type=str, default=None,
                         help="Optional exact catalog path inside the HF Dataset repo.")
+    parser.add_argument("--catalog-input", type=str, default=None,
+                        help="Real vendor/library SDF/CSV export to curate into the canonical catalog.")
+    parser.add_argument("--structure-manifest", type=str, default=None,
+                        help="JSONL manifest of heterogeneous source complexes to normalize and split.")
+    parser.add_argument("--offline-smoke", action="store_true",
+                        help="Explicitly build the tiny deterministic synthetic smoke bundle.")
     parser.add_argument("--target-dataset", type=str, default="crossdocked2020")
     parser.add_argument("--synthon-subset", type=str, default="3d-diversity-15k")
     parser.add_argument("--output-dir", type=str, default="./data")
@@ -363,10 +369,71 @@ def main() -> int:
         )
         return 0
 
+    # Explicit local multi-dataset production staging. This path fails closed:
+    # a real catalog and real structural manifest are required; no synthetic
+    # training data is silently substituted.
+    if args.structure_manifest or args.catalog_input or args.target_dataset == "unified_multisource":
+        if args.offline_smoke:
+            raise SystemExit("--offline-smoke cannot be combined with production multi-dataset inputs")
+        if args.catalog_input:
+            import subprocess
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(os.path.dirname(__file__), "build_synthon_catalog.py"),
+                    "--input", args.catalog_input,
+                    "--output", os.path.join(args.output_dir, "enamine_3d_subset.parquet"),
+                ],
+                check=False,
+            )
+            if result.returncode != 0:
+                return result.returncode
+        if not os.path.exists(os.path.join(args.output_dir, "enamine_3d_subset.parquet")):
+            print(
+                "[assets] production catalog missing. Provide --catalog-input with a real library export "
+                "or stage the exact catalog before training.",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.structure_manifest:
+            print("[assets] --structure-manifest is required for --target-dataset unified_multisource.", file=sys.stderr)
+            return 2
+        import subprocess
+        unified_dir = os.path.join(args.output_dir, "multidataset")
+        result = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "prepare_multidataset.py"),
+                "--input-manifest", args.structure_manifest,
+                "--output-dir", unified_dir,
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            return result.returncode
+        manifest = {
+            "version": 3,
+            "mode": "production",
+            "target_dataset": args.target_dataset,
+            "synthon_subset": args.synthon_subset,
+            "catalog_path": os.path.join(args.output_dir, "enamine_3d_subset.parquet"),
+            "data_dir": os.path.join(unified_dir, "pairs"),
+            "curated_manifest_path": os.path.join(unified_dir, "curated_manifest.jsonl"),
+            "split_manifest_path": os.path.join(unified_dir, "split_manifest.json"),
+        }
+        manifest_path = os.path.join(args.output_dir, "assets_manifest.json")
+        os.makedirs(args.output_dir, exist_ok=True)
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+        print(json.dumps(manifest, indent=2))
+        return 0
+
     print(f"[assets] target dataset: {args.target_dataset}")
     print(f"[assets] synthon subset: {args.synthon_subset}")
 
     # Legacy local/smoke-test path.
+    if args.offline_smoke:
+        args.skip_download = True
     catalog_path = os.path.join(args.output_dir, "enamine_3d_subset.parquet")
     if not os.path.exists(catalog_path):
         print("[assets] building offline synthon catalog (RDKit-verified) ...")
