@@ -17,7 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from rdkit import Chem
+from rdkit import Chem, DataStructs
+from rdkit.Chem import AllChem
 
 from syntree.chemistry.conformer import ConformerEngine
 from syntree.chemistry.reactions import (
@@ -148,9 +149,7 @@ class ReactionConstrainedFragmenter:
                             (side_a, side_b, prepared_a_mol, prepared_b_mol),
                             (side_b, side_a, prepared_b_mol, prepared_a_mol),
                         ):
-                            lookup = self._catalog_lookup.get(
-                                canonical_smiles(synthon_mol), ()
-                            )
+                            lookup = self._catalog_candidates(synthon_mol)
                             if not lookup:
                                 continue
 
@@ -288,6 +287,34 @@ class ReactionConstrainedFragmenter:
         except Exception:
             return ()
         return (mol,)
+
+    def _catalog_candidates(
+        self,
+        synthon_mol: Chem.Mol,
+        min_tanimoto: float = 0.85,
+    ) -> Tuple[int, ...]:
+        """Return exact catalog matches plus high-similarity candidates.
+
+        Similarity is a candidate-discovery mechanism only. The caller still
+        requires exact forward reaction replay against the observed product,
+        so a Tanimoto-near miss can never become fabricated supervision.
+        """
+        exact = self._catalog_lookup.get(canonical_smiles(synthon_mol), ())
+        if exact:
+            return tuple(sorted(exact))
+
+        fp = AllChem.GetMorganFingerprintAsBitVect(synthon_mol, radius=2, nBits=2048)
+        scored = []
+        for idx, smiles in enumerate(self.catalog.df["smiles"]):
+            mol = Chem.MolFromSmiles(str(smiles))
+            if mol is None:
+                continue
+            candidate_fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+            similarity = DataStructs.TanimotoSimilarity(fp, candidate_fp)
+            if similarity >= min_tanimoto:
+                scored.append((float(similarity), int(idx)))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return tuple(idx for _, idx in scored)
 
     def _family_pairs(self, family: str):
         """Return (side_a, side_b, concrete backend) candidates."""
