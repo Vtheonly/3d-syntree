@@ -121,6 +121,9 @@ class CrossDockedDataset(InMemoryDataset):
 
     def process(self):
         data_list = self._build_samples()
+        # _build_samples() may explicitly switch to synthetic mode when the
+        # caller opted into fallback. Recompute the processed path after that
+        # decision so a fallback cache is never stored under a "real" filename.
         self.save(data_list, self.processed_paths[0])
 
     def _load_or_process(self):
@@ -128,10 +131,13 @@ class CrossDockedDataset(InMemoryDataset):
         path = self.processed_paths[0]
         if self.force_rebuild or not os.path.exists(path):
             self.process()
+            path = self.processed_paths[0]
         try:
             self.load(path)
+            return
         except Exception:
             self.process()
+            path = self.processed_paths[0]
             self.load(path)
 
     def __len__(self) -> int:
