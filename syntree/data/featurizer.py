@@ -115,7 +115,7 @@ class MolecularFeaturizer:
         handle_type: Optional[str] = None,
         reference_center: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Encode an attachment handle into a fixed 64-dim vector.
+        """Encode an attachment handle into a fixed 67-dim vector.
 
         The first 64 dimensions capture the reacting atom's chemical
         environment. The final three dimensions contain its 3D position in
