@@ -174,7 +174,7 @@ class CrossDockedDataset(InMemoryDataset):
         n_catalog = len(self.catalog) if self.catalog is not None else 50
 
         g = torch.Generator().manual_seed(self.seed + 7919)
-        n_feat = 69
+        n_feat = 72
         w_syn = torch.randn(n_feat, generator=g)
         w_dih = torch.randn(n_feat, generator=g)
         w_rxn = torch.randn(n_feat, generator=g)
@@ -194,9 +194,11 @@ class CrossDockedDataset(InMemoryDataset):
         for _ in range(self.num_synthetic):
             n_pocket = int(rng.integers(24, 72))
             pos, z = _synthetic_pocket(rng, n_pocket)
-            handle_feat = torch.from_numpy(
-                rng.normal(size=64).astype(np.float32)
-            )
+            handle_position = pos[int(rng.integers(0, n_pocket))]
+            handle_feat = torch.cat([
+                torch.from_numpy(rng.normal(size=64).astype(np.float32)),
+                handle_position,
+            ])
             pocket_stats = torch.stack(
                 [
                     pos[:, 0].mean(),
@@ -346,6 +348,7 @@ class CrossDockedDataset(InMemoryDataset):
                         target.core_mol,
                         handle_info.atom_indices,
                         target.core_handle_type,
+                        reference_center=center,
                     ),
                     target_synthon=torch.tensor(
                         target.synthon_index, dtype=torch.long
