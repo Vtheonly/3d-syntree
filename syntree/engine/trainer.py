@@ -598,11 +598,14 @@ class ResilientTrainer:
                 preds["reaction_logits"], batch.target_reaction_family_idx
             )
             l_synthon = self.criterion(preds["synthon_logits"], target_action)
-            l_torsion = ContinuousTorsionHead.loss_fn(
-                preds["torsion_mu"],
-                preds["torsion_kappa"],
-                batch.target_dihedral,
-            )
+            if bool(non_stop.any().item()):
+                l_torsion = -ContinuousTorsionHead.log_prob(
+                    preds["torsion_mu"][non_stop],
+                    preds["torsion_kappa"][non_stop],
+                    batch.target_dihedral[non_stop],
+                ).mean()
+            else:
+                l_torsion = preds["torsion_mu"].new_zeros(())
             total += float(
                 (
                     self.reaction_loss_weight * l_reaction
