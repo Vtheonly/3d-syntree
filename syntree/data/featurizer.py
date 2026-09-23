@@ -15,7 +15,9 @@ import torch
 from rdkit import Chem
 
 # Dimensionality of the flat handle feature vector.
-HANDLE_FEATURE_DIM = 64
+HANDLE_FEATURE_DIM = 67
+HANDLE_CHEMICAL_FEATURE_DIM = 64
+HANDLE_POSITION_OFFSET = 64
 
 # Offset layout of the handle feature vector:
 #   [0, 16)   one-hot atomic number (capped)
@@ -26,6 +28,7 @@ HANDLE_FEATURE_DIM = 64
 #   [44, 52)  one-hot num H neighbours
 #   [52, 56)  handle-class one-hot start (classes 0..7)
 #   [56, 64)  neighbour element histogram (C, N, O, S, halogens, other)
+#   [64, 67)  reacting-handle xyz position in the pocket-centered frame
 _ATOMIC_NUM_SLOTS = 16
 _DEGREE_OFFSET = 16
 _AROMATIC_OFFSET = 24
@@ -110,12 +113,13 @@ class MolecularFeaturizer:
         mol: Chem.Mol,
         handle_atom_indices: Sequence[int],
         handle_type: Optional[str] = None,
+        reference_center: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Encode an attachment handle into a fixed 64-dim vector.
 
-        The vector captures the reacting atom's element, degree, aromaticity,
-        ring membership, formal charge, valence, hydrogen count, handle
-        class, and the element histogram of its neighbourhood.
+        The first 64 dimensions capture the reacting atom's chemical
+        environment. The final three dimensions contain its 3D position in
+        the same centered frame as the corresponding pocket.
         """
         feats = np.zeros(HANDLE_FEATURE_DIM, dtype=np.float32)
         if mol is None or not handle_atom_indices:
@@ -161,6 +165,19 @@ class MolecularFeaturizer:
                 feats[_NEIGHBOR_OFFSET + 4] += 1.0
             else:
                 feats[_NEIGHBOR_OFFSET + 5] += 1.0
+
+        if mol.GetNumConformers() == 0:
+            raise ValueError("handle featurization requires 3D coordinates")
+        conf = mol.GetConformer()
+        handle_pos = np.array(
+            conf.GetAtomPosition(int(handle_atom_indices[0])), dtype=np.float32
+        )
+        if reference_center is not None:
+            ref = torch.as_tensor(reference_center, dtype=torch.float32).view(-1)
+            if ref.numel() != 3:
+                raise ValueError("reference_center must contain exactly three coordinates")
+            handle_pos = handle_pos - ref.detach().cpu().numpy()
+        feats[HANDLE_POSITION_OFFSET:HANDLE_POSITION_OFFSET + 3] = handle_pos
 
         return torch.from_numpy(feats)
 
