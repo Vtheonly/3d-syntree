@@ -55,7 +55,8 @@
       "enabled": false,
       "target_vram_fraction": 0.85,
       "max_batch_size": 8192,
-      "scale_model": true
+      "scale_model": true,
+      "lr_scale_rule": "linear"
     }
   },
   "evaluation": {
@@ -63,6 +64,7 @@
     "docking_engine": "gnina",
     "exhaustiveness": 8,
     "run_posebusters": true,
-    "run_aizynthfinder": true
+    "run_aizynthfinder": true,
+    "aizynthfinder_config": null
   }
 }
