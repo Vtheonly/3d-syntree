@@ -198,12 +198,6 @@ class CrossDockedDataset(InMemoryDataset):
             )
             feats = torch.cat([handle_feat, pocket_stats])
 
-            target_synthon = int(
-                torch.floor(
-                    torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale)
-                    * n_catalog
-                ).clamp(0, n_catalog - 1)
-            )
             target_dihedral = math.pi * math.tanh(
                 2.0 * torch.dot(feats, w_dih) / scale
             )
@@ -219,6 +213,32 @@ class CrossDockedDataset(InMemoryDataset):
                 % len(handles)
             )
             core_handle_idx = HANDLE_NAMES.index(handles[handle_idx])
+
+            # Keep synthetic labels chemically compatible with the same
+            # catalog grammar used by real training.
+            if self.catalog is not None:
+                from syntree.chemistry.reactions import REACTION_FAMILY_MEMBERS, REACTION_SIDES
+                candidate_handles = set()
+                for reaction in REACTION_FAMILY_MEMBERS[
+                    REACTION_FAMILY_NAMES[family_idx]
+                ]:
+                    side_a, side_b = REACTION_SIDES[reaction]
+                    core_handle = HANDLE_NAMES[core_handle_idx]
+                    partner = side_b if core_handle == side_a else side_a if core_handle == side_b else None
+                    if partner:
+                        candidate_handles.add(partner)
+                candidates = self.catalog.synthon_indices_for_handles(candidate_handles)
+            else:
+                candidates = np.arange(n_catalog, dtype=int)
+            if len(candidates) == 0:
+                candidates = np.arange(n_catalog, dtype=int)
+            raw_idx = int(
+                torch.floor(
+                    torch.sigmoid(3.0 * torch.dot(feats, w_syn) / scale)
+                    * len(candidates)
+                ).clamp(0, len(candidates) - 1)
+            )
+            target_synthon = int(candidates[raw_idx])
 
             samples.append(
                 Data(
