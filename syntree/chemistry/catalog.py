@@ -24,8 +24,10 @@ from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem, rdFingerprintGenerator
 
 from syntree.chemistry.reactions import (
-    HANDLE_SMARTS,
+    REACTION_FAMILY_MEMBERS,
+    REACTION_FAMILY_NAMES,
     REACTION_SIDES,
+    HANDLE_SMARTS,
     ReactionEngine,
 )
 
@@ -88,6 +90,8 @@ class SynthonCatalog:
 
         self.embeddings = self._compute_embeddings()
         self.handle_masks = self._build_compatibility_indices()
+        self._canonical_smiles_index = self._build_canonical_smiles_index()
+        self._family_mask_cache: Dict[Tuple[str, Optional[str]], torch.Tensor] = {}
         self._smiles_cache: Dict[int, Optional[str]] = {}
 
     # ------------------------------------------------------------------
@@ -177,6 +181,80 @@ class SynthonCatalog:
     # ------------------------------------------------------------------
     # Compatibility masks
     # ------------------------------------------------------------------
+    def _build_canonical_smiles_index(self) -> Dict[str, Tuple[int, ...]]:
+        """Index exact canonical SMILES to filtered catalog row indices."""
+        index: Dict[str, List[int]] = {}
+        for i, smiles in enumerate(self.df["smiles"]):
+            mol = Chem.MolFromSmiles(str(smiles))
+            if mol is None:
+                continue
+            key = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False)
+            index.setdefault(key, []).append(i)
+        return {key: tuple(values) for key, values in index.items()}
+
+    @property
+    def canonical_smiles_index(self) -> Dict[str, Tuple[int, ...]]:
+        """Canonical-SMILES -> catalog indices for exact retro matching."""
+        return self._canonical_smiles_index
+
+    @property
+    def reaction_family_names(self) -> Tuple[str, ...]:
+        return REACTION_FAMILY_NAMES
+
+    def get_reaction_family_mask(
+        self,
+        family: str,
+        device: Optional[torch.device] = None,
+        core_handle: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Return a synthon compatibility mask for a reaction family."""
+        if family not in REACTION_FAMILY_MEMBERS:
+            raise ValueError(
+                f"Unknown reaction family '{family}'. "
+                f"Available: {list(REACTION_FAMILY_NAMES)}"
+            )
+        key = (family, core_handle)
+        if key not in self._family_mask_cache:
+            members = REACTION_FAMILY_MEMBERS[family]
+            masks = [
+                self.get_reaction_mask(name, core_handle=core_handle)
+                for name in members
+            ]
+            self._family_mask_cache[key] = torch.stack(masks, dim=0).max(dim=0).values
+        mask = self._family_mask_cache[key].clone()
+        if device is not None:
+            mask = mask.to(device)
+        return mask
+
+    def get_reaction_family_compatibility_mask(
+        self,
+        device: Optional[torch.device] = None,
+        core_handle: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Return a [F] mask for reaction families legal for a core handle."""
+        values = []
+        for family in REACTION_FAMILY_NAMES:
+            legal = any(
+                core_handle in REACTION_SIDES[reaction]
+                for reaction in REACTION_FAMILY_MEMBERS[family]
+            )
+            values.append(0.0 if legal else -1e9)
+        mask = torch.tensor(values, dtype=torch.float32)
+        return mask.to(device) if device is not None else mask
+
+    def get_reaction_family_masks(
+        self,
+        device: Optional[torch.device] = None,
+        core_handle: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Return [F, K] synthon masks for all reaction families."""
+        return torch.stack([
+            self.get_reaction_family_mask(
+                family, device=device, core_handle=core_handle
+            )
+            for family in REACTION_FAMILY_NAMES
+        ], dim=0)
+
     def _build_compatibility_indices(self) -> Dict[str, np.ndarray]:
         masks: Dict[str, np.ndarray] = {}
         for handle in self.df["primary_handle"].unique():
