@@ -31,10 +31,16 @@ class TestSyntheticMode:
                                 num_synthetic=6, seed=7)
         sample = ds[0]
         assert sample.pocket_pos.shape[1] == 3
+        assert sample.is_real_sample.item() is True
+        assert 0 <= sample.target_synthon.item() < len(catalog)
+        assert 0 <= sample.target_reaction_family_idx.item() < 7
         assert sample.pocket_z.shape[0] == sample.pocket_pos.shape[0]
         assert sample.handle_features.shape == (64,)
         assert sample.target_synthon.dtype == torch.long
         assert sample.target_dihedral.dtype == torch.float32
+        assert sample.target_reaction_family_idx.dtype == torch.long
+        assert sample.target_core_handle_idx.dtype == torch.long
+        assert sample.is_real_sample.dtype == torch.bool
         assert -np.pi <= sample.target_dihedral.item() < np.pi
 
     def test_deterministic_given_seed(self, tmp_path, catalog):
@@ -131,7 +137,9 @@ class TestRealMode:
         ).read()
         (data_dir / "x_pocket.pdb").write_text(pocket_lines)
 
-        lig = Chem.AddHs(Chem.MolFromSmiles("C1CC(N)CC1"))
+        lig = Chem.AddHs(
+            Chem.MolFromSmiles("CC(C)COC(=O)C1CCCCC1")
+        )
         AllChem.EmbedMolecule(lig, randomSeed=42)
         writer = Chem.SDWriter(str(data_dir / "x_ligand.sdf"))
         writer.write(lig)
@@ -154,7 +162,9 @@ class TestRealMode:
             os.path.join(assets_dir["crossdocked_dir"], "sample_pocket.pdb")
         ).read()
         (data_dir / "x_pocket.pdb").write_text(pocket_lines)
-        lig = Chem.AddHs(Chem.MolFromSmiles("C1CC(N)CC1"))
+        lig = Chem.AddHs(
+            Chem.MolFromSmiles("CC(C)COC(=O)C1CCCCC1")
+        )
         AllChem.EmbedMolecule(lig, randomSeed=42)
         writer = Chem.SDWriter(str(data_dir / "x_ligand.sdf"))
         writer.write(lig)
