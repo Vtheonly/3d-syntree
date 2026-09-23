@@ -26,6 +26,10 @@ from torch.utils.data import DataLoader
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
 from syntree.data.crossdocked import CrossDockedDataset
+from syntree.data.hf_loader import (
+    ShardedHuggingFaceDataset,
+    ShardAwareShuffleSampler,
+)
 from syntree.data.trajectory import TrajectoryDataset
 from syntree.models.torsion_head import ContinuousTorsionHead
 from syntree.utils.checkpoint import CheckpointManager
@@ -103,7 +107,34 @@ class ResilientTrainer:
         )
         val_fraction = float(data_cfg.get("val_fraction", 0.1))
         trajectory_path = data_cfg.get("trajectory_dataset_path")
-        if trajectory_path:
+        self.data_backend = str(data_cfg.get("backend", "local")).lower()
+
+        if self.data_backend == "huggingface":
+            hf_cfg = dict(data_cfg.get("huggingface", {}))
+            repo_id = str(hf_cfg.get("repo_id", "")).strip()
+            if not repo_id:
+                raise ValueError(
+                    "data.huggingface.repo_id is required when data.backend='huggingface'"
+                )
+            token = os.environ.get("HF_TOKEN") or hf_cfg.get("token")
+            self.dataset = ShardedHuggingFaceDataset(
+                repo_id=repo_id,
+                split="train",
+                cache_dir=str(hf_cfg.get("cache_dir", "./hf_cache")),
+                revision=str(hf_cfg.get("revision", "main")),
+                token=token,
+                max_cached_shards=int(hf_cfg.get("max_cached_shards", 2)),
+            )
+            self.val_dataset = ShardedHuggingFaceDataset(
+                repo_id=repo_id,
+                split="val",
+                cache_dir=str(hf_cfg.get("cache_dir", "./hf_cache")),
+                revision=str(hf_cfg.get("revision", "main")),
+                token=token,
+                max_cached_shards=int(hf_cfg.get("max_cached_shards", 2)),
+            )
+        elif trajectory_path:
+            self.data_backend = "trajectory_pt"
             self.dataset = TrajectoryDataset(trajectory_path, split="train")
             self.val_dataset = TrajectoryDataset(trajectory_path, split="val")
         else:
@@ -177,13 +208,22 @@ class ResilientTrainer:
 
     def _make_loader(self, dataset, shuffle: bool) -> DataLoader:
         """Plain DataLoader over the PyG dataset (collate via Batch.from_data_list)."""
+        workers = int(self.config.get("system", {}).get("num_workers", 0))
+        sampler = None
+        if shuffle and isinstance(dataset, ShardedHuggingFaceDataset):
+            sampler = ShardAwareShuffleSampler(
+                dataset,
+                seed=int(self.config.get("system", {}).get("seed", 42)),
+            )
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
-            num_workers=int(self.config.get("system", {}).get("num_workers", 0)),
+            shuffle=(shuffle and sampler is None),
+            sampler=sampler,
+            num_workers=workers,
             collate_fn=self._collate,
             drop_last=False,
+            pin_memory=self.device.type == "cuda",
         )
 
     # ------------------------------------------------------------------
@@ -351,6 +391,8 @@ class ResilientTrainer:
 
         history = []
         for epoch in range(self.start_epoch, self.max_epochs):
+            if hasattr(getattr(self.loader, "sampler", None), "set_epoch"):
+                self.loader.sampler.set_epoch(epoch)
             self.model.train()
             epoch_loss, epoch_reaction, epoch_synthon, epoch_torsion = 0.0, 0.0, 0.0, 0.0
             n_batches = 0
@@ -403,9 +445,21 @@ class ResilientTrainer:
                         else reaction_per_sample.new_zeros(())
                     )
                     l_synthon = self.criterion(preds["synthon_logits"], target_action)
-                    l_torsion = ContinuousTorsionHead.loss_fn(
+                    # Torsion is undefined for STOP transitions. Masking it
+                    # keeps the continuous head from learning an arbitrary zero-angle
+                    # target for termination actions.
+                    torsion_loss_all = ContinuousTorsionHead.loss_fn(
                         preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
                     )
+                    if bool(non_stop.any().item()):
+                        torsion_log_probs = ContinuousTorsionHead.log_prob(
+                            preds["torsion_mu"][non_stop],
+                            preds["torsion_kappa"][non_stop],
+                            batch.target_dihedral[non_stop],
+                        )
+                        l_torsion = -torsion_log_probs.mean()
+                    else:
+                        l_torsion = torsion_loss_all.new_zeros(())
                     w_synthon = float(self.loss_weights.get("synthon_ce", 1.0))
                     w_torsion = float(self.loss_weights.get("torsion_nll", 0.5))
                     loss = (
@@ -546,11 +600,15 @@ class ResilientTrainer:
                 preds["reaction_logits"], batch.target_reaction_family_idx
             )
             l_synthon = self.criterion(preds["synthon_logits"], target_action)
-            l_torsion = ContinuousTorsionHead.loss_fn(
-                preds["torsion_mu"],
-                preds["torsion_kappa"],
-                batch.target_dihedral,
-            )
+            non_stop = ~target_stop.bool()
+            if bool(non_stop.any().item()):
+                l_torsion = -ContinuousTorsionHead.log_prob(
+                    preds["torsion_mu"][non_stop],
+                    preds["torsion_kappa"][non_stop],
+                    batch.target_dihedral[non_stop],
+                ).mean()
+            else:
+                l_torsion = preds["torsion_mu"].new_zeros(())
             total += float(
                 (
                     self.reaction_loss_weight * l_reaction
@@ -563,7 +621,6 @@ class ResilientTrainer:
             torsion += float(l_torsion.item())
 
             predicted_family = preds["reaction_logits"].argmax(-1)
-            non_stop = ~target_stop.bool()
             reaction_correct += int(
                 ((predicted_family == batch.target_reaction_family_idx) & non_stop).sum().item()
             )
