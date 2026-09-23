@@ -258,7 +258,7 @@ def main(argv=None) -> int:
                     model_config=config.get("model"),
                 )
 
-        manager.save_checkpoint(
+        rl_manager.save_checkpoint(
             epoch=max(0, episodes - 1),
             step=episodes,
             model=model,
