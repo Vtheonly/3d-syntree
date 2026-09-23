@@ -384,6 +384,11 @@ class ResilientTrainer:
 
         history = []
         for epoch in range(self.start_epoch, self.max_epochs):
+            expected_epoch = self.start_epoch + len(history)
+            if epoch != expected_epoch:
+                raise RuntimeError(
+                    f"non-sequential trainer epoch state: expected {expected_epoch}, got {epoch}"
+                )
             if hasattr(getattr(self.loader, "sampler", None), "set_epoch"):
                 self.loader.sampler.set_epoch(epoch)
             self.model.train()
@@ -397,7 +402,7 @@ class ResilientTrainer:
                         f"[trainer] time budget expired after {elapsed / 3600:.2f}h; "
                         "checkpointing and exiting."
                     )
-                    last_done = history[-1]["epoch"] if history else max(0, epoch - 1)
+                    last_done = history[-1]["epoch"] if history else None
                     self._finalize(last_done, history)
                     return self._summary(history, floor=self.start_epoch)
 
@@ -520,7 +525,7 @@ class ResilientTrainer:
                 print("[trainer] budget reached at epoch boundary; exiting.")
                 break
 
-        last_epoch = history[-1]["epoch"] if history else self.start_epoch
+        last_epoch = history[-1]["epoch"] if history else None
         self._finalize(last_epoch, history)
         return self._summary(history, floor=self.start_epoch)
 
@@ -675,18 +680,32 @@ class ResilientTrainer:
         with open(path, "w") as f:
             json.dump(entry, f, indent=2)
 
-    def _finalize(self, epoch: int, history) -> None:
-        self.ckpt_manager.save_checkpoint(
-            epoch=epoch,
-            step=self.global_step,
-            model=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.scheduler,
-            metrics=history[-1] if history else {},
-            is_best=True,
-            final=True,
-            model_config=self.config.get("model"),
-        )
+    def _finalize(self, epoch: Optional[int], history) -> None:
+        # Only a fully completed epoch may be checkpointed. In particular,
+        # never synthesize epoch 0 (or the current epoch) after a mid-epoch
+        # time-budget exit, and never create a fake extra epoch when
+        # start_epoch == max_epochs.
+        if epoch is not None:
+            if not history or history[-1]["epoch"] != epoch:
+                raise RuntimeError(
+                    f"finalize epoch {epoch} is not the last completed epoch"
+                )
+            self.ckpt_manager.save_checkpoint(
+                epoch=epoch,
+                step=self.global_step,
+                model=self.model,
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+                metrics=history[-1],
+                is_best=True,
+                final=True,
+                model_config=self.config.get("model"),
+            )
+
+        # Explicitly drain any non-final asynchronous Hub uploads before the
+        # Python process can exit.
+        self.ckpt_manager.wait_for_uploads()
+
         with open(os.path.join(self.output_dir, "history.json"), "w") as f:
             json.dump(history, f, indent=2)
 
