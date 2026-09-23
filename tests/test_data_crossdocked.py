@@ -151,6 +151,10 @@ class TestRealMode:
         assert len(ds) >= 1
         sample = ds[0]
         assert sample.pocket_pos.shape[1] == 3
+        assert sample.is_real_sample.item() is True
+        assert 0 <= sample.target_synthon.item() < len(catalog)
+        assert 0 <= sample.target_reaction_family_idx.item() < 7
+        assert 0 <= sample.target_core_handle_idx.item() < 8
 
     def test_real_mode_requires_catalog(self, assets_dir, tmp_path):
         from rdkit import Chem
