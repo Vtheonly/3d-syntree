@@ -43,3 +43,16 @@ def test_unrelated_ligand_is_not_randomly_labeled(assets_dir):
 
     # No precursor in the tiny fixture catalog can reconstruct this ligand.
     assert fragmenter.find_target(ligand) is None
+
+
+def test_aryl_halide_retrosynthesis_tries_all_leaving_groups(assets_dir):
+    catalog = SynthonCatalog(assets_dir["catalog_path"], embedding_dim=32)
+    fragmenter = ReactionConstrainedFragmenter(catalog)
+
+    ligand = Chem.AddHs(Chem.MolFromSmiles("Fc1ccc(c2ccccc2)cc1"))
+    assert AllChem.EmbedMolecule(ligand, randomSeed=31) == 0
+
+    target = fragmenter.find_target(ligand)
+    assert target is not None
+    assert target.reaction_family == "suzuki_coupling"
+    assert target.reaction_name == "suzuki_coupling"
