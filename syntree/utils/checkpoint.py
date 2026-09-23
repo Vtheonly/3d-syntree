@@ -306,9 +306,11 @@ class CheckpointManager:
             remote_files = self._list_remote_files()
             if remote_files is None:
                 logger.warning(
-                    "[checkpoint] Unable to verify HF Hub state; ignoring local "
-                    "checkpoint files and starting this process from epoch 0."
+                    "[checkpoint] Unable to verify HF Hub state; local checkpoint "
+                    "files are not authoritative, so stale local state is purged "
+                    "and this process starts from epoch 0."
                 )
+                self._purge_all_checkpoints()
                 return 0, 0, float("inf")
 
             remote_manifest_exists = self.MANIFEST_NAME in remote_files
