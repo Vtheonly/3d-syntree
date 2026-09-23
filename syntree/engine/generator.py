@@ -36,6 +36,7 @@ from syntree.chemistry.reactions import (
     ReactionEngine,
 )
 from syntree.chemistry.validator import ChemicalValidator
+from syntree.engine.environment import AssemblyAction, MolecularAssemblyEnv
 from syntree.data.featurizer import MolecularFeaturizer
 
 logger = logging.getLogger(__name__)
@@ -102,166 +103,43 @@ class SBDDGenerator:
             step records), ``passes_posebusters``, ``smiles``,
             ``clash_score`` and ``descriptors``.
         """
-        try:
-            pocket_mol = Chem.MolFromPDBFile(pocket_pdb_path, removeHs=False)
-        except OSError as exc:
-            raise ValueError(
-                f"Cannot read pocket file {pocket_pdb_path!r}: {exc}"
-            ) from exc
-        if pocket_mol is None or pocket_mol.GetNumAtoms() == 0:
-            raise ValueError(f"Cannot read pocket from {pocket_pdb_path}")
-        feats = MolecularFeaturizer.featurize_pocket(pocket_mol)
-        pocket_pos = feats["pocket_pos"]
-        pocket_z = feats["pocket_z"]
-        pocket_coords_np = feats["pocket_pos"].numpy()
-        pocket_vdw = np.array(
-            [vdw_radius(int(z)) for z in pocket_z.tolist()], dtype=np.float64
+        # The MolecularAssemblyEnv is the single source of environment-side
+        # truth (chemistry grammar, reaction execution, 3D assembly, physics
+        # scoring); this method only adds the policy loop and packaging.
+        env = MolecularAssemblyEnv(
+            rxn_engine=self.rxn_engine,
+            conformer_engine=self.conformer_engine,
+            catalog=self.catalog,
+            validator=self.validator,
+            config=self.config,
+            device=self.device,
         )
-        pocket_volume = MolecularFeaturizer.vdw_sphere_volume(pocket_mol)
-        # Reference frame for ligand/handle coordinates: the pocket centroid
-        # (featurize_pocket already centered the cloud on it).
-        pocket_centroid = feats["centroid"].view(-1)
-        hotspots = PocketHotspotFeaturizer().featurize(
-            pocket_mol, center=feats["centroid"].view(-1)
+        observation = env.reset(
+            pocket_pdb_path=pocket_pdb_path,
+            seed_synthon_idx=seed_synthon_idx,
+            max_steps=max_steps,
+            optimize_torsion_grid=optimize_torsion_grid,
         )
 
-        steps = self.max_steps if max_steps is None else int(max_steps)
-
-        # 1. Seed fragment (implicit H for chemistry; 3D embedded after).
-        if seed_synthon_idx is None:
-            seed_synthon_idx = self._pick_seed_synthon()
-        current_mol = self.catalog.get_mol(seed_synthon_idx, explicit_hs=False)
-        current_mol = self.conformer_engine.embed_product(current_mol)
-        if current_mol is None:
-            raise RuntimeError("Failed to embed the seed synthon in 3D.")
-        seed_handle_infos = self.rxn_engine.detect_handles(current_mol)
-        seed_handle_type = seed_handle_infos[0].handle_type if seed_handle_infos else None
-        # Place the seed at a contact-rich position near the pocket interface
-        # rather than at the point farthest from the protein.
-        self._place_seed_in_pocket(
-            current_mol,
-            pocket_coords_np,
-            pocket_vdw=pocket_vdw,
-            hotspots=hotspots,
-            seed_handle_type=seed_handle_type,
-            seed_handle_atom_index=(
-                seed_handle_infos[0].primary_atom if seed_handle_infos else None
-            ),
-        )
-        current_mol = Chem.AddHs(current_mol, addCoords=True)
-
-        recipe: List[Dict] = [
-            {
-                "step": 0,
-                "action": "seed",
-                "synthon_id": self.catalog.get_id(seed_synthon_idx),
-                "smiles": self.catalog.get_smiles(seed_synthon_idx),
-                "handle": None,
-            }
-        ]
-
-        total_clash = 0.0
         policy_trace: List[Dict] = []
-        # 2. Autoregressive growth.
-        for step in range(1, steps + 1):
-            # Chemoselectivity: grow through the most reactive handle, not
-            # whichever one a SMARTS iteration happens to find first.
-            handles = self.rxn_engine.rank_handles(current_mol)
-            if not handles:
+        while not env.done:
+            reaction_mask, synthon_masks, has_handle = env.legal_action_masks()
+            if not has_handle:
                 break
-
-            target_handle = handles[0]
-            if not target_handle.allowed_reactions:
-                break
-
-            current_mw = float(Descriptors.MolWt(Chem.RemoveHs(Chem.Mol(current_mol))))
-            cap_min_mw = float(
-                self.config.get("data", {}).get("terminal_cap_min_mw", 250.0)
-            )
-            # The policy may only terminate once the ligand is drug-like
-            # enough (MW >= cap); the horizon ends the loop instead.
-            below_cap = current_mw < cap_min_mw
-            allow_stop = not below_cap
-            require_remaining_handle = step < steps and below_cap
-
-            reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
-                device=self.device,
-                core_handle=target_handle.handle_type,
-                require_remaining_handle=require_remaining_handle,
-                allow_terminal=allow_stop,
-            ).unsqueeze(0)
             if not bool((reaction_mask > -1e8).any().item()):
                 # No legal chemistry remains (e.g. every compatible partner
                 # was filtered out): stop instead of feeding an all-masked
                 # distribution to the policy.
                 logger.debug(
-                    "No legal reaction family at step %d; stopping growth.", step
+                    "No legal reaction family at step %d; stopping growth.",
+                    env.step_count + 1,
                 )
                 break
-            synthon_masks = self.catalog.get_reaction_family_masks(
-                device=self.device,
-                core_handle=target_handle.handle_type,
-                require_remaining_handle=require_remaining_handle,
-                allow_terminal=allow_stop,
-            ).unsqueeze(0)
-
-            # 3. Policy decision: synthon + dihedral.
-            handle_feat = MolecularFeaturizer.featurize_handle(
-                current_mol,
-                target_handle.atom_indices,
-                target_handle.handle_type,
-            ).unsqueeze(0).to(self.device)
-            # Ghost-ligand fix: the policy state carries the full intermediate
-            # ligand point cloud (same pocket-centered frame), the reacting
-            # handle node index, its position, and global size features.
-            lig_feats = MolecularFeaturizer.featurize_ligand(
-                current_mol, center=pocket_centroid
-            )
-            handle_node_idx = lig_feats["heavy_atom_map"].get(
-                int(target_handle.primary_atom), -1
-            )
-            global_feats = MolecularFeaturizer.ligand_global_features(
-                current_mol, pocket_volume=pocket_volume
-            ).unsqueeze(0).to(self.device)
-            handle_pos_t = MolecularFeaturizer.featurize_handle_position(
-                current_mol,
-                target_handle.atom_indices,
-                reference_center=pocket_centroid,
-            ).unsqueeze(0).to(self.device)
-
-            batch_data = Data(
-                pocket_pos=pocket_pos.to(self.device),
-                pocket_z=pocket_z.to(self.device),
-                pocket_charge=feats["pocket_charge"].to(self.device),
-                pocket_batch=torch.zeros(
-                    pocket_pos.size(0), dtype=torch.long, device=self.device
-                ),
-                ligand_pos=lig_feats["ligand_pos"].to(self.device),
-                ligand_z=lig_feats["ligand_z"].to(self.device),
-                ligand_charge=lig_feats["ligand_charge"].to(self.device),
-                ligand_batch=torch.zeros(
-                    lig_feats["ligand_pos"].size(0), dtype=torch.long,
-                    device=self.device,
-                ),
-                handle_features=handle_feat,
-                handle_pos=handle_pos_t,
-                handle_nodes=torch.tensor(
-                    [handle_node_idx], dtype=torch.long, device=self.device
-                ),
-                global_features=global_feats,
-                # Mask STOP out of the action space while the ligand is still
-                # below the terminal molecular-weight cap.
-                stop_mask=torch.tensor(
-                    0.0 if allow_stop else -1e9,
-                    dtype=torch.float32,
-                    device=self.device,
-                ),
-            )
 
             if return_trace:
                 with torch.enable_grad():
                     decision = self.model.act(
-                        batch_data,
+                        observation,
                         self.catalog.embeddings.to(self.device),
                         reaction_compatibility_mask=reaction_mask,
                         synthon_masks_by_reaction=synthon_masks,
@@ -270,183 +148,43 @@ class SBDDGenerator:
                     )
             else:
                 decision = self.model.act(
-                    batch_data,
+                    observation,
                     self.catalog.embeddings.to(self.device),
                     reaction_compatibility_mask=reaction_mask,
                     synthon_masks_by_reaction=synthon_masks,
                     sample=sample,
                     temperature=temperature,
                 )
-            selected_family_idx = int(decision["reaction_family_idx"][0].item())
-            reaction_family = REACTION_FAMILY_NAMES[selected_family_idx]
-            chosen_rxn = self._preferred_reaction(
-                reaction_family, target_handle.handle_type
-            )
-            if chosen_rxn is None:
-                logger.debug(
-                    "Family %s has no executable backend for handle %s; "
-                    "stopping growth.",
-                    reaction_family, target_handle.handle_type,
-                )
-                break
-            if bool(decision["stop"][0].item()):
-                if return_trace:
-                    policy_trace.append({
-                        "state": batch_data.clone(),
-                        "reaction_mask": reaction_mask.detach().clone(),
-                        "synthon_masks": synthon_masks.detach().clone(),
-                        "family_idx": int(decision["reaction_family_idx"][0].item()),
-                        "action_idx": int(decision["action_idx"][0].item()),
-                        "old_log_prob": decision["joint_log_prob"][0],
-                        "old_value": decision["state_value"][0],
-                    })
-                recipe.append({
-                    "step": step,
-                    "action": "stop",
-                    "reason": "policy_stop",
-                })
-                break
-
-            selected_synthon_idx = int(decision["synthon_idx"][0].item())
-            dihedral_pred = float(decision["dihedral"][0].item())
-
-            # The family mask is the final chemistry guard. It is deterministic
-            # and comes from the same reaction grammar used by execution.
-            selected_mask = self.catalog.get_reaction_family_mask(
-                reaction_family,
-                device=self.device,
-                core_handle=target_handle.handle_type,
-                require_remaining_handle=require_remaining_handle,
-                allow_terminal=allow_stop,
-            )
-            if selected_mask[selected_synthon_idx].item() < -1e8:
-                logger.warning(
-                    "Policy emitted an action that violates the deterministic chemistry mask; stopping this rollout."
-                )
-                break
 
             if return_trace:
                 policy_trace.append({
-                    "state": batch_data.clone(),
+                    "state": observation.clone(),
                     "reaction_mask": reaction_mask.detach().clone(),
                     "synthon_masks": synthon_masks.detach().clone(),
-                    "family_idx": selected_family_idx,
+                    "family_idx": int(decision["reaction_family_idx"][0].item()),
                     "action_idx": int(decision["action_idx"][0].item()),
                     "old_log_prob": decision["joint_log_prob"][0],
                     "old_value": decision["state_value"][0],
                 })
 
-            synthon_mol = self.catalog.get_mol(selected_synthon_idx, explicit_hs=False)
-
-            # 4. Chemical execution.
-            #    Reactions run on implicit-H copies: RDKit reaction templates
-            #    manage H counts implicitly; running them on explicit-H
-            #    molecules leaves stray hydrogens on the product (e.g. an
-            #    amine N retaining both H atoms through amide coupling,
-            #    producing an illegal valence-4 nitrogen). RemoveHs preserves
-            #    heavy-atom indices, so the scaffold conformer stays valid.
-            core_noH = Chem.RemoveHs(Chem.Mol(current_mol))
-            result = self.rxn_engine.apply_reaction(
-                core_noH, synthon_mol, chosen_rxn
+            action = AssemblyAction(
+                reaction_family_idx=int(decision["reaction_family_idx"][0].item()),
+                synthon_idx=int(decision["synthon_idx"][0].item()),
+                dihedral_rad=float(decision["dihedral"][0].item()),
+                action_idx=int(decision["action_idx"][0].item()),
             )
-            if result is None:
-                logger.debug(
-                    "Reaction %s failed at step %d; stopping growth.",
-                    chosen_rxn, step,
-                )
-                break
+            observation, _reward, _done, _info = env.step(action)
 
-            # 5. 3D assembly: embed product (adds H), lock scaffold, rotate.
-            product = self.conformer_engine.embed_product(
-                result.product,
-                core_atom_map=result.core_atom_map,
-                core_reference=core_noH,
-            )
-            if product is None:
-                break
-
-            core_atom, synthon_atom = result.junction_bond
-            # Resonance-aware torsion application: amide/ester junctions snap
-            # to planar {trans, cis} (choosing the lower-LJ-energy option)
-            # and the policy angle propagates to the adjacent true single
-            # bond, exactly like protein phi/psi angles.
-            _, junction_angle, rotated_bond = self.conformer_engine.apply_junction_torsion(
-                product,
-                (core_atom, synthon_atom),
-                dihedral_pred,
-                pocket_coords=pocket_coords_np,
-                pocket_vdw=pocket_vdw,
-            )
-
-            if optimize_torsion_grid:
-                _, _, clash = self.conformer_engine.optimize_dihedral(
-                    product,
-                    (core_atom, synthon_atom),
-                    pocket_coords=pocket_coords_np,
-                    pocket_vdw=pocket_vdw,
-                )
-                total_clash = clash
-
-            current_mol = product
-            recipe.append(
-                {
-                    "step": step,
-                    "action": "react",
-                    "reaction": chosen_rxn,
-                    "reaction_family": reaction_family,
-                    "handle": target_handle.handle_type,
-                    "synthon_id": self.catalog.get_id(selected_synthon_idx),
-                    "synthon_smiles": self.catalog.get_smiles(selected_synthon_idx),
-                    "dihedral_applied_rad": dihedral_pred,
-                    "junction_angle_rad": junction_angle,
-                    "torsion_mode": (
-                        "planar_snap_adjacent"
-                        if rotated_bond != (core_atom, synthon_atom)
-                        else "direct"
-                    ),
-                    "rotated_bond": list(rotated_bond) if rotated_bond else None,
-                    "new_atoms": len(result.synthon_atom_map) + len(result.new_atoms),
-                }
-            )
-
-        # 6. Validation.
-        checks = self.validator.validate(
-            current_mol,
-            pocket_coords=pocket_coords_np,
-            pocket_vdw=pocket_vdw,
-        )
-        smiles = Chem.MolToSmiles(Chem.RemoveHs(Chem.Mol(current_mol)))
-
-        # Lennard-Jones contact energy (soft-core 6-12 with an attractive
-        # dispersion well): unlike the clash score, this penalises both
-        # steric overlap AND drifting into open solvent, so it is the
-        # physically meaningful pocket-occupation signal for the RL reward.
-        try:
-            ligand_noH = Chem.RemoveHs(Chem.Mol(current_mol))
-            ligand_coords = np.array(
-                ligand_noH.GetConformer().GetPositions(), dtype=np.float64
-            )
-            ligand_vdw = np.array(
-                [vdw_radius(int(a.GetAtomicNum())) for a in ligand_noH.GetAtoms()],
-                dtype=np.float64,
-            )
-            contact_energy = float(
-                self.conformer_engine.compute_lennard_jones_np(
-                    ligand_coords, pocket_coords_np, ligand_vdw, pocket_vdw
-                )
-            )
-        except Exception:
-            contact_energy = 0.0
-
+        checks = env.validate()
         return {
-            "rdkit_mol": current_mol,
-            "recipe": recipe,
+            "rdkit_mol": env.current_mol,
+            "recipe": env.recipe,
             "passes_posebusters": all(checks.values()),
             "checks": checks,
-            "smiles": smiles,
-            "clash_score": float(total_clash),
-            "contact_energy": contact_energy,
-            "descriptors": self.validator.descriptors(current_mol),
+            "smiles": env.smiles(),
+            "clash_score": float(env.total_clash),
+            "contact_energy": env.contact_energy(),
+            "descriptors": self.validator.descriptors(env.current_mol),
             "policy_trace": policy_trace if return_trace else None,
         }
 
