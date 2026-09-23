@@ -213,3 +213,91 @@ class TestPackaging:
             if name.endswith(".json"):
                 with open(os.path.join(REPO_ROOT, "configs", name)) as f:
                     json.load(f)
+
+
+class TestRLMode:
+    def test_rl_discovers_test_pockets_dir(self, tiny_config_with_assets,
+                                           tmp_path):
+        """Landmine 3: with the HF shard backend the data dir has no loose
+        pocket PDBs; --mode rl must discover the test_pockets/ folder staged
+        by download_assets.py and run a complete (tiny) PPO cycle."""
+        cfg = json.loads(json.dumps(tiny_config_with_assets))
+        cfg["data"]["synthetic_samples"] = 8
+        cfg["system"]["num_workers"] = 0
+        cfg["reinforcement_learning"] = {
+            "enabled": True,
+            "episodes": 1,
+            "rollout_episodes": 1,
+            "minibatch_size": 2,
+            "ppo_epochs": 1,
+            "learning_rate": 1e-4,
+            "reward": {"docking_weight": 0.0},
+        }
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text(json.dumps(cfg))
+
+        out_dir = tmp_path / "exp"
+        proc = run_cli(["--mode", "train", "--config", str(cfg_path),
+                       "--output-dir", str(out_dir)])
+        assert proc.returncode == 0, proc.stderr[-2000:]
+
+        # Stage the HF-style layout: pockets live in test_pockets/.
+        pockets_dir = out_dir / "test_pockets"
+        pockets_dir.mkdir(parents=True, exist_ok=True)
+        src_pocket = os.path.join(cfg["data"]["data_dir"], "sample_pocket.pdb")
+        with open(src_pocket) as f:
+            payload = f.read()
+        with open(pockets_dir / "rl1_pocket.pdb", "w") as f:
+            f.write(payload)
+
+        # The data dir itself must NOT contain loose pocket PDBs (the whole
+        # point of the fix): only the nested test_pockets/ folder.
+        rl_out = tmp_path / "rl"
+        proc = run_cli([
+            "--mode", "rl", "--config", str(cfg_path),
+            "--output-dir", str(rl_out), "--resume-auto",
+            "--ckpt-dir", str(out_dir / "checkpoints"),
+        ])
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert "RL using 1 pockets" in proc.stdout
+        assert os.path.exists(rl_out / "rl_history.json")
+
+    def test_rl_explicit_pocket_dir_flag(self, tiny_config_with_assets,
+                                         tmp_path):
+        """--pocket-dir overrides every other discovery source."""
+        cfg = json.loads(json.dumps(tiny_config_with_assets))
+        cfg["data"]["synthetic_samples"] = 8
+        cfg["system"]["num_workers"] = 0
+        cfg["reinforcement_learning"] = {
+            "enabled": True,
+            "episodes": 1,
+            "rollout_episodes": 1,
+            "minibatch_size": 2,
+            "ppo_epochs": 1,
+            "learning_rate": 1e-4,
+        }
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text(json.dumps(cfg))
+
+        out_dir = tmp_path / "exp"
+        proc = run_cli(["--mode", "train", "--config", str(cfg_path),
+                       "--output-dir", str(out_dir)])
+        assert proc.returncode == 0, proc.stderr[-2000:]
+
+        custom = tmp_path / "custom_targets"
+        custom.mkdir()
+        src_pocket = os.path.join(cfg["data"]["data_dir"], "sample_pocket.pdb")
+        with open(src_pocket) as f:
+            payload = f.read()
+        with open(custom / "x_pocket.pdb", "w") as f:
+            f.write(payload)
+
+        rl_out = tmp_path / "rl"
+        proc = run_cli([
+            "--mode", "rl", "--config", str(cfg_path),
+            "--output-dir", str(rl_out), "--resume-auto",
+            "--ckpt-dir", str(out_dir / "checkpoints"),
+            "--pocket-dir", str(custom),
+        ])
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert f"RL using 1 pockets from {custom}" in proc.stdout

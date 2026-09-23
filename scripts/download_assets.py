@@ -263,6 +263,27 @@ def sync_hf_dataset(
     catalog_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(downloaded_catalog, catalog_target)
 
+    # RL target pockets (Landmine 3 fix): the shard backend streams tensors,
+    # not loose PDBs, so Stage 2's docking-reward loop needs the dedicated
+    # targets/ folder materialised under <output>/test_pockets/. Optional:
+    # repositories without it keep working (the RL stage then requires an
+    # explicit --pocket-dir).
+    target_files = sorted(f for f in files if f.startswith("targets/") and f.endswith(".pdb"))
+    if target_files:
+        pockets_dir = output_root / "test_pockets"
+        pockets_dir.mkdir(parents=True, exist_ok=True)
+        for target in target_files:
+            local = Path(hf_hub_download(
+                repo_id=repo_id,
+                filename=target,
+                repo_type="dataset",
+                revision=revision,
+                token=token,
+                local_dir=str(output_root / "_hf_targets"),
+            ))
+            shutil.copy2(local, pockets_dir / Path(target).name)
+        print(f"  Staged {len(target_files)} RL target pockets in {pockets_dir}")
+
     split_stats = {}
     for split, manifest_file in required_manifests.items():
         local_manifest = Path(hf_hub_download(
@@ -295,6 +316,8 @@ def sync_hf_dataset(
         "revision": revision,
         "catalog_source": catalog_source,
         "catalog_path": str(catalog_target),
+        "rl_pocket_dir": str(output_root / "test_pockets") if target_files else None,
+        "rl_pocket_count": len(target_files),
         "splits": split_stats,
         "lazy_shards": True,
         "synthetic_fallback_used": False,

@@ -71,6 +71,11 @@ def main(argv=None) -> int:
     parser.add_argument("--output-dir", type=str, default=None,
                         help="override the output directory")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--pocket-dir", type=str, default=None,
+        help="Directory of pocket PDBs for --mode rl (overrides the "
+             "config and the data-dir scan).",
+    )
     args = parser.parse_args(argv)
 
     from syntree.utils.logger import configure_logging
@@ -218,14 +223,46 @@ def main(argv=None) -> int:
             device=device,
         )
 
-        pocket_paths = sorted(
-            os.path.join(data_dir, name)
-            for name in os.listdir(data_dir)
-            if name.endswith("_pocket.pdb")
-        )
+        # RL pocket discovery (Landmine 3 fix). The HuggingFace shard
+        # backend streams tensors, not loose PDB files, so the legacy
+        # data-dir scan finds nothing. Discovery order:
+        #   1. explicit --pocket-dir
+        #   2. config rl.pocket_dir
+        #   3. <data_dir>/test_pockets (staged by download_assets.py
+        #      from the dataset repo's targets/ folder)
+        #   4. legacy scan of <data_dir> for *_pocket.pdb
+        candidate_dirs = [
+            args.pocket_dir,
+            rl_cfg.get("pocket_dir"),
+            os.path.join(data_dir, "test_pockets"),
+            data_dir,
+        ]
+        pocket_paths = []
+        pocket_source = None
+        for candidate in candidate_dirs:
+            if not candidate or not os.path.isdir(candidate):
+                continue
+            found = sorted(
+                os.path.join(candidate, name)
+                for name in os.listdir(candidate)
+                if name.endswith("_pocket.pdb")
+            )
+            if found:
+                pocket_paths = found
+                pocket_source = candidate
+                break
         if not pocket_paths:
-            print(f"[main] no pocket PDB files found under {data_dir}", file=sys.stderr)
+            print(
+                "[main] no pocket PDB files found for --mode rl: tried "
+                f"{[c for c in candidate_dirs if c]}. Provide --pocket-dir or "
+                "upload a targets/ folder to the dataset repo "
+                "(download_assets.py stages it as test_pockets/).",
+                file=sys.stderr,
+            )
             return 2
+        print(
+            f"[main] RL using {len(pocket_paths)} pockets from {pocket_source}"
+        )
 
         episodes = int(rl_cfg.get("episodes", 256))
         temperature = float(rl_cfg.get("temperature", 1.0))
