@@ -59,6 +59,24 @@
       "lr_scale_rule": "linear"
     }
   },
+  "reinforcement_learning": {
+    "enabled": false,
+    "episodes": 256,
+    "ppo_epochs": 4,
+    "clip_epsilon": 0.2,
+    "gamma": 0.99,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "learning_rate": 0.00001,
+    "max_grad_norm": 1.0,
+    "reward": {
+      "docking_weight": 1.0,
+      "clash_weight": 0.25,
+      "fsp3_weight": 0.15,
+      "qed_weight": 0.15,
+      "validity_weight": 0.5
+    }
+  },
   "evaluation": {
     "num_test_pockets": 100,
     "docking_engine": "gnina",
