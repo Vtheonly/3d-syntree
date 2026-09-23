@@ -23,10 +23,11 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 from rdkit import Chem
+from rdkit.Chem import Descriptors
 from torch_geometric.data import Data
 
 from syntree.chemistry.catalog import SynthonCatalog
-from syntree.chemistry.conformer import ConformerEngine, vdw_radius
+from syntree.chemistry.hotspots import PocketHotspotFeaturizerfrom syntree.chemistry.conformer import ConformerEngine, vdw_radius
 from syntree.chemistry.reactions import (
     REACTION_FAMILY_MEMBERS,
     REACTION_FAMILY_NAMES,
@@ -114,6 +115,9 @@ class SBDDGenerator:
         pocket_vdw = np.array(
             [vdw_radius(int(z)) for z in pocket_z.tolist()], dtype=np.float64
         )
+        hotspots = PocketHotspotFeaturizer().featurize(
+            pocket_mol, center=feats["centroid"].view(-1)
+        )
 
         steps = self.max_steps if max_steps is None else int(max_steps)
 
@@ -124,12 +128,19 @@ class SBDDGenerator:
         current_mol = self.conformer_engine.embed_product(current_mol)
         if current_mol is None:
             raise RuntimeError("Failed to embed the seed synthon in 3D.")
+        seed_handle_infos = self.rxn_engine.detect_handles(current_mol)
+        seed_handle_type = seed_handle_infos[0].handle_type if seed_handle_infos else None
         # Place the seed at a contact-rich position near the pocket interface
         # rather than at the point farthest from the protein.
         self._place_seed_in_pocket(
             current_mol,
             pocket_coords_np,
             pocket_vdw=pocket_vdw,
+            hotspots=hotspots,
+            seed_handle_type=seed_handle_type,
+            seed_handle_atom_index=(
+                seed_handle_infos[0].primary_atom if seed_handle_infos else None
+            ),
         )
         current_mol = Chem.AddHs(current_mol, addCoords=True)
 
@@ -173,15 +184,24 @@ class SBDDGenerator:
             )
 
             require_remaining_handle = step < steps
+            current_mw = float(Descriptors.MolWt(Chem.RemoveHs(Chem.Mol(current_mol))))
+            allow_terminal = (
+                current_mw >= float(
+                    self.config.get("data", {}).get("terminal_cap_min_mw", 250.0)
+                )
+                or not require_remaining_handle
+            )
             reaction_mask = self.catalog.get_reaction_family_compatibility_mask(
                 device=self.device,
                 core_handle=target_handle.handle_type,
                 require_remaining_handle=require_remaining_handle,
+                allow_terminal=allow_terminal,
             ).unsqueeze(0)
             synthon_masks = self.catalog.get_reaction_family_masks(
                 device=self.device,
                 core_handle=target_handle.handle_type,
                 require_remaining_handle=require_remaining_handle,
+                allow_terminal=allow_terminal,
             ).unsqueeze(0)
 
             decision = self.model.act(
@@ -197,6 +217,14 @@ class SBDDGenerator:
             chosen_rxn = self._preferred_reaction(
                 reaction_family, target_handle.handle_type
             )
+            if bool(decision["stop"][0].item()):
+                recipe.append({
+                    "step": step,
+                    "action": "stop",
+                    "reason": "policy_stop",
+                })
+                break
+
             selected_synthon_idx = int(decision["synthon_idx"][0].item())
             dihedral_pred = float(decision["dihedral"][0].item())
 
@@ -207,6 +235,7 @@ class SBDDGenerator:
                 device=self.device,
                 core_handle=target_handle.handle_type,
                 require_remaining_handle=(step < steps),
+                allow_terminal=allow_terminal,
             )
             if selected_mask[selected_synthon_idx].item() < -1e8:
                 candidates = torch.nonzero(selected_mask > -1e8).view(-1)
@@ -366,6 +395,9 @@ class SBDDGenerator:
         mol: Chem.Mol,
         pocket_coords: np.ndarray,
         pocket_vdw: Optional[np.ndarray] = None,
+        hotspots=None,
+        seed_handle_type: Optional[str] = None,
+        seed_handle_atom_index: Optional[int] = None,
         search_radius: float = 4.0,
         grid: int = 9,
         contact_distance: float = 3.2,
@@ -422,7 +454,27 @@ class SBDDGenerator:
             return best
 
         best_offset = search(np.zeros(3, dtype=np.float64), search_radius, grid)
-        best_offset = search(best_offset, 1.0, 5)
+
+        if hotspots and seed_handle_type and seed_handle_atom_index is not None:
+            ranked = PocketHotspotFeaturizer().rank_for_handle(
+                hotspots, seed_handle_type
+            )
+            if ranked:
+                hotspot = ranked[0]
+                hp = np.asarray(hotspot.position, dtype=np.float64)
+                direction = -hp
+                norm = float(np.linalg.norm(direction))
+                if norm < 1e-8:
+                    direction = np.array([1.0, 0.0, 0.0])
+                else:
+                    direction = direction / norm
+                target_handle_position = hp + direction * 2.8
+                target_offset = target_handle_position - pos[seed_handle_atom_index]
+                best_offset = search(target_offset, 1.0, 5)
+            else:
+                best_offset = search(best_offset, 1.0, 5)
+        else:
+            best_offset = search(best_offset, 1.0, 5)
 
         for i in range(mol.GetNumAtoms()):
             conf.SetAtomPosition(i, Point3D(*(pos[i] + best_offset)))
