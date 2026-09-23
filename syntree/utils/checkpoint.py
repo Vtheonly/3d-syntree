@@ -100,8 +100,15 @@ class CheckpointManager:
         metrics: Optional[Dict] = None,
         is_best: bool = False,
         final: bool = False,
+        model_config: Optional[dict] = None,
     ) -> Optional[Path]:
         """Persist a checkpoint and (optionally) sync it to the Hub.
+
+        Args:
+            model_config: the effective ``config["model"]`` block the model
+                was built with (may be GPU-auto-scaled). Stored so that
+                ``generate`` / resume runs can rebuild the exact trained
+                architecture before loading the state dict.
 
         Returns the local checkpoint path.
         """
@@ -110,6 +117,7 @@ class CheckpointManager:
             "epoch": int(epoch),
             "step": int(step),
             "model_state_dict": _to_cpu_state(model.state_dict()),
+            "model_config": model_config,
             "optimizer_state_dict": (
                 optimizer.state_dict() if optimizer is not None else None
             ),
@@ -207,6 +215,31 @@ class CheckpointManager:
             "Restored checkpoint: epoch %d (step %d).", latest_epoch, checkpoint["step"]
         )
         return latest_epoch + 1, int(checkpoint["step"]), best
+
+    def read_model_config(self) -> Optional[dict]:
+        """Return the model architecture stored in the latest checkpoint.
+
+        Used by ``main.py`` to rebuild the model with the exact (possibly
+        GPU-auto-scaled) dimensions it was trained with, before the weights
+        are restored. Returns ``None`` when no checkpoint exists or the
+        stored checkpoint predates architecture persistence.
+        """
+        manifest_path = self.ckpt_dir / self.MANIFEST_NAME
+        if not manifest_path.exists():
+            return None
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            ckpt_path = self.ckpt_dir / (
+                f"checkpoint_epoch_{int(manifest['latest_epoch'])}.pt"
+            )
+            if not ckpt_path.exists():
+                return None
+            checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            return checkpoint.get("model_config")
+        except Exception as exc:
+            logger.warning("Could not read model config from checkpoint: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Hub transfer helpers

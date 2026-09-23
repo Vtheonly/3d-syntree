@@ -254,10 +254,12 @@ python -m pytest tests/ -q
 
 ## 7. Colab / Kaggle Execution (12-hour budget)
 
-Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle, add your
-`HF_TOKEN` secret (write permission), and hit **Run All**. The notebook:
+Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle and hit
+**Run All**. The notebook:
 
-1. Configures credentials and runtime parameters.
+1. **Asks for your Hugging Face write token** via a hidden input prompt
+   (auto-detected first from Colab/Kaggle secrets or `HF_TOKEN`; leave blank
+   to keep checkpoints local-only).
 2. Clones (or pulls) this repository.
 3. Installs dependencies and verifies RDKit / PyTorch / PyG.
 4. Downloads or synthesizes the data assets.
@@ -269,6 +271,30 @@ Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle, add your
 **Disconnection immunity:** if Colab disconnects at hour 4, simply hit **Run All**
 again — the trainer detects the remote checkpoints on the HF Hub, restores model +
 optimizer + RNG state, and resumes from the correct epoch.
+
+### GPU auto-scaling
+
+A fresh `train` run on a CUDA device fills the card instead of idling at
+~1 GB:
+
+* **Model tier** — free VRAM >= 12 GB trains hidden 256 / 8 layers / 8 heads
+  (T4, A100, ...); 8–12 GB trains 192/6/6; 4–8 GB trains 160/5/4; smaller
+  runtimes keep the portable 128/4/4 default.
+* **Batch size** — the trainer probes real forward+backward passes with
+  doubling + binary refinement until peak reserved VRAM reaches
+  `training.auto_scale.target_vram_fraction` (default 0.85, i.e. ~12 GB of a
+  T4's 14.4 GB free). Gradient accumulation is rebalanced so the effective
+  batch stays close to the configured value; probing is RNG-transparent and
+  never updates weights.
+* **Architecture persistence** — the (possibly scaled) model config is stored
+  inside every checkpoint, so `generate` and resume runs rebuild the exact
+  trained architecture even on a different GPU.
+
+Controlled by `training.auto_scale` in the config (enabled in
+`configs/train_colab_12h.json`, disabled in `configs/default_config.json`
+for bit-reproducible reference runs). If the dataset is too small to fill
+the card, the trainer prints a note suggesting a larger
+`data.synthetic_samples` or the real CrossDocked data.
 
 ---
 
@@ -297,16 +323,18 @@ their availability and degrades gracefully to internal RDKit metrics.
   checkpoints atomically (tmp-file + rename), prunes stale checkpoints,
   and restores Python/NumPy/Torch/CUDA RNG states on resume.
 * **Security** – the HF write token is read exclusively from the `HF_TOKEN`
-  environment variable, never from config files that may be committed.
+  environment variable (the notebook sets it from a hidden `getpass`
+  prompt), never from config files that may be committed.
 * **Robust chemistry** – reaction templates are validated against the
   installed RDKit version (H-count predicates and atom-map placement
   follow the modern parser grammar); the catalog re-verifies every
   declared handle from structure on load.
-* **Test coverage** – 302 tests cover the reaction engine (provenance,
+* **Test coverage** – 325 tests cover the reaction engine (provenance,
   junctions, product validity), SE(3) equivariance (rotation/translation
   invariance proofs), von Mises math (Bessel, sampling, NLL), end-to-end
   generation with recipe replay, checkpoint/resume (including RNG
-  replay), and the CLI.
+  replay and architecture persistence), GPU auto-scaling tiers and CPU
+  no-op paths, and the CLI.
 
 ---
 

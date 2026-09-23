@@ -115,6 +115,11 @@ class CrossDockedDataset(InMemoryDataset):
     @property
     def processed_file_names(self) -> List[str]:
         mode = "synthetic" if self.use_synthetic else "real"
+        if self.use_synthetic:
+            # Cache key MUST include the sample count: a re-run with a
+            # different num_synthetic would otherwise silently load the
+            # stale tensor of the previous size.
+            return [f"{self.split}_{mode}_n{self.num_synthetic}.pt"]
         return [f"{self.split}_{mode}.pt"]
 
     def download(self):  # handled by scripts/download_assets.py

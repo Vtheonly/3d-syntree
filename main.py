@@ -117,6 +117,42 @@ def main(argv=None) -> int:
 
     if args.mode == "train":
         from syntree.engine.trainer import ResilientTrainer
+        from syntree.utils.checkpoint import CheckpointManager
+        from syntree.utils.hardware import scale_model_config
+
+        ckpt_dir = os.path.join(args.output_dir or "./experiments", "checkpoints")
+
+        # A resumed run must keep the architecture it was trained with
+        # (which may have been GPU-auto-scaled on a different card).
+        if args.resume_auto:
+            reader = CheckpointManager(
+                {**config, "huggingface": {"enabled": False}}, ckpt_dir=ckpt_dir
+            )
+            saved_model_cfg = reader.read_model_config()
+            if saved_model_cfg:
+                config["model"] = saved_model_cfg
+                print("[main] restored model architecture from checkpoint")
+
+        # GPU auto-scaling: bigger card -> bigger PaiNN (only for fresh runs).
+        auto_cfg = config.get("training", {}).get("auto_scale", {})
+        if (
+            not args.resume_auto
+            and auto_cfg.get("enabled", False)
+            and auto_cfg.get("scale_model", True)
+            and device.type == "cuda"
+        ):
+            scaled = scale_model_config(config.get("model", {}))
+            if scaled != config.get("model", {}):
+                print(
+                    f"[main] auto-scale: model hidden "
+                    f"{config['model'].get('hidden_dim', 128)} -> "
+                    f"{scaled['hidden_dim']}, layers "
+                    f"{config['model'].get('num_equivariant_layers', 4)} -> "
+                    f"{scaled['num_equivariant_layers']}, heads "
+                    f"{config['model'].get('num_attention_heads', 4)} -> "
+                    f"{scaled['num_attention_heads']}"
+                )
+                config["model"] = scaled
 
         model = build_model(config).to(device)
         trainer = ResilientTrainer(
@@ -130,12 +166,17 @@ def main(argv=None) -> int:
 
     if args.mode == "generate":
         from syntree.engine.generator import SBDDGenerator
+        from syntree.utils.checkpoint import CheckpointManager
+
+        manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
+        # Rebuild the exact trained architecture (auto-scaled runs store it).
+        saved_model_cfg = manager.read_model_config()
+        if saved_model_cfg:
+            config["model"] = saved_model_cfg
+            print("[main] restored model architecture from checkpoint")
 
         model = build_model(config).to(device)
         if args.resume_auto:
-            from syntree.utils.checkpoint import CheckpointManager
-
-            manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
             start_epoch, _, _ = manager.restore_latest(model)
             if start_epoch > 0:
                 print(f"[main] restored checkpoint weights (epoch {start_epoch - 1})")
