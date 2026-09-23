@@ -87,6 +87,26 @@ HANDLE_TO_REACTIONS: Dict[str, List[str]] = {
     handle: sorted(partners.keys()) for handle, partners in REACTION_PARTNER_HANDLES.items()
 }
 
+# Reaction-family classes used by the policy. SNAr and Buchwald-Hartwig are
+# deliberately one family because the final product graph does not contain
+# enough information to distinguish which experimental conditions were used.
+REACTION_FAMILY_MEMBERS: Dict[str, Tuple[str, ...]] = {
+    "amide_coupling": ("amide_coupling",),
+    "reductive_amination": ("reductive_amination",),
+    "suzuki_coupling": ("suzuki_coupling",),
+    "aryl_amination": ("snar", "buchwald_hartwig"),
+    "urea_formation": ("urea_formation",),
+    "esterification": ("esterification",),
+    "click_triazole": ("click_triazole",),
+}
+REACTION_FAMILY_NAMES: Tuple[str, ...] = tuple(REACTION_FAMILY_MEMBERS.keys())
+REACTION_FAMILY_FOR: Dict[str, str] = {
+    reaction: family
+    for family, reactions in REACTION_FAMILY_MEMBERS.items()
+    for reaction in reactions
+}
+HANDLE_NAMES: Tuple[str, ...] = tuple(HANDLE_SMARTS.keys())
+
 # Map numbers used for atom provenance tracking (chosen far above anything a
 # template would use).
 _CORE_MAP_OFFSET = 1000
@@ -390,6 +410,10 @@ __all__ = [
     "REACTION_SIDES",
     "REACTION_PARTNER_HANDLES",
     "HANDLE_TO_REACTIONS",
+    "REACTION_FAMILY_MEMBERS",
+    "REACTION_FAMILY_NAMES",
+    "REACTION_FAMILY_FOR",
+    "HANDLE_NAMES",
     "HandleInfo",
     "ReactionResult",
     "ReactionEngine",
