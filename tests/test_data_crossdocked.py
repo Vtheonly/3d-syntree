@@ -45,7 +45,7 @@ class TestSyntheticMode:
                                 num_synthetic=6, seed=7)
         sample = ds[0]
         assert sample.pocket_pos.shape[1] == 3
-        assert sample.is_real_sample.item() is True
+        assert sample.is_real_sample.item() is False
         assert 0 <= sample.target_synthon.item() < len(catalog)
         assert 0 <= sample.target_reaction_family_idx.item() < 7
         assert sample.pocket_z.shape[0] == sample.pocket_pos.shape[0]
