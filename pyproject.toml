@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7.4.0"]
+evaluation = ["aizynthfinder>=4.0.0"]
 hdf5 = ["h5py>=3.10.0"]
 
 [tool.setuptools.packages.find]
