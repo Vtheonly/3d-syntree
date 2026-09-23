@@ -207,6 +207,7 @@ class SynthonCatalog:
         device: Optional[torch.device] = None,
         core_handle: Optional[str] = None,
         require_remaining_handle: bool = False,
+        allow_terminal: bool = True,
     ) -> torch.Tensor:
         """Return a synthon compatibility mask for a reaction family."""
         if family not in REACTION_FAMILY_MEMBERS:
@@ -223,7 +224,7 @@ class SynthonCatalog:
             ]
             self._family_mask_cache[key] = torch.stack(masks, dim=0).max(dim=0).values
         mask = self._family_mask_cache[key].clone()
-        if require_remaining_handle:
+        if require_remaining_handle or not allow_terminal:
             has_remaining = torch.from_numpy(self._handle_counts >= 2)
             mask[~has_remaining] = -1e9
         if device is not None:
@@ -248,6 +249,7 @@ class SynthonCatalog:
                     family,
                     core_handle=core_handle,
                     require_remaining_handle=True,
+                    allow_terminal=allow_terminal if 'allow_terminal' in locals() else True,
                 )
                 legal = bool(torch.any(family_mask > -1e8).item())
             values.append(0.0 if legal else -1e9)
@@ -259,6 +261,7 @@ class SynthonCatalog:
         device: Optional[torch.device] = None,
         core_handle: Optional[str] = None,
         require_remaining_handle: bool = False,
+        allow_terminal: bool = True,
     ) -> torch.Tensor:
         """Return [F, K] synthon masks for all reaction families."""
         return torch.stack([
@@ -267,6 +270,7 @@ class SynthonCatalog:
                 device=device,
                 core_handle=core_handle,
                 require_remaining_handle=require_remaining_handle,
+                allow_terminal=allow_terminal,
             )
             for family in REACTION_FAMILY_NAMES
         ], dim=0)
