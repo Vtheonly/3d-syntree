@@ -74,18 +74,18 @@ Four architectural commitments break the wall:
 1. **Lego-Rule Action Space** – the model never generates individual atoms.
    Every action attaches a pre-validated building block from a curated
    Enamine REAL 3D-Diversity subset (Fsp3 ≥ 0.42, MW ≤ 220 Da).
-2. **Grammar-Masked Cross-Attention** – an explicit reaction-compatibility
-   mask zeroes the logits of every synthon that cannot legally react with
-   the ligand's exposed handle, so illegal chemistry is unrepresentable.
+2. **Relative 3D Cross-Attention + Reaction Grammar** – the reacting handle
+   includes chemical state plus pocket-frame position. Invariant handle-to-
+   pocket distances condition the attention keys, while the reaction grammar
+   masks chemically illegal synthons.
 3. **Equivariant Torsion Guidance** – rather than predicting all atom
    coordinates, the 3D geometry of each added synthon is set by predicting the
    **dihedral angle** around the newly formed single bond with an
    SE(3)-equivariant network conditioned on pocket atoms, expressed as a
    von Mises distribution on the circle.
-4. **3D-Enriched Synthon Catalog** – spirocyclic, bridged, and chiral
-   building blocks dominate the library, giving true shape complementarity
-   (aryl coupling partners are exempt from the Fsp3 floor because Suzuki /
-   Buchwald / SNAr chemistry is aryl-by-definition).
+4. **Stratified 3D Synthon Catalog** – multifunctional linkers/expanders are
+   distinguished from terminal caps. Early growth masks monofunctional caps,
+   while a learned STOP action provides explicit termination control.
 
 ```mermaid
 flowchart TD
@@ -344,7 +344,23 @@ with the evaluation protocol and sample population reported alongside the
 numbers. The core repository does not assume that a valid molecule binds its
 target.
 
-## 9. Engineering Notes
+## 9. Thesis Training Pipeline
+
+The implementation separates the scientific stages explicitly.
+
+**Offline expert trajectories.** scripts/build_trajectories.py recursively inverts supported reactions on co-crystallized ligands, considers exact and high-Tanimoto catalog candidates, and accepts supervision only after exact forward replay reproduces observed connectivity. Accepted states retain crystal pocket coordinates and observed junction dihedral.
+
+**Behavioral cloning.** Set data.trajectory_dataset_path to the generated trajectories.pt file and run Stage 1 training. Synthetic data remains restricted to explicit smoke-test configurations.
+
+**Hotspot-conditioned seeding.** Protein residue chemistry is converted into deterministic positive, negative, donor, acceptor, and hydrophobic hotspots. Seed handles are anchored near compatible hotspots before clash-aware geometric refinement.
+
+**PPO fine-tuning.** main.py --mode rl --resume-auto loads Stage 1 weights and optimizes the same chemistry-constrained generator with a multi-objective 3D reward. The reward supports GNINA/Vina docking plus clash avoidance, Fsp3, QED, and chemical validity. Missing docking tools never become fabricated docking scores.
+
+### Action-space constraints
+
+The synthon policy outputs K + 1 actions, where index K is the learned STOP action. During early growth, monofunctional terminal caps are masked until the scaffold reaches data.terminal_cap_min_mw (default 250 Da). Multifunctional catalog entries are indexed by every detected reactive handle.
+
+## 10. Engineering Notes
 
 * **Deterministic real-target extraction** – real labels require a catalog
   synthon match plus successful RDKit forward replay; there is no random
@@ -371,6 +387,6 @@ target.
   never from committed configuration.
 * **Testing** – run python -m pytest tests/ -q before treating a benchmark as
   valid.
-## 10. License
+## 11. License
 
 MIT — see [LICENSE](LICENSE).
