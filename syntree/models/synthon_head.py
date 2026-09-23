@@ -56,6 +56,7 @@ class SynthonHead(nn.Module):
         synthon_embeddings: torch.Tensor,    # [K, d] catalog embeddings
         rxn_compatibility_mask: Optional[torch.Tensor] = None,  # [B, K]
         stop_mask: Optional[torch.Tensor] = None,               # [B] or [B, 1]
+        stop_logit_bias: Optional[torch.Tensor] = None,        # [B] global-feature pathway
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute masked synthon logits and log-probabilities.
 
@@ -64,6 +65,11 @@ class SynthonHead(nn.Module):
             synthon_embeddings: catalog embedding table.
             rxn_compatibility_mask: additive logit mask; ``0`` keeps a
                 synthon legal, ``-1e9`` (or any large negative) removes it.
+            stop_logit_bias: additive per-graph bias fed directly into the
+                STOP logit (bug report 2 / Flaw 3 fix: the termination
+                decision must see global ligand-size features such as
+                molecular weight, heavy-atom count and cavity-occupation
+                ratio, which a purely local attention context cannot infer).
 
         Returns:
             ``(logits, log_probs)`` both ``[B, K + 1]``. Index ``K`` is STOP.
@@ -113,8 +119,17 @@ class SynthonHead(nn.Module):
         # Explicit STOP action. It is conditioned on the same policy context
         # and receives its own learned embedding/bias, making termination a
         # learned action instead of an implicit “no handles left” side effect.
+        # The optional global-feature bias feeds ligand-size information
+        # directly into the termination decision.
         stop_logit = (out * self.stop_embedding.unsqueeze(0)).sum(-1) / math.sqrt(self.hidden_dim)
         stop_logit = stop_logit + self.stop_bias
+        if stop_logit_bias is not None:
+            if stop_logit_bias.numel() != b:
+                raise ValueError(
+                    f"stop_logit_bias must have {b} entries, got "
+                    f"{stop_logit_bias.numel()}"
+                )
+            stop_logit = stop_logit + stop_logit_bias.reshape(-1).to(stop_logit.dtype)
         if stop_mask is not None:
             stop_mask = stop_mask.view(b, 1).to(logits.dtype)
             stop_logit = stop_logit + stop_mask.squeeze(1)

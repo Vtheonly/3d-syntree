@@ -89,8 +89,13 @@ def log_bessel_i0(x: torch.Tensor) -> torch.Tensor:
 class ContinuousTorsionHead(nn.Module):
     """Predicts von Mises parameters ``(mu, kappa)`` for one dihedral.
 
-    The head consumes the scalar context vector plus invariant summaries of
-    the equivariant pocket vectors (per-graph mean norm statistics).
+    The head consumes the scalar context vector, invariant summaries of
+    the equivariant pocket vectors (per-graph mean norm statistics), and
+    the **selected synthon's embedding** (bug report 2 / Flaw 2 fix: the
+    optimal dihedral depends on the sterics of the specific group being
+    attached - a methyl and a spiro-adamantyl must not share one angle).
+    When no synthon embedding is available (e.g. a pure value probe), a
+    learned null-synthon embedding is used so the input width stays fixed.
     """
 
     def __init__(self, hidden_dim: int, min_kappa: float = 0.1, max_kappa: float = 50.0):
@@ -100,8 +105,10 @@ class ContinuousTorsionHead(nn.Module):
         self.hidden_dim = int(hidden_dim)
         self.min_kappa = float(min_kappa)
         self.max_kappa = float(max_kappa)
+        # Learned stand-in for "no synthon selected yet".
+        self.null_synthon = nn.Parameter(torch.zeros(hidden_dim))
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_dim + 3, hidden_dim),
+            nn.Linear(2 * hidden_dim + 3, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
@@ -113,6 +120,7 @@ class ContinuousTorsionHead(nn.Module):
         scalar_context: torch.Tensor,   # [B, d]
         vector_context: Optional[torch.Tensor] = None,  # [N, 3, d] pooled or raw
         batch: Optional[torch.Tensor] = None,           # [N]
+        synthon_embedding: Optional[torch.Tensor] = None,  # [B, d] selected synthon
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict ``(mu, kappa)`` for every graph in the batch.
 
@@ -121,6 +129,10 @@ class ContinuousTorsionHead(nn.Module):
             vector_context: optional equivariant vector features; norms are
                 pooled per graph into 3 invariant statistics (mean, max, std).
             batch: node-to-graph assignment for ``vector_context``.
+            synthon_embedding: ``[B, d]`` embedding of the synthon that will
+                occupy the rotated bond (teacher forcing during training, the
+                selected action at inference). Falls back to a learned null
+                embedding when omitted.
 
         Returns:
             ``(mu, kappa)`` with shapes ``[B]`` and ``[B]``; ``mu`` lies in
@@ -138,6 +150,20 @@ class ContinuousTorsionHead(nn.Module):
 
         b = scalar_context.size(0)
         device = scalar_context.device
+        if synthon_embedding is None:
+            synthon_embedding = self.null_synthon.unsqueeze(0).expand(b, -1)
+        else:
+            if synthon_embedding.dim() != 2 or synthon_embedding.size(0) != b:
+                raise ValueError(
+                    f"synthon_embedding must be [B, d] with B={b}, got "
+                    f"{tuple(synthon_embedding.shape)}"
+                )
+            if synthon_embedding.size(-1) != self.hidden_dim:
+                raise ValueError(
+                    f"synthon embedding dim {synthon_embedding.size(-1)} != "
+                    f"hidden_dim {self.hidden_dim}"
+                )
+
         stats = torch.zeros(b, 3, device=device, dtype=torch.float32)
         if vector_context is not None and vector_context.numel() > 0:
             if vector_context.dim() != 3 or vector_context.size(1) != 3:
@@ -153,7 +179,9 @@ class ContinuousTorsionHead(nn.Module):
 
         # Run the head in fp32, immune to any surrounding fp16 autocast.
         with _autocast_disabled(device):
-            h = torch.cat([scalar_context.float(), stats], dim=-1)
+            h = torch.cat(
+                [scalar_context.float(), stats, synthon_embedding.float()], dim=-1
+            )
             out = self.mlp(h)
 
             cos_mu, sin_mu, raw_kappa = out[..., 0], out[..., 1], out[..., 2]

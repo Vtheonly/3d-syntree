@@ -117,6 +117,10 @@ class SBDDGenerator:
         pocket_vdw = np.array(
             [vdw_radius(int(z)) for z in pocket_z.tolist()], dtype=np.float64
         )
+        pocket_volume = MolecularFeaturizer.vdw_sphere_volume(pocket_mol)
+        # Reference frame for ligand/handle coordinates: the pocket centroid
+        # (featurize_pocket already centered the cloud on it).
+        pocket_centroid = feats["centroid"].view(-1)
         hotspots = PocketHotspotFeaturizer().featurize(
             pocket_mol, center=feats["centroid"].view(-1)
         )
@@ -207,6 +211,23 @@ class SBDDGenerator:
                 target_handle.atom_indices,
                 target_handle.handle_type,
             ).unsqueeze(0).to(self.device)
+            # Ghost-ligand fix: the policy state carries the full intermediate
+            # ligand point cloud (same pocket-centered frame), the reacting
+            # handle node index, its position, and global size features.
+            lig_feats = MolecularFeaturizer.featurize_ligand(
+                current_mol, center=pocket_centroid
+            )
+            handle_node_idx = lig_feats["heavy_atom_map"].get(
+                int(target_handle.primary_atom), -1
+            )
+            global_feats = MolecularFeaturizer.ligand_global_features(
+                current_mol, pocket_volume=pocket_volume
+            ).unsqueeze(0).to(self.device)
+            handle_pos_t = MolecularFeaturizer.featurize_handle_position(
+                current_mol,
+                target_handle.atom_indices,
+                reference_center=pocket_centroid,
+            ).unsqueeze(0).to(self.device)
 
             batch_data = Data(
                 pocket_pos=pocket_pos.to(self.device),
@@ -215,7 +236,19 @@ class SBDDGenerator:
                 pocket_batch=torch.zeros(
                     pocket_pos.size(0), dtype=torch.long, device=self.device
                 ),
+                ligand_pos=lig_feats["ligand_pos"].to(self.device),
+                ligand_z=lig_feats["ligand_z"].to(self.device),
+                ligand_charge=lig_feats["ligand_charge"].to(self.device),
+                ligand_batch=torch.zeros(
+                    lig_feats["ligand_pos"].size(0), dtype=torch.long,
+                    device=self.device,
+                ),
                 handle_features=handle_feat,
+                handle_pos=handle_pos_t,
+                handle_nodes=torch.tensor(
+                    [handle_node_idx], dtype=torch.long, device=self.device
+                ),
+                global_features=global_feats,
                 # Mask STOP out of the action space while the ligand is still
                 # below the terminal molecular-weight cap.
                 stop_mask=torch.tensor(

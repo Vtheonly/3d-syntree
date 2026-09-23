@@ -424,6 +424,14 @@ class ResilientTrainer:
                 )
                 synthon_mask, reaction_mask = self._build_training_masks(batch)
 
+                # Teacher forcing (bug report 2 / Flaw 2): the torsion head is
+                # conditioned on the TARGET synthon embedding during training,
+                # matching the inference-time conditioning on the selected
+                # synthon.
+                torsion_synthon_emb = self.catalog.embeddings.to(self.device)[
+                    target
+                ]
+
                 with torch.autocast(
                     device_type=self.device.type, enabled=self.use_amp
                 ):
@@ -432,6 +440,7 @@ class ResilientTrainer:
                         self.catalog.embeddings.to(self.device),
                         synthon_mask,
                         reaction_mask,
+                        synthon_embedding_input=torsion_synthon_emb,
                     )
                     reaction_per_sample = F.cross_entropy(
                         preds["reaction_logits"],

@@ -25,7 +25,7 @@ import torch
 from rdkit import Chem
 from torch_geometric.data import Data, InMemoryDataset
 
-from syntree.data.featurizer import MolecularFeaturizer
+from syntree.data.featurizer import GLOBAL_FEATURE_DIM, MolecularFeaturizer
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
 from syntree.data.fragmenter import ReactionConstrainedFragmenter
 
@@ -231,10 +231,13 @@ class CrossDockedDataset(InMemoryDataset):
             n_pocket = int(rng.integers(24, 72))
             pos, z = _synthetic_pocket(rng, n_pocket)
             handle_position = pos[int(rng.integers(0, n_pocket))]
-            handle_feat = torch.cat([
-                torch.from_numpy(rng.normal(size=64).astype(np.float32)),
-                handle_position,
-            ])
+            # Chemical features and position travel separately (Tell 1);
+            # the 67-dim concatenation is kept only as the internal seed for
+            # the synthetic label generator.
+            handle_chem = torch.from_numpy(
+                rng.normal(size=64).astype(np.float32)
+            )
+            handle_feat = torch.cat([handle_chem, handle_position])
             pocket_stats = torch.stack(
                 [
                     pos[:, 0].mean(),
@@ -294,7 +297,17 @@ class CrossDockedDataset(InMemoryDataset):
                     pocket_z=z,
                     # Synthetic pockets carry no residue identity -> neutral.
                     pocket_charge=torch.zeros(z.size(0), dtype=torch.float32),
-                    handle_features=handle_feat,
+                    # Synthetic states carry no real intermediate ligand: the
+                    # policy falls back to its empty-ligand pathway.
+                    ligand_pos=torch.zeros(0, 3, dtype=torch.float32),
+                    ligand_z=torch.zeros(0, dtype=torch.long),
+                    ligand_charge=torch.zeros(0, dtype=torch.float32),
+                    handle_nodes=torch.tensor([-1], dtype=torch.long),
+                    global_features=torch.zeros(
+                        1, GLOBAL_FEATURE_DIM, dtype=torch.float32
+                    ),
+                    handle_features=handle_chem,
+                    handle_pos=handle_position.view(1, 3),
                     target_synthon=torch.tensor(target_synthon, dtype=torch.long),
                     target_dihedral=torch.tensor(target_dihedral, dtype=torch.float32),
                     target_reaction_family_idx=torch.tensor(
@@ -380,11 +393,45 @@ class CrossDockedDataset(InMemoryDataset):
                 skipped_unmatched += 1
                 continue
 
+            # Ghost-ligand fix: full intermediate-ligand state.
+            try:
+                lig_state = MolecularFeaturizer.featurize_ligand(
+                    target.core_mol, center=center
+                )
+                state_handle_node = lig_state["heavy_atom_map"].get(
+                    int(handle_info.primary_atom), -1
+                )
+                state_handle_pos = MolecularFeaturizer.featurize_handle_position(
+                    target.core_mol, handle_info.atom_indices,
+                    reference_center=center,
+                )
+                state_global = MolecularFeaturizer.ligand_global_features(
+                    target.core_mol,
+                    pocket_volume=MolecularFeaturizer.vdw_sphere_volume(
+                        pocket_mol
+                    ),
+                )
+            except (ValueError, RuntimeError):
+                lig_state = {
+                    "ligand_pos": torch.zeros(0, 3),
+                    "ligand_z": torch.zeros(0, dtype=torch.long),
+                    "ligand_charge": torch.zeros(0),
+                }
+                state_handle_node = -1
+                state_handle_pos = torch.zeros(3)
+                state_global = torch.zeros(GLOBAL_FEATURE_DIM)
+
             samples.append(
                 Data(
                     pocket_pos=feats["pocket_pos"],
                     pocket_z=feats["pocket_z"],
                     pocket_charge=feats["pocket_charge"],
+                    ligand_pos=lig_state["ligand_pos"],
+                    ligand_z=lig_state["ligand_z"],
+                    ligand_charge=lig_state["ligand_charge"],
+                    handle_pos=state_handle_pos,
+                    handle_nodes=torch.tensor(state_handle_node, dtype=torch.long),
+                    global_features=state_global,
                     handle_features=MolecularFeaturizer.featurize_handle(
                         target.core_mol,
                         handle_info.atom_indices,

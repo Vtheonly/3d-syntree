@@ -96,7 +96,9 @@ class TestForward:
 
     def test_batch_graph_mismatch_raises(self, model, dataset, catalog):
         data = dataset[0]
-        data.handle_features = torch.randn(3, 67)  # 3 graphs, 1 pocket
+        data.handle_features = torch.randn(3, 64)  # 3 graphs, 1 pocket
+        data.handle_pos = torch.randn(3, 3)
+        data.global_features = torch.zeros(3, 4)
         with pytest.raises(ValueError):
             model(data, catalog.embeddings)
 
@@ -125,17 +127,26 @@ class TestSE3Properties:
                               atol=1e-4)
 
     def test_translation_invariance(self, model, dataset, catalog):
-        """Translating the whole system (pocket + handle) must leave all
-        scalar outputs unchanged - the policy only consumes relative geometry."""
+        """Translating the whole system (pocket + ligand + handle) must leave
+        all scalar outputs unchanged - the policy only consumes relative
+        geometry."""
         model.eval()
         data = dataset[1]
         d1 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
         d2 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
         shift = torch.tensor([7.0, -4.0, 2.0])
         d2.pocket_pos = d2.pocket_pos + shift
-        # The handle position lives in the same frame; translate it too.
-        d2.handle_features = d2.handle_features.clone()
-        d2.handle_features[..., 64:67] = d2.handle_features[..., 64:67] + shift
+        # The intermediate ligand lives in the same frame; translate it too
+        # (the ghost-ligand fix made it part of the state).
+        if getattr(d2, "ligand_pos", None) is not None and d2.ligand_pos.numel() > 0:
+            d2.ligand_pos = d2.ligand_pos + shift
+        # The handle position: dedicated field (new schema) or the tail of
+        # the legacy 67-dim vector.
+        if getattr(d2, "handle_pos", None) is not None:
+            d2.handle_pos = d2.handle_pos.view(1, 3) + shift
+        if d2.handle_features.size(-1) == 67:
+            d2.handle_features = d2.handle_features.clone()
+            d2.handle_features[..., 64:67] = d2.handle_features[..., 64:67] + shift
         with torch.no_grad():
             o1 = model(d1, catalog.embeddings)
             o2 = model(d2, catalog.embeddings)

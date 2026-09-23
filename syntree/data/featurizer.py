@@ -1,26 +1,41 @@
-"""Atomic featurization for protein pockets and ligand attachment handles.
+"""Atomic featurization for pockets, ligand states and attachment handles.
 
 Pocket atoms are encoded as ``(position, atomic number, formal charge)``
 point clouds, centroid-centered for translation invariance. X-ray pockets
 arrive without hydrogens and with neutral heavy atoms; formal charges at
 physiological pH (Asp/Glu -1, Arg/Lys +1, protonated His +1) are assigned
 from PDB residue/atom names so the policy can learn salt bridges.
-Attachment handles are encoded as fixed-length flat feature vectors
-summarising the reacting atom and its chemical environment.
+
+Intermediate ligand states are featurized as heavy-atom point clouds in the
+same pocket-centered frame (the "ghost ligand" fix: the policy now sees
+the molecule it has already grown), together with global scalar features
+(molecular weight, heavy-atom count, cavity-occupation ratio) that feed
+the termination decision.
+
+Attachment handles are encoded as fixed-length flat chemical feature
+vectors (64-dim). The reacting atom's 3D position travels as a separate
+``handle_pos`` tensor - positions and invariant features are never mixed
+in the same tensor (bug report 3 / Tell 1).
 """
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from rdkit import Chem
+from rdkit.Chem import Descriptors
 
-# Dimensionality of the flat handle feature vector.
-HANDLE_FEATURE_DIM = 67
+# Dimensionality of the flat handle feature vector (chemical features only;
+# the handle xyz is returned separately as `handle_pos`).
+HANDLE_FEATURE_DIM = 64
 HANDLE_CHEMICAL_FEATURE_DIM = 64
-HANDLE_POSITION_OFFSET = 64
+
+# Dimensionality of the global ligand-state features:
+# [MW/500, heavy_atoms/50, ligand_volume/pocket_volume, has_ligand].
+GLOBAL_FEATURE_DIM = 4
 
 # Offset layout of the handle feature vector:
 #   [0, 16)   one-hot atomic number (capped)
@@ -31,7 +46,6 @@ HANDLE_POSITION_OFFSET = 64
 #   [44, 52)  one-hot num H neighbours
 #   [52, 56)  handle-class one-hot start (classes 0..7)
 #   [56, 64)  neighbour element histogram (C, N, O, S, halogens, other)
-#   [64, 67)  reacting-handle xyz position in the pocket-centered frame
 _ATOMIC_NUM_SLOTS = 16
 _DEGREE_OFFSET = 16
 _AROMATIC_OFFSET = 24
@@ -166,11 +180,14 @@ class MolecularFeaturizer:
         handle_type: Optional[str] = None,
         reference_center: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Encode an attachment handle into a fixed 67-dim vector.
+        """Encode an attachment handle into a fixed 64-dim chemical vector.
 
-        The first 64 dimensions capture the reacting atom's chemical
-        environment. The final three dimensions contain its 3D position in
-        the same centered frame as the corresponding pocket.
+        Only invariant chemical descriptors of the reacting atom and its
+        environment are emitted; the handle's 3D position is returned
+        separately by :meth:`featurize_handle_position` (bug report 3 /
+        Tell 1: positions and features never share a tensor). The
+        ``reference_center`` argument is accepted for call-site
+        compatibility and ignored.
         """
         feats = np.zeros(HANDLE_FEATURE_DIM, dtype=np.float32)
         if mol is None or not handle_atom_indices:
@@ -217,8 +234,21 @@ class MolecularFeaturizer:
             else:
                 feats[_NEIGHBOR_OFFSET + 5] += 1.0
 
-        if mol.GetNumConformers() == 0:
-            raise ValueError("handle featurization requires 3D coordinates")
+        return torch.from_numpy(feats)
+
+    @staticmethod
+    def featurize_handle_position(
+        mol: Chem.Mol,
+        handle_atom_indices: Sequence[int],
+        reference_center: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """3D position of the reacting handle atom in the pocket frame.
+
+        Returns ``[3]`` float tensor; zero when the molecule has no
+        conformer or no handle is given (degenerate states).
+        """
+        if mol is None or not handle_atom_indices or mol.GetNumConformers() == 0:
+            return torch.zeros(3, dtype=torch.float32)
         conf = mol.GetConformer()
         handle_pos = np.array(
             conf.GetAtomPosition(int(handle_atom_indices[0])), dtype=np.float32
@@ -228,9 +258,115 @@ class MolecularFeaturizer:
             if ref.numel() != 3:
                 raise ValueError("reference_center must contain exactly three coordinates")
             handle_pos = handle_pos - ref.detach().cpu().numpy()
-        feats[HANDLE_POSITION_OFFSET:HANDLE_POSITION_OFFSET + 3] = handle_pos
+        return torch.from_numpy(handle_pos.astype(np.float32))
 
-        return torch.from_numpy(feats)
+    # ------------------------------------------------------------------
+    # Intermediate ligand states (the "ghost ligand" fix)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def featurize_ligand(
+        ligand_mol: Optional[Chem.Mol],
+        center: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Heavy-atom point cloud of the intermediate ligand.
+
+        Args:
+            ligand_mol: the molecule grown so far (requires a conformer;
+                ``None``/empty yields empty tensors).
+            center: the pocket reference center (the same centroid used by
+                :meth:`featurize_pocket`) so ligand and pocket coordinates
+                live in one frame.
+
+        Returns:
+            Dict with ``ligand_pos`` ``[M, 3]``, ``ligand_z`` ``[M]``,
+            ``ligand_charge`` ``[M]`` (RDKit formal charges) and
+            ``heavy_atom_map`` (original atom index -> ligand node index;
+            needed to locate the handle node in the ligand graph because
+            ``RemoveHs`` renumbers atoms).
+        """
+        if ligand_mol is None or ligand_mol.GetNumAtoms() == 0:
+            return {
+                "ligand_pos": torch.zeros(0, 3, dtype=torch.float32),
+                "ligand_z": torch.zeros(0, dtype=torch.long),
+                "ligand_charge": torch.zeros(0, dtype=torch.float32),
+                "heavy_atom_map": {},
+            }
+        if ligand_mol.GetNumConformers() == 0:
+            raise ValueError("featurize_ligand requires 3D coordinates")
+
+        heavy = Chem.RemoveHs(Chem.Mol(ligand_mol))
+        # RemoveHs renumbers atoms; the ligand node index of a heavy atom is
+        # simply the number of heavy atoms preceding it (RemoveHs preserves
+        # the relative order of the remaining atoms).
+        heavy_map: Dict[int, int] = {}
+        lig_node = 0
+        for atom in ligand_mol.GetAtoms():
+            if atom.GetAtomicNum() > 1:
+                heavy_map[atom.GetIdx()] = lig_node
+                lig_node += 1
+        conf = heavy.GetConformer()
+        positions, zs, charges = [], [], []
+        for atom in heavy.GetAtoms():
+            pos = conf.GetAtomPosition(atom.GetIdx())
+            positions.append([pos.x, pos.y, pos.z])
+            zs.append(atom.GetAtomicNum())
+            charges.append(float(atom.GetFormalCharge()))
+
+        pos_t = torch.tensor(positions, dtype=torch.float32)
+        if center is not None:
+            ref = torch.as_tensor(center, dtype=torch.float32).view(1, 3)
+            pos_t = pos_t - ref
+        return {
+            "ligand_pos": pos_t,
+            "ligand_z": torch.tensor(zs, dtype=torch.long),
+            "ligand_charge": torch.tensor(charges, dtype=torch.float32),
+            "heavy_atom_map": heavy_map,
+        }
+
+    @staticmethod
+    def vdw_sphere_volume(mol: Optional[Chem.Mol]) -> float:
+        """Sum of per-heavy-atom van der Waals sphere volumes (A^3).
+
+        Overlapping spheres overcount, but as a *ratio* feature (ligand vs
+        pocket occupation) the overcounting largely cancels and the value
+        stays deterministic and cheap.
+        """
+        from syntree.chemistry.conformer import vdw_radius
+
+        if mol is None or mol.GetNumAtoms() == 0:
+            return 0.0
+        heavy = Chem.RemoveHs(Chem.Mol(mol))
+        total = 0.0
+        for atom in heavy.GetAtoms():
+            r = vdw_radius(atom.GetAtomicNum())
+            total += 4.0 / 3.0 * math.pi * r ** 3
+        return float(total)
+
+    @staticmethod
+    def ligand_global_features(
+        ligand_mol: Optional[Chem.Mol],
+        pocket_volume: Optional[float] = None,
+    ) -> torch.Tensor:
+        """Global ligand-state features for the policy readout (Flaw 3).
+
+        ``[MW/500, heavy_atoms/50, ligand_volume/pocket_volume, has_ligand]``
+        - the termination (STOP) decision needs to know how much molecule
+        has already been built relative to the cavity it must fill.
+        """
+        if ligand_mol is None or ligand_mol.GetNumAtoms() == 0:
+            return torch.zeros(GLOBAL_FEATURE_DIM, dtype=torch.float32)
+        heavy = Chem.RemoveHs(Chem.Mol(ligand_mol))
+        mw = float(Descriptors.MolWt(heavy)) / 500.0
+        n_heavy = heavy.GetNumAtoms() / 50.0
+        if pocket_volume and pocket_volume > 0.0:
+            vol_ratio = (
+                MolecularFeaturizer.vdw_sphere_volume(heavy) / float(pocket_volume)
+            )
+        else:
+            vol_ratio = 0.0
+        return torch.tensor(
+            [mw, n_heavy, vol_ratio, 1.0], dtype=torch.float32
+        )
 
     # ------------------------------------------------------------------
     # Ligands (training targets)
@@ -265,4 +401,9 @@ class MolecularFeaturizer:
             return None
 
 
-__all__ = ["MolecularFeaturizer", "HANDLE_FEATURE_DIM"]
+__all__ = [
+    "MolecularFeaturizer",
+    "HANDLE_FEATURE_DIM",
+    "HANDLE_CHEMICAL_FEATURE_DIM",
+    "GLOBAL_FEATURE_DIM",
+]

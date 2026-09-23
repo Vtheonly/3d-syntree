@@ -157,13 +157,49 @@ class RetrosyntheticTrajectoryBuilder:
                 target.core_handle_type,
                 reference_center=ligand_center,
             )
+            # Ghost-ligand fix: the state carries the full intermediate
+            # ligand (the core at this step) as a heavy-atom point cloud.
+            try:
+                lig_feats = MolecularFeaturizer.featurize_ligand(
+                    target.core_mol, center=ligand_center
+                )
+                handle_node_idx = lig_feats["heavy_atom_map"].get(
+                    int(handle.primary_atom), -1
+                )
+                handle_pos = MolecularFeaturizer.featurize_handle_position(
+                    target.core_mol, handle.atom_indices,
+                    reference_center=ligand_center,
+                )
+                global_feats = MolecularFeaturizer.ligand_global_features(
+                    target.core_mol,
+                    pocket_volume=MolecularFeaturizer.vdw_sphere_volume(pocket),
+                )
+            except (ValueError, RuntimeError):
+                # Degenerate state (e.g. no conformer): empty ligand graph.
+                lig_feats = {
+                    "ligand_pos": torch.zeros(0, 3),
+                    "ligand_z": torch.zeros(0, dtype=torch.long),
+                    "ligand_charge": torch.zeros(0),
+                    "heavy_atom_map": {},
+                }
+                handle_node_idx = -1
+                handle_pos = torch.zeros(3)
+                global_feats = torch.zeros(4)
 
             samples.append(
                 Data(
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
                     pocket_charge=pocket_features["pocket_charge"],
+                    ligand_pos=lig_feats["ligand_pos"],
+                    ligand_z=lig_feats["ligand_z"],
+                    ligand_charge=lig_feats["ligand_charge"],
                     handle_features=handle_features,
+                    handle_pos=handle_pos,
+                    handle_nodes=torch.tensor(
+                        handle_node_idx, dtype=torch.long
+                    ),
+                    global_features=global_feats,
                     target_synthon=torch.tensor(
                         int(target.synthon_index), dtype=torch.long
                     ),
@@ -200,12 +236,44 @@ class RetrosyntheticTrajectoryBuilder:
                 terminal_handle.handle_type,
                 reference_center=ligand_center,
             )
+            try:
+                term_lig_feats = MolecularFeaturizer.featurize_ligand(
+                    current, center=ligand_center
+                )
+                term_handle_node = term_lig_feats["heavy_atom_map"].get(
+                    int(terminal_handle.primary_atom), -1
+                )
+                term_handle_pos = MolecularFeaturizer.featurize_handle_position(
+                    current, terminal_handle.atom_indices,
+                    reference_center=ligand_center,
+                )
+                term_global = MolecularFeaturizer.ligand_global_features(
+                    current,
+                    pocket_volume=MolecularFeaturizer.vdw_sphere_volume(pocket),
+                )
+            except (ValueError, RuntimeError):
+                term_lig_feats = {
+                    "ligand_pos": torch.zeros(0, 3),
+                    "ligand_z": torch.zeros(0, dtype=torch.long),
+                    "ligand_charge": torch.zeros(0),
+                }
+                term_handle_node = -1
+                term_handle_pos = torch.zeros(3)
+                term_global = torch.zeros(4)
             samples.append(
                 Data(
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
                     pocket_charge=pocket_features["pocket_charge"],
+                    ligand_pos=term_lig_feats["ligand_pos"],
+                    ligand_z=term_lig_feats["ligand_z"],
+                    ligand_charge=term_lig_feats["ligand_charge"],
                     handle_features=terminal_features,
+                    handle_pos=term_handle_pos,
+                    handle_nodes=torch.tensor(
+                        term_handle_node, dtype=torch.long
+                    ),
+                    global_features=term_global,
                     target_synthon=torch.tensor(0, dtype=torch.long),
                     target_reaction_family_idx=torch.tensor(
                         REACTION_FAMILY_NAMES.index(

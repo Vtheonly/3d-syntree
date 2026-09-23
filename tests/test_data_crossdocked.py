@@ -49,7 +49,9 @@ class TestSyntheticMode:
         assert 0 <= sample.target_synthon.item() < len(catalog)
         assert 0 <= sample.target_reaction_family_idx.item() < 7
         assert sample.pocket_z.shape[0] == sample.pocket_pos.shape[0]
-        assert sample.handle_features.shape == (67,)
+        assert sample.handle_features.shape == (64,)
+        assert sample.handle_pos.shape == (1, 3)
+        assert sample.global_features.shape == (1, 4)
         assert sample.target_synthon.dtype == torch.long
         assert sample.target_dihedral.dtype == torch.float32
         assert sample.target_reaction_family_idx.dtype == torch.long
@@ -113,7 +115,7 @@ class TestBatching:
                                      follow_batch=["pocket_pos"])
         assert batch.pocket_pos.shape[1] == 3
         assert batch.pocket_pos_batch.max().item() == 3
-        assert batch.handle_features.numel() == 4 * 67
+        assert batch.handle_features.numel() == 4 * 64
         assert batch.target_synthon.shape == (4,)
 
     def test_dataloader(self, tmp_path, catalog):

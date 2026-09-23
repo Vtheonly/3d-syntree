@@ -75,16 +75,20 @@ class TestPocketFeaturization:
 
 class TestHandleFeaturization:
     def test_dimension(self):
-        # 64 chemical + 3 xyz (pocket-frame position) = 67.
-        assert HANDLE_FEATURE_DIM == 67
+        # Chemical features only (64): the handle xyz travels separately in
+        # `handle_pos` (bug report 3 / Tell 1 - no Franken tensors).
+        assert HANDLE_FEATURE_DIM == 64
 
     def test_chemical_and_position_layout(self, pocket_mol):
         feats = MolecularFeaturizer.featurize_handle(pocket_mol, [0])
         assert feats.shape == (HANDLE_FEATURE_DIM,)
         # Chemical block is one-hot / count based (small non-negative ints).
-        assert feats[:64].sum() >= 2
-        # Positional block holds finite coordinates.
-        assert torch.isfinite(feats[64:67]).all()
+        assert feats.sum() >= 2
+        assert feats.min() >= 0.0
+        # The position is returned by the dedicated method.
+        pos = MolecularFeaturizer.featurize_handle_position(pocket_mol, [0])
+        assert pos.shape == (3,)
+        assert torch.isfinite(pos).all()
 
     def test_empty_indices_give_zero_vector(self, pocket_mol):
         feats = MolecularFeaturizer.featurize_handle(pocket_mol, [])

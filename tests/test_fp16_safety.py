@@ -187,10 +187,13 @@ class TestLearnableSyntheticSupervision:
         )
 
         a, b = dataset[0], dataset[31]
-        # Rebuild the mapping by hand for sample a.
+        # Rebuild the mapping by hand for sample a (chemical features and the
+        # handle position travel as separate fields since the ghost-ligand
+        # refactor; the label generator concatenates them exactly like this).
         feats = torch.cat(
             [
                 a.handle_features,
+                a.handle_pos.view(-1),
                 torch.stack(
                     [
                         a.pocket_pos[:, 0].mean(),
