@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import random
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -104,7 +105,7 @@ class ShardedHuggingFaceDataset(Dataset):
         meta = self.shards[shard_idx]
         local_path = self.cache_dir / Path(meta["name"]).name
         if not local_path.exists():
-            local_path = Path(
+            downloaded_path = Path(
                 hf_hub_download(
                     repo_id=self.repo_id,
                     filename=f"data/{self.split}/{meta['name']}",
@@ -114,6 +115,9 @@ class ShardedHuggingFaceDataset(Dataset):
                     local_dir=str(self.cache_dir),
                 )
             )
+            if downloaded_path != local_path:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(downloaded_path, local_path)
 
         expected = meta.get("sha256")
         if expected and self._sha256(local_path) != expected:
