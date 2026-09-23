@@ -19,7 +19,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
 from syntree.models.pocket_encoder import PocketEncoder
+from syntree.models.reaction_head import ReactionHead
 from syntree.models.synthon_head import SynthonHead
 from syntree.models.torsion_head import ContinuousTorsionHead
 
@@ -89,12 +91,19 @@ class SynTreePolicy(nn.Module):
             batch_first=True,
         )
 
-        # 3. Synthon selection head.
+        # 3. Reaction-family selection head.
+        self.reaction_head = ReactionHead(
+            hidden_dim=hidden_dim,
+            num_families=len(REACTION_FAMILY_NAMES),
+            dropout=dropout,
+        )
+
+        # 4. Synthon selection head.
         self.synthon_head = SynthonHead(
             hidden_dim=hidden_dim, num_heads=num_heads, dropout=dropout
         )
 
-        # 4. Torsion head.
+        # 5. Torsion head.
         self.torsion_head = ContinuousTorsionHead(hidden_dim)
 
     # ------------------------------------------------------------------
@@ -115,7 +124,8 @@ class SynTreePolicy(nn.Module):
         self,
         batch_data,
         synthon_embeddings: torch.Tensor,
-        rxn_compatibility_mask: Optional[torch.Tensor] = None,
+        synthon_compatibility_mask: Optional[torch.Tensor] = None,
+        reaction_compatibility_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Run the full policy.
 
@@ -124,7 +134,7 @@ class SynTreePolicy(nn.Module):
                 ``pocket_z`` ``[N]``, ``pocket_batch`` ``[N]`` (optional),
                 and ``handle_features`` ``[B, 64]`` (or ``[64]``).
             synthon_embeddings: ``[K, hidden_dim]`` catalog embeddings.
-            rxn_compatibility_mask: ``[B, K]`` additive logit mask
+            synthon_compatibility_mask: ``[B, K]`` additive logit mask
                 (``0`` legal, ``-1e9`` illegal).
 
         Returns:
@@ -195,14 +205,20 @@ class SynTreePolicy(nn.Module):
         context = context.squeeze(1)  # [B, d]
 
         # 3. Synthon selection.
+        reaction_logits, reaction_log_probs = self.reaction_head(
+            context, reaction_compatibility_mask
+        )
+
         logits, log_probs = self.synthon_head(
-            context, synthon_embeddings, rxn_compatibility_mask
+            context, synthon_embeddings, synthon_compatibility_mask
         )
 
         # 4. Torsion prediction.
         mu, kappa = self.torsion_head(context, pocket_v, pocket_batch)
 
         return {
+            "reaction_logits": reaction_logits,
+            "reaction_log_probs": reaction_log_probs,
             "synthon_logits": logits,
             "synthon_log_probs": log_probs,
             "torsion_mu": mu,
@@ -218,18 +234,48 @@ class SynTreePolicy(nn.Module):
         self,
         batch_data,
         synthon_embeddings: torch.Tensor,
-        rxn_compatibility_mask: Optional[torch.Tensor] = None,
+        synthon_compatibility_mask: Optional[torch.Tensor] = None,
+        reaction_compatibility_mask: Optional[torch.Tensor] = None,
+        synthon_masks_by_reaction: Optional[torch.Tensor] = None,
         sample: bool = False,
         temperature: float = 1.0,
     ):
-        """Select a synthon index and dihedral for a single-step decision.
+        """Select a reaction family, synthon, and dihedral."""
+        out = self.forward(
+            batch_data,
+            synthon_embeddings,
+            synthon_compatibility_mask,
+            reaction_compatibility_mask,
+        )
 
-        Args:
-            sample: when True, sample the synthon from the masked softmax
-                (with ``temperature``); otherwise take the argmax.
-        """
-        out = self.forward(batch_data, synthon_embeddings, rxn_compatibility_mask)
+        reaction_logits = out["reaction_logits"]
+        if sample:
+            reaction_probs = torch.softmax(
+                reaction_logits / max(temperature, 1e-6), dim=-1
+            )
+            reaction_family_idx = torch.multinomial(
+                reaction_probs, 1
+            ).squeeze(-1)
+        else:
+            reaction_family_idx = reaction_logits.argmax(dim=-1)
+
         logits = out["synthon_logits"]
+        if synthon_masks_by_reaction is not None:
+            if synthon_masks_by_reaction.dim() != 3:
+                raise ValueError(
+                    "synthon_masks_by_reaction must be [B, F, K]"
+                )
+            b = reaction_family_idx.size(0)
+            rows = torch.arange(b, device=logits.device)
+            selected_mask = synthon_masks_by_reaction[
+                rows, reaction_family_idx
+            ]
+            logits, _ = self.synthon_head(
+                out["pocket_context"],
+                synthon_embeddings,
+                selected_mask,
+            )
+
         if sample:
             probs = torch.softmax(logits / max(temperature, 1e-6), dim=-1)
             synthon_idx = torch.multinomial(probs, 1).squeeze(-1)
@@ -240,8 +286,10 @@ class SynTreePolicy(nn.Module):
             out["torsion_mu"], out["torsion_kappa"]
         )
         return {
+            "reaction_family_idx": reaction_family_idx,
             "synthon_idx": synthon_idx,
             "dihedral": phi,
+            "reaction_logits": reaction_logits,
             "logits": logits,
             "torsion_mu": out["torsion_mu"],
             "torsion_kappa": out["torsion_kappa"],
