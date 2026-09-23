@@ -443,9 +443,21 @@ class ResilientTrainer:
                         else reaction_per_sample.new_zeros(())
                     )
                     l_synthon = self.criterion(preds["synthon_logits"], target_action)
-                    l_torsion = ContinuousTorsionHead.loss_fn(
+                    # Torsion is undefined for STOP transitions. Masking it
+                    # keeps the continuous head from learning an arbitrary zero-angle
+                    # target for termination actions.
+                    torsion_loss_all = ContinuousTorsionHead.loss_fn(
                         preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
                     )
+                    if bool(non_stop.any().item()):
+                        torsion_log_probs = ContinuousTorsionHead.log_prob(
+                            preds["torsion_mu"][non_stop],
+                            preds["torsion_kappa"][non_stop],
+                            batch.target_dihedral[non_stop],
+                        )
+                        l_torsion = -torsion_log_probs.mean()
+                    else:
+                        l_torsion = torsion_loss_all.new_zeros(())
                     w_synthon = float(self.loss_weights.get("synthon_ce", 1.0))
                     w_torsion = float(self.loss_weights.get("torsion_nll", 0.5))
                     loss = (
