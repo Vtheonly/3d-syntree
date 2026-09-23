@@ -123,9 +123,9 @@ def main(argv=None) -> int:
         ckpt_dir = os.path.join(args.output_dir or "./experiments", "checkpoints")
 
         if args.resume_auto:
-            reader = CheckpointManager(
-                {**config, "huggingface": {"enabled": False}}, ckpt_dir=ckpt_dir
-            )
+            # Keep the same Hub/local authority rules for architecture discovery
+            # that the trainer will use for actual checkpoint restoration.
+            reader = CheckpointManager(config, ckpt_dir=ckpt_dir)
             saved_model_cfg = reader.read_model_config()
             if saved_model_cfg:
                 config["model"] = saved_model_cfg
