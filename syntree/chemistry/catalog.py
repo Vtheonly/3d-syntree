@@ -89,7 +89,7 @@ class SynthonCatalog:
             )
 
         self.embeddings = self._compute_embeddings()
-        self.handle_masks = self._build_compatibility_indices()
+        self.handle_masks, self._handle_counts = self._build_compatibility_indices()
         self._canonical_smiles_index = self._build_canonical_smiles_index()
         self._family_mask_cache: Dict[Tuple[str, Optional[str]], torch.Tensor] = {}
         self._smiles_cache: Dict[int, Optional[str]] = {}
@@ -206,6 +206,7 @@ class SynthonCatalog:
         family: str,
         device: Optional[torch.device] = None,
         core_handle: Optional[str] = None,
+        require_remaining_handle: bool = False,
     ) -> torch.Tensor:
         """Return a synthon compatibility mask for a reaction family."""
         if family not in REACTION_FAMILY_MEMBERS:
@@ -222,6 +223,9 @@ class SynthonCatalog:
             ]
             self._family_mask_cache[key] = torch.stack(masks, dim=0).max(dim=0).values
         mask = self._family_mask_cache[key].clone()
+        if require_remaining_handle:
+            has_remaining = torch.from_numpy(self._handle_counts >= 2)
+            mask[~has_remaining] = -1e9
         if device is not None:
             mask = mask.to(device)
         return mask
@@ -246,20 +250,35 @@ class SynthonCatalog:
         self,
         device: Optional[torch.device] = None,
         core_handle: Optional[str] = None,
+        require_remaining_handle: bool = False,
     ) -> torch.Tensor:
         """Return [F, K] synthon masks for all reaction families."""
         return torch.stack([
             self.get_reaction_family_mask(
-                family, device=device, core_handle=core_handle
+                family,
+                device=device,
+                core_handle=core_handle,
+                require_remaining_handle=require_remaining_handle,
             )
             for family in REACTION_FAMILY_NAMES
         ], dim=0)
 
-    def _build_compatibility_indices(self) -> Dict[str, np.ndarray]:
-        masks: Dict[str, np.ndarray] = {}
-        for handle in self.df["primary_handle"].unique():
-            masks[str(handle)] = (self.df["primary_handle"] == handle).to_numpy()
-        return masks
+    def _build_compatibility_indices(self) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+        """Index every detected handle, not only ``primary_handle``."""
+        masks = {
+            handle: np.zeros(self.num_synthons, dtype=bool)
+            for handle in HANDLE_SMARTS
+        }
+        handle_counts = np.zeros(self.num_synthons, dtype=np.int16)
+        for idx, smiles in enumerate(self.df["smiles"]):
+            mol = Chem.MolFromSmiles(str(smiles))
+            if mol is None:
+                continue
+            detected = self.engine.detect_handles(mol)
+            handle_counts[idx] = len(detected)
+            for info in detected:
+                masks[info.handle_type][idx] = True
+        return masks, handle_counts
 
     def get_reaction_mask(
         self,
@@ -341,13 +360,24 @@ class SynthonCatalog:
     def synthon_indices_for_handles(
         self, handles: Iterable[str]
     ) -> np.ndarray:
-        """Indices of synthons whose primary handle is in ``handles``."""
+        """Indices of synthons exposing at least one requested handle."""
         wanted = set(handles)
         valid = np.zeros(self.num_synthons, dtype=bool)
         for handle in wanted:
             if handle in self.handle_masks:
                 valid |= self.handle_masks[handle]
         return np.nonzero(valid)[0]
+
+    def get_handle_count(self, synthon_idx: int) -> int:
+        """Return the number of reactive handle instances on a synthon."""
+        if not 0 <= synthon_idx < self.num_synthons:
+            raise IndexError(f"synthon_idx {synthon_idx} out of range")
+        return int(self._handle_counts[synthon_idx])
+
+    @property
+    def multifunctional_indices(self) -> np.ndarray:
+        """Catalog indices exposing at least two reactive handles."""
+        return np.nonzero(self._handle_counts >= 2)[0]
 
     @property
     def available_handles(self) -> List[str]:
