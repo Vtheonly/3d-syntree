@@ -224,8 +224,11 @@ class ResilientTrainer:
             batch = next(iter(loader)).to(self.device)
             target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
             stop_index = len(self.catalog)
+            target_stop = getattr(
+                batch, "target_stop", torch.zeros_like(target, dtype=torch.bool)
+            )
             target_action = torch.where(
-                batch.target_stop.bool(),
+                target_stop.bool(),
                 torch.full_like(target, stop_index),
                 target,
             )
@@ -388,7 +391,7 @@ class ResilientTrainer:
                         batch.target_reaction_family_idx,
                         reduction="none",
                     )
-                    non_stop = ~batch.target_stop.bool()
+                    non_stop = ~target_stop.bool()
                     l_reaction = (
                         reaction_per_sample[non_stop].mean()
                         if bool(non_stop.any().item())
@@ -519,8 +522,11 @@ class ResilientTrainer:
             batch = batch.to(self.device)
             target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
             stop_index = len(self.catalog)
+            target_stop = getattr(
+                batch, "target_stop", torch.zeros_like(target, dtype=torch.bool)
+            )
             target_action = torch.where(
-                batch.target_stop.bool(),
+                target_stop.bool(),
                 torch.full_like(target, stop_index),
                 target,
             )
@@ -552,7 +558,7 @@ class ResilientTrainer:
             torsion += float(l_torsion.item())
 
             predicted_family = preds["reaction_logits"].argmax(-1)
-            non_stop = ~batch.target_stop.bool()
+            non_stop = ~target_stop.bool()
             reaction_correct += int(
                 ((predicted_family == batch.target_reaction_family_idx) & non_stop).sum().item()
             )
