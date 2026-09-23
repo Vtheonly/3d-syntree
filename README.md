@@ -28,14 +28,11 @@ compounds that cannot conform to complex 3D binding cavities.
 **Markov Decision Process over a Reaction-Constrained Synthon Action Space with
 Equivariant Dihedral Torsion Guidance**:
 
-$
-\\pi_\\theta(a_t \\mid \\mathcal{P}, \\mathcal{M}_t)
-=
-P(r_t \\mid \\mathcal{P}, \\mathcal{M}_t)
-\\times
-P(B_t \\mid r_t, \\mathcal{P}, \\mathcal{M}_t)
-\\times
-p(\\phi_t \\mid B_t, r_t, \\mathcal{P}, \\mathcal{M}_t)
+$$
+\pi_\theta(a_t \mid \mathcal{P}, \mathcal{M}_t) = P(r_t \mid \mathcal{P}, \mathcal{M}_t) \times P(B_t \mid r_t, \mathcal{P}, \mathcal{M}_t) \times p(\phi_t \mid B_t, r_t, \mathcal{P}, \mathcal{M}_t)
+$$
+
+Instead of
 $
 
 Instead of placing unconstrained atoms, 3D-SynTree iteratively selects certified
@@ -119,32 +116,20 @@ flowchart TD
 
 **Pocket Encoder (SE(3)-equivariant PaiNN).** Scalar features
 $s_i \in \mathbb{R}^d$ and vector features $\vec{v}_i \in \mathbb{R}^{3 \times d}$
-are updated over edges within cutoff $r_{\\mathrm{cut}} = 5.0$ Å:
+are updated over edges within cutoff $r_{\mathrm{cut}} = 5.0$ Å:
 
-$
-\\vec{v}_i^{(l+1)},\\; s_i^{(l+1)}
-=
-\\operatorname{PaiNN\\!\\!-\\!Update}
-\\left(
- s_i^{(l)},
- \\vec{v}_i^{(l)},
- \\mathbf{X}_P
-\\right)
+$$\vec{v}_i^{(l+1)}, s_i^{(l+1)} = \text{PaiNN-Update}\left(s_i^{(l)}, \vec{v}_i^{(l)}, \mathbf{X}_P\right)$$
+
+**Synthon Selection
 $
 
 **Synthon Selection (reaction-masked cross-attention).** Given attachment
 handle representation $\mathbf{q}_u$ and catalog embeddings
 $\mathbf{E}_B \in \mathbb{R}^{K \times d}$:
 
-$
-\\mathbf{p}_{\\mathrm{synthon}}
-=
-\\operatorname{Softmax}
-\\left(
-\\frac{\\mathbf{q}_u \\mathbf{E}_B^T}{\\sqrt{d}}
-+
-\\mathbf{M}_{\\mathrm{rxn}}
-\\right)
+$$\mathbf{p}_{\text{synthon}} = \text{Softmax}\left(\frac{\mathbf{q}_u \mathbf{E}_B^T}{\sqrt{d}} + \mathbf{M}_{\text{rxn}}\right)$$
+
+where
 $
 
 where $\mathbf{M}_{\text{rxn}}(u, j) = 0$ if synthon $j$ can legally react with
@@ -153,37 +138,17 @@ handle $u$, and $-\infty$ otherwise.
 **Dihedral Torsion Head (continuous SO(2) parameterization).** Emits von Mises
 parameters $(\mu, \kappa)$:
 
-$
-p(\\phi \\mid \\mu,\\kappa)
-=
-\\frac{
-\\exp\\left(\\kappa\\cos(\\phi-\\mu)\\right)
-}{
-2\\pi I_0(\\kappa)
-}
+$$p(\phi \mid \mu, \kappa) = \frac{\exp(\kappa \cos(\phi - \mu))}{2\pi I_0(\kappa)}$$
+
+trained
 $
 
 trained via the exact circular negative log-likelihood (with a numerically
 stable $\log I_0$), plus an auxiliary soft Lennard-Jones steric clash penalty:
 
-$
-\\mathcal{L}_{\\mathrm{total}}
-=
-\\mathcal{L}_{\\mathrm{synthon}}
-+
-\\lambda_1\\mathcal{L}_{\\mathrm{torsion}}
-+
-\\lambda_2
-\\sum_{i\\in B_t}
-\\sum_{j\\in\\mathcal{P}}
-\\max\\left(
-0,
-(r_i+r_j)^2
--
-\\left\\|
-\\mathbf{x}_i(\\phi)-\\mathbf{x}_j
-\\right\\|^2
-\\right)
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{synthon}} + \lambda_1 \mathcal{L}_{\text{torsion}} + \lambda_2 \sum_{i \in B_t} \sum_{j \in \mathcal{P}} \max\left(0, (r_i + r_j)^2 - \|\mathbf{x}_i(\phi) - \mathbf{x}_j\|^2\right)$$
+
+**Atom provenance
 $
 
 **Atom provenance.** Reactions are executed with isotope-tagged reactants
