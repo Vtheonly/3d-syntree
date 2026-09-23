@@ -265,6 +265,8 @@ class CrossDockedDataset(InMemoryDataset):
                     target_core_handle_idx=torch.tensor(
                         core_handle_idx, dtype=torch.long
                     ),
+                    target_stop=torch.tensor(False, dtype=torch.bool),
+                    stop_mask=torch.tensor(0.0, dtype=torch.float32),
                     is_real_sample=torch.tensor(False, dtype=torch.bool),
                 )
             )
@@ -364,6 +366,8 @@ class CrossDockedDataset(InMemoryDataset):
                         HANDLE_NAMES.index(target.core_handle_type),
                         dtype=torch.long,
                     ),
+                    target_stop=torch.tensor(False, dtype=torch.bool),
+                    stop_mask=torch.tensor(0.0, dtype=torch.float32),
                     is_real_sample=torch.tensor(True, dtype=torch.bool),
                 )
             )
