@@ -332,6 +332,13 @@ def main(argv=None) -> int:
             collect_episode,
         )
 
+        # Deterministic Stage 2: seed every RNG before the first rollout so
+        # identical configs produce identical episodes, rewards and updates
+        # (the policy's action sampling draws from the global torch RNG).
+        from syntree.engine.trainer import seed_everything
+
+        seed_everything(int(config.get("system", {}).get("seed", 42)))
+
         # Stage-2 algorithm selection (tasklist RL modernisation): PPO
         # (default, unchanged), Trajectory-Balance GFlowNet (samples all
         # reward modes, P(x) ~ R(x)), or pairwise DPO.

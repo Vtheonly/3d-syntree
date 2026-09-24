@@ -524,3 +524,40 @@ class TestConfigValidationCLI:
         )
         assert proc.returncode == 2
         assert "mixed_precision" in proc.stderr
+
+
+class TestOfflineReproducibility:
+    """The offline pipeline must give bit-identical results for identical
+    seeds (same-trained-weights reproducibility contract)."""
+
+    def test_identical_seeds_identical_loss_history(self,
+                                                    tiny_config_with_assets,
+                                                    tmp_path):
+        import copy
+
+        from syntree.engine.trainer import ResilientTrainer
+        from syntree.models.policy import SynTreePolicy
+
+        offline = _stage_offline_dataset(tmp_path / "offline", 8, 4)
+
+        losses = []
+        for run in range(2):
+            cfg = _trainer_config(tiny_config_with_assets, offline)
+            cfg["huggingface"] = {"enabled": False}
+            cfg["training"]["max_epochs"] = 2
+            run_dir = tmp_path / f"run{run}"
+            torch.manual_seed(0)
+            model = SynTreePolicy(copy.deepcopy(cfg))
+            trainer = ResilientTrainer(
+                model, cfg, torch.device("cpu"),
+                output_dir=str(run_dir),
+            )
+            trainer.train()
+            with open(run_dir / "history.json") as f:
+                history = json.load(f)
+            losses.append([entry["train_loss"] for entry in history])
+
+        assert len(losses[0]) == len(losses[1]) == 2
+        assert losses[0] == losses[1], (
+            f"offline training is not reproducible: {losses[0]} vs {losses[1]}"
+        )
