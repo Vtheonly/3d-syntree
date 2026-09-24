@@ -1,0 +1,15 @@
+# Download Mode (Google Colab) configuration.
+# Usage: python download/download_mode.py --config configs/download.yaml
+workspace_dir: "./raw_workspace"
+hf_repo_id: "JJKK1212/3d-syntree-raw-sources"
+max_connections: 16
+chunk_size_mb: 1
+sources:
+  crossdocked:
+    url: "https://huggingface.co/datasets/Yukk1Zz/if3-crossdocked2020/resolve/main/crossdocked_pocket10.tar.gz"
+    filename: "crossdocked_pocket10.tar.gz"
+    # Legacy pin is 32 hex chars -> verified as MD5 (auto-detected).
+    sha256: "59416d06c2c366f6e05b91fdff8584f7"
+  enamine_catalog:
+    url: "https://huggingface.co/datasets/JJKK1212/3d-syntree-multidataset/resolve/main/enamine_3d_subset.parquet"
+    filename: "enamine_3d_subset.parquet"

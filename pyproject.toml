@@ -20,6 +20,7 @@ dependencies = [
     "scipy>=1.11.0",
     "huggingface-hub>=0.20.0",
     "tqdm>=4.66.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +29,7 @@ evaluation = ["aizynthfinder>=4.0.0"]
 hdf5 = ["h5py>=3.10.0"]
 
 [tool.setuptools.packages.find]
-include = ["syntree*"]
+include = ["syntree*", "core*", "download*", "craft*"]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]

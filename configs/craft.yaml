@@ -1,0 +1,19 @@
+# Craft Mode (Kaggle) configuration.
+# Usage: python craft/craft_mode.py --config configs/craft.yaml
+search_root: "/kaggle/input"
+output_dir: "/kaggle/working/3d-syntree-dataset"
+shard_mb: 500
+max_steps: 4
+structural_qc:
+  max_resolution_angstrom: 2.5
+  pocket_cutoff_radius: 10.0
+  min_pocket_atoms: 100
+chemical_qc:
+  min_mw: 150.0
+  max_mw: 800.0
+  min_heavy_atoms: 10
+splits:
+  train_fraction: 0.80
+  val_fraction: 0.10
+  test_fraction: 0.10
+  seed: 42
