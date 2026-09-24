@@ -8,8 +8,11 @@ The catalog enforces the curated Enamine REAL 3D-Diversity constraints:
 
 with one chemically necessary exemption: aryl halides and boronic acids
 (the mandatory coupling partners for Suzuki / Buchwald-Hartwig / SNAr
-chemistry, whose reacting atoms are aromatic by definition) are exempt
-from the Fsp3 floor. Without them the reaction grammar could not close.
+chemistry, whose reacting atoms are aromatic by definition) and sulfonyl
+chlorides (aryl sulfonyl chlorides - tosylates, benzene sulfonamides - are
+the workhorse precursors of the FDA-prevalent sulfonamide motif added in
+tasklist Priority 4) are exempt from the Fsp3 floor. Without them the
+reaction grammar could not close.
 """
 
 from __future__ import annotations
@@ -40,8 +43,9 @@ DEFAULT_MIN_FSP3 = 0.42
 DEFAULT_MAX_MW = 220.0
 
 # Handle types exempt from the Fsp3 floor (aryl coupling partners are
-# necessarily flat: [c]-X bonds are required by the reaction SMARTS).
-DEFAULT_EXEMPT_HANDLES = ("aryl_halide", "boronic_acid")
+# necessarily flat: [c]-X bonds are required by the reaction SMARTS;
+# sulfonyl chlorides cover the aryl sulfonamide precursors).
+DEFAULT_EXEMPT_HANDLES = ("aryl_halide", "boronic_acid", "sulfonyl_chloride")
 
 
 class SynthonCatalog:

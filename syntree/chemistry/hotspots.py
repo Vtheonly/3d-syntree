@@ -41,6 +41,12 @@ HANDLE_HOTSPOT_PREFERENCES: Dict[str, Tuple[str, ...]] = {
     "aryl_halide": ("hydrophobic",),
     "alkyne": ("hydrophobic",),
     "azide": ("positive", "donor"),
+    # tasklist Priority 4 handles: sulfonyl chlorides present a polarised,
+    # strongly electrophilic SO2 group whose two oxygens want donor/positive
+    # environments (mirroring carboxylic acids); sp3 alkyl halides are small
+    # greasy electrophiles that seed best into hydrophobic subpockets.
+    "sulfonyl_chloride": ("positive", "donor"),
+    "alkyl_halide": ("hydrophobic",),
 }
 
 

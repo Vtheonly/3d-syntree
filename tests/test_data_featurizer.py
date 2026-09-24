@@ -8,6 +8,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from syntree.data.featurizer import (
+    HANDLE_CLASS_SLOTS,
     HANDLE_FEATURE_DIM,
     MolecularFeaturizer,
 )
@@ -148,3 +149,72 @@ class TestSmilesParsing:
 
     def test_invalid(self):
         assert MolecularFeaturizer.smiles_to_mol("not_a_smiles") is None
+
+
+class TestHandleClassSlotLayout:
+    """Pinned layout of the 64-dim handle vector, including the extended
+    Priority-4 classes in the reserved padding slots 62/63 (see
+    syntree/data/featurizer.py for the documented legacy aliasing)."""
+
+    def test_feature_dim_unchanged(self):
+        assert HANDLE_FEATURE_DIM == 64
+
+    def test_legacy_class_slots_byte_compatible(self):
+        """Classes 0..7 keep their historical slots 52..59 exactly, even
+        though 56..59 alias the neighbour histogram (documented legacy)."""
+        legacy = {
+            "carboxylic_acid": 52,
+            "primary_secondary_amine": 53,
+            "aryl_halide": 54,
+            "boronic_acid": 55,
+            "aldehyde": 56,
+            "alcohol": 57,
+            "alkyne": 58,
+            "azide": 59,
+        }
+        assert HANDLE_CLASS_SLOTS == {
+            **legacy,
+            "sulfonyl_chloride": 62,
+            "alkyl_halide": 63,
+        }
+
+    def test_slot_map_covers_every_grammar_handle(self):
+        """Every handle the reaction grammar can detect must have a slot."""
+        from syntree.chemistry.reactions import HANDLE_NAMES
+        assert set(HANDLE_NAMES) == set(HANDLE_CLASS_SLOTS)
+
+    def test_sulfonyl_chloride_uses_reserved_slot(self, pocket_mol):
+        mol = Chem.MolFromSmiles("CS(=O)(=O)Cl")
+        feats = MolecularFeaturizer.featurize_handle(mol, [0], "sulfonyl_chloride")
+        assert feats.shape == (64,)
+        assert feats[62].item() == 1.0
+        assert feats[63].item() == 0.0
+
+    def test_alkyl_halide_uses_reserved_slot(self):
+        mol = Chem.MolFromSmiles("CCBr")
+        feats = MolecularFeaturizer.featurize_handle(mol, [1], "alkyl_halide")
+        assert feats[63].item() == 1.0
+        assert feats[62].item() == 0.0
+
+    def test_legacy_handle_slots_unchanged(self):
+        """An amine handle still writes slot 53 (not 62/63): old data and
+        new data agree byte-for-byte for legacy handle classes."""
+        mol = Chem.MolFromSmiles("C1CC(N)CC1")
+        feats = MolecularFeaturizer.featurize_handle(
+            mol, [2], "primary_secondary_amine"
+        )
+        assert feats[53].item() == 1.0
+        assert feats[62].item() == 0.0
+        assert feats[63].item() == 0.0
+
+    def test_extended_slots_never_collide_with_neighbour_histogram(self):
+        """Slots 62/63 must not receive neighbour-count contributions."""
+        # Carbon tetrachloride: 4 halogen neighbours + alkyl halide class.
+        # (Atom index 1 is the carbon; SMILES atom 0 is the first Cl.)
+        mol = Chem.MolFromSmiles("ClC(Cl)(Cl)Cl")
+        feats = MolecularFeaturizer.featurize_handle(mol, [1], "alkyl_halide")
+        # 4 halogen neighbours land in the histogram slot 60 only.
+        assert feats[60].item() == 4.0
+        # Slot 63 holds the pure one-hot; slot 62 untouched.
+        assert feats[63].item() == 1.0
+        assert feats[62].item() == 0.0

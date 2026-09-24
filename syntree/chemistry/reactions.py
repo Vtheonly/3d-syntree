@@ -1,7 +1,7 @@
 """SMARTS reaction templates, reactive-handle detection, and deterministic
 forward-reaction execution with atom-level provenance tracking.
 
-The engine implements 8 robust medicinal-chemistry reaction classes. Every
+The engine implements 10 robust medicinal-chemistry reaction classes. Every
 ``apply_reaction`` call tags reactant atoms with unique **isotope** labels
 (core scaffold: ``1000 + i``; incoming synthon: ``2000 + j``) which RDKit
 propagates onto product atoms unchanged. Isotopes are used instead of
@@ -10,6 +10,15 @@ during ``RunReactants``, destroying that provenance. The isotope tags give
 exact atom correspondences even when the reaction deletes leaving groups
 (e.g. the water lost in amide coupling), enabling faithful 3D coordinate
 inheritance downstream; tags are cleared from the returned product.
+
+Grammar evolution (docs/tasklist.md Priority 4): ``sulfonamide_coupling``
+and ``sp3_alkylation`` were appended so the R-SO2-NH-R' junction (the most
+common motif in FDA-approved drugs: celecoxib, sildenafil, darunavir, ...)
+and N-alkylation chemistry become reachable. Both new reactions and their
+handles are *appended* (never inserted) so every existing index-based
+encoding (``REACTION_FAMILY_NAMES``, ``HANDLE_NAMES``, dataset
+``target_reaction_family_idx`` / ``target_core_handle_idx`` values)
+remains valid for previously built datasets and shards.
 """
 
 from __future__ import annotations
@@ -45,10 +54,23 @@ REACTION_TEMPLATES: Dict[str, str] = {
     "buchwald_hartwig": "[c:1][Br,I,Cl].[N;!H0;!H3:2]>>[c:1][N:2]",
     "esterification": "[C:1](=[O:3])[OH].[O;H1;!$(O[B]):2]>>[C:1](=[O:3])[O:2]",
     "click_triazole": "[C:1]C#C.[N:2]=[N+]=[N-]>>[C:1]c1cn([N:2])nn1",
+    # -- tasklist Priority 4 additions (appended; index compatibility) ------
+    # Sulfonamide coupling: sulfonyl chloride + primary/secondary amine.
+    # Both sulfonyl oxygens are mapped so their 3D positions survive into
+    # the product and the SO2 plane stays anchored during constrained
+    # embedding. Unmapped Cl is the deleted leaving group (HCl).
+    "sulfonamide_coupling": "[S:1](=[O:3])(=[O:4])[Cl].[N;!H0;!H3;!$(NC=O):2]>>[S:1](=[O:3])(=[O:4])[N:2]",
+    # SN2-type sp3 alkylation: primary/secondary alkyl halide + amine.
+    # [C:1] is an aliphatic (sp3) carbon; the halogen is the leaving group.
+    "sp3_alkylation": "[C:1][Br,I,Cl].[N;!H0;!H3;!$(NC=O):2]>>[C:1][N:2]",
 }
 
 # SMARTS identifying reactive attachment points (handles) on a molecule.
 # H counts use negated predicates (!H0/!H3) for parser compatibility.
+#
+# APPEND-ONLY: handle indices are baked into dataset columns
+# (``target_core_handle_idx``) and the featurizer's class-slot table, so new
+# handles must be added at the END of this mapping.
 HANDLE_SMARTS: Dict[str, str] = {
     "carboxylic_acid": "[C](=O)[OH]",
     "primary_secondary_amine": "[N;!H0;!H3;!$(NC=O)]",
@@ -58,6 +80,15 @@ HANDLE_SMARTS: Dict[str, str] = {
     "alcohol": "[O;!H0;!$(O[B]);!$(OC=O)]",
     "alkyne": "[C]#[CH]",
     "azide": "[N]=[N+]=[N-]",
+    # -- tasklist Priority 4 additions -------------------------------------
+    # Sulfonyl chloride: R-S(=O)(=O)-Cl. The matched sulfur is the junction
+    # atom (match[0]), exactly like the carbon of carboxylic_acid.
+    "sulfonyl_chloride": "[S](=O)(=O)[Cl]",
+    # Alkyl halide: sp3 carbon bound to Br/I/Cl. CX4 (total degree including
+    # hydrogens) excludes acyl chlorides (CX3), vinyl halides (CX3) and aryl
+    # halides (lowercase [c]); benzyl halides still match, which is correct
+    # SN2 chemistry. The matched carbon is the junction atom.
+    "alkyl_halide": "[CX4][Br,I,Cl]",
 }
 
 # The two complementary reactant slots for every reaction. ``side_a`` is the
@@ -71,6 +102,8 @@ REACTION_SIDES: Dict[str, Tuple[str, str]] = {
     "buchwald_hartwig": ("aryl_halide", "primary_secondary_amine"),
     "esterification": ("carboxylic_acid", "alcohol"),
     "click_triazole": ("alkyne", "azide"),
+    "sulfonamide_coupling": ("sulfonyl_chloride", "primary_secondary_amine"),
+    "sp3_alkylation": ("alkyl_halide", "primary_secondary_amine"),
 }
 
 # Handle -> reaction -> set of partner handle types that a synthon must
@@ -94,6 +127,12 @@ HANDLE_TO_REACTIONS: Dict[str, List[str]] = {
 # Reaction-family classes used by the policy. SNAr and Buchwald-Hartwig are
 # deliberately one family because the final product graph does not contain
 # enough information to distinguish which experimental conditions were used.
+#
+# APPEND-ONLY: family indices are baked into the policy's reaction head
+# (output width) and dataset ``target_reaction_family_idx`` columns, so the
+# first seven families MUST keep their order. New families (sulfonamide,
+# sp3-alkylation) are appended at indices 7 and 8; old datasets and shards
+# therefore stay index-compatible.
 REACTION_FAMILY_MEMBERS: Dict[str, Tuple[str, ...]] = {
     "amide_coupling": ("amide_coupling",),
     "reductive_amination": ("reductive_amination",),
@@ -102,6 +141,8 @@ REACTION_FAMILY_MEMBERS: Dict[str, Tuple[str, ...]] = {
     "urea_formation": ("urea_formation",),
     "esterification": ("esterification",),
     "click_triazole": ("click_triazole",),
+    "sulfonamide_coupling": ("sulfonamide_coupling",),
+    "sp3_alkylation": ("sp3_alkylation",),
 }
 REACTION_FAMILY_NAMES: Tuple[str, ...] = tuple(REACTION_FAMILY_MEMBERS.keys())
 REACTION_FAMILY_FOR: Dict[str, str] = {
@@ -124,8 +165,10 @@ _SYNTHON_MAP_OFFSET = 2000
 # stronger one sits idle).
 HANDLE_REACTIVITY_TIERS: Dict[str, int] = {
     "primary_secondary_amine": 1,  # aliphatic amines (pKa ~10.5)
+    "sulfonyl_chloride": 2,       # hyper-reactive electrophile (amines react on contact)
     "carboxylic_acid": 3,          # strong electrophile handle
     "aldehyde": 3,                 # strong electrophile handle
+    "alkyl_halide": 3,             # SN2 electrophile (benzyl/primary >> tertiary)
     "alcohol": 4,                  # weak nucleophile (esterification only)
     "alkyne": 4,
     "azide": 4,
@@ -209,7 +252,7 @@ def _clear_tags(mol: Chem.Mol) -> Chem.Mol:
 
 
 class ReactionEngine:
-    """Executes the 8 certified reactions with full atom provenance.
+    """Executes the 10 certified reactions with full atom provenance.
 
     The engine is stateless apart from the compiled SMARTS objects, and is
     therefore safe to share across threads and processes.
@@ -468,6 +511,28 @@ class ReactionEngine:
         return None
 
 
+def grammar_fingerprint() -> str:
+    """Stable 8-hex fingerprint of the reaction grammar.
+
+    Hashes the SMARTS templates **and** the retro-family tuple so that any
+    grammar change (new reaction, modified SMARTS, new retro family)
+    automatically invalidates processed dataset caches built under the old
+    grammar. Used by :mod:`syntree.data.crossdocked` in its processed-file
+    names to guarantee that stale caches can never be silently reused after
+    a grammar upgrade (data-integrity guard).
+    """
+    import hashlib
+
+    try:
+        from syntree.data.fragmenter import SUPPORTED_RETRO_FAMILIES
+    except Exception:  # pragma: no cover - import guard for standalone use
+        SUPPORTED_RETRO_FAMILIES = ()
+    payload = repr(
+        (tuple(sorted(REACTION_TEMPLATES.items())), tuple(SUPPORTED_RETRO_FAMILIES))
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8]
+
+
 __all__ = [
     "REACTION_TEMPLATES",
     "HANDLE_SMARTS",
@@ -479,6 +544,7 @@ __all__ = [
     "REACTION_FAMILY_FOR",
     "HANDLE_NAMES",
     "HANDLE_REACTIVITY_TIERS",
+    "grammar_fingerprint",
     "HandleInfo",
     "ReactionResult",
     "ReactionEngine",

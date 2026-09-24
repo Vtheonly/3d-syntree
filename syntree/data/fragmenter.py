@@ -34,9 +34,18 @@ from syntree.chemistry.reactions import (
 # Urea formation and click chemistry are intentionally excluded because the
 # simple product graph does not preserve enough information to reconstruct
 # the actual two catalog precursors without extra reaction provenance.
+#
+# APPEND-ONLY family ordering: amide/sulfonamide/reductive_amination/
+# sp3_alkylation precede the cross-coupling families so ordinary C-N and
+# S-N disconnections are tried before metal-catalysed ones. Existing
+# accepted targets keep their family assignment because the new families
+# only *add* candidate disconnects (sulfonamide S-N bonds had no matching
+# family before; C-N bonds still try reductive_amination first).
 SUPPORTED_RETRO_FAMILIES = (
     "amide_coupling",
+    "sulfonamide_coupling",
     "reductive_amination",
+    "sp3_alkylation",
     "suzuki_coupling",
     "aryl_amination",
     "esterification",
@@ -228,6 +237,29 @@ class ReactionConstrainedFragmenter:
         return tuple(result)  # type: ignore[return-value]
 
     @staticmethod
+    def _fold_explicit_hydrogens(
+        fragment: Chem.Mol, endpoint: int
+    ) -> Tuple[Chem.Mol, int]:
+        """Fold explicit hydrogen neighbours into implicit H counts.
+
+        Ligands loaded from SDF/MOL2 sometimes carry explicit hydrogens. The
+        handle decorations below add atoms/bonds assuming implicit-H valence
+        bookkeeping: decorating an explicit-H CH2 endpoint as an aldehyde
+        (=O) would create a pentavalent carbon and silently fail. Folding Hs
+        first is index-preserving for heavy atoms (``Chem.RemoveHs`` keeps
+        heavy-atom order), so the returned endpoint stays valid.
+        """
+        if not any(atom.GetAtomicNum() == 1 for atom in fragment.GetAtoms()):
+            return fragment, endpoint
+        heavy_before = sum(
+            1
+            for atom in fragment.GetAtoms()
+            if atom.GetAtomicNum() > 1 and atom.GetIdx() < endpoint
+        )
+        folded = Chem.RemoveHs(Chem.Mol(fragment))
+        return folded, heavy_before
+
+    @staticmethod
     def _decorate_fragment(
         fragment: Chem.Mol, endpoint: int, handle_type: str
     ) -> Tuple[Chem.Mol, ...]:
@@ -235,9 +267,15 @@ class ReactionConstrainedFragmenter:
 
         The product graph does not preserve which aryl halide leaving group was
         used experimentally, so aryl_halide returns Br/Cl/I variants and the
-        caller matches them against the actual catalog. Other handles have a
-        unique graph reconstruction.
+        caller matches them against the actual catalog. The same applies to the
+        sp3 alkyl halide (tasklist Priority 4). Other handles have a unique
+        graph reconstruction.
         """
+        # Explicit-H ligands break implicit-valence decorations (e.g. the
+        # aldehyde =O would over-valence a CH2 endpoint): fold Hs first.
+        fragment, endpoint = ReactionConstrainedFragmenter._fold_explicit_hydrogens(
+            fragment, endpoint
+        )
         endpoint_atom = fragment.GetAtomWithIdx(endpoint)
         if handle_type == "aryl_halide":
             if not endpoint_atom.GetIsAromatic():
@@ -252,6 +290,35 @@ class ReactionConstrainedFragmenter:
                 try:
                     Chem.SanitizeMol(mol)
                 except Exception:
+                    continue
+                variants.append(mol)
+            return tuple(variants)
+
+        if handle_type == "alkyl_halide":
+            # The cut C-N bond's carbon endpoint must be an aliphatic sp3
+            # carbon (the alkyl_halide SMARTS [CX4][Br,I,Cl] is re-verified
+            # implicitly because only decorated molecules that re-detect the
+            # handle can appear in the catalog).
+            if endpoint_atom.GetIsAromatic() or endpoint_atom.GetAtomicNum() != 6:
+                return ()
+            variants: List[Chem.Mol] = []
+            for atomic_num in (35, 17, 53):
+                rw = Chem.RWMol(fragment)
+                xi = rw.AddAtom(Chem.Atom(atomic_num))
+                rw.AddBond(endpoint, xi, Chem.BondType.SINGLE)
+                mol = rw.GetMol()
+                mol.UpdatePropertyCache(False)
+                try:
+                    Chem.SanitizeMol(mol)
+                except Exception:
+                    continue
+                # Guard: the decorated carbon must actually satisfy the
+                # alkyl-halide handle (sp3, CX4). Vinyl/benzyl edge cases
+                # are handled by the SMARTS itself.
+                from syntree.chemistry.reactions import HANDLE_SMARTS
+
+                pattern = Chem.MolFromSmarts(HANDLE_SMARTS["alkyl_halide"])
+                if not mol.HasSubstructMatch(pattern):
                     continue
                 variants.append(mol)
             return tuple(variants)
@@ -277,6 +344,16 @@ class ReactionConstrainedFragmenter:
             for _ in range(2):
                 oi = rw.AddAtom(Chem.Atom(8))
                 rw.AddBond(bi, oi, Chem.BondType.SINGLE)
+        elif handle_type == "sulfonyl_chloride":
+            # Cut S-N bond: re-attach Cl onto the sulfur endpoint to rebuild
+            # the sulfonyl chloride precursor. Only a genuine sulfonamide S
+            # (already bearing two double-bonded oxygens) can re-detect as
+            # the sulfonyl_chloride handle, which the exact-replay check
+            # enforces anyway.
+            if endpoint_atom.GetAtomicNum() != 16:
+                return ()
+            ci = rw.AddAtom(Chem.Atom(17))
+            rw.AddBond(endpoint, ci, Chem.BondType.SINGLE)
         elif handle_type in ("primary_secondary_amine", "alcohol"):
             pass
         else:

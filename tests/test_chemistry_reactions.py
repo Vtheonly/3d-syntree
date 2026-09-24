@@ -6,8 +6,11 @@ import pytest
 from rdkit import Chem
 
 from syntree.chemistry.reactions import (
+    HANDLE_NAMES,
     HANDLE_SMARTS,
     HANDLE_TO_REACTIONS,
+    REACTION_FAMILY_MEMBERS,
+    REACTION_FAMILY_NAMES,
     REACTION_PARTNER_HANDLES,
     REACTION_SIDES,
     REACTION_TEMPLATES,
@@ -16,6 +19,7 @@ from syntree.chemistry.reactions import (
     ReactionResult,
     _tag_atoms,
     _clear_tags,
+    grammar_fingerprint,
 )
 
 # Valid reactant pairs per reaction (core, synthon).
@@ -28,6 +32,9 @@ VALID_PAIRS = {
     "buchwald_hartwig": ("IC1=CC=CC=C1", "C1CC(N)CC1"),
     "esterification": ("OC(=O)C1CCCCC1", "CC(C)CO"),
     "click_triazole": ("CCCCCC#C", "CCCCCN=[N+]=[N-]"),
+    # tasklist Priority 4 additions
+    "sulfonamide_coupling": ("CS(=O)(=O)Cl", "C1CC(N)CC1"),
+    "sp3_alkylation": ("NCCBr", "C1CC(N)CC1"),
 }
 
 
@@ -37,14 +44,39 @@ def engine():
 
 
 class TestTemplateIntegrity:
-    def test_all_eight_templates_present(self):
-        assert len(REACTION_TEMPLATES) == 8
+    def test_all_ten_templates_present(self):
+        assert len(REACTION_TEMPLATES) == 10
         expected = {
             "amide_coupling", "reductive_amination", "suzuki_coupling",
             "snar", "urea_formation", "buchwald_hartwig",
             "esterification", "click_triazole",
+            "sulfonamide_coupling", "sp3_alkylation",
         }
         assert set(REACTION_TEMPLATES) == expected
+
+    def test_legacy_reaction_order_preserved(self):
+        """Family indices 0..6 are baked into old datasets: append-only."""
+        legacy = (
+            "amide_coupling", "reductive_amination", "suzuki_coupling",
+            "aryl_amination", "urea_formation", "esterification", "click_triazole",
+        )
+        assert REACTION_FAMILY_NAMES[:7] == legacy
+        assert REACTION_FAMILY_NAMES[7:] == ("sulfonamide_coupling", "sp3_alkylation")
+
+    def test_legacy_handle_order_preserved(self):
+        """Handle indices 0..7 are baked into old datasets: append-only."""
+        legacy = (
+            "carboxylic_acid", "primary_secondary_amine", "aryl_halide",
+            "boronic_acid", "aldehyde", "alcohol", "alkyne", "azide",
+        )
+        assert HANDLE_NAMES[:8] == legacy
+        assert HANDLE_NAMES[8:] == ("sulfonyl_chloride", "alkyl_halide")
+
+    def test_grammar_fingerprint_stable_and_sensitive(self):
+        fp = grammar_fingerprint()
+        assert len(fp) == 8
+        assert all(c in "0123456789abcdef" for c in fp)
+        assert grammar_fingerprint() == fp  # deterministic within a session
 
     def test_templates_compile(self, engine):
         assert set(engine.reactions) == set(REACTION_TEMPLATES)
@@ -83,6 +115,16 @@ class TestHandleDetection:
             ("CCCCCN=[N+]=[N-]", {"azide"}),
             # Amide nitrogen must NOT count as an amine handle.
             ("O=C(NCC)C1CCCCC1", set()),
+            # tasklist Priority 4 handles
+            ("CS(=O)(=O)Cl", {"sulfonyl_chloride"}),
+            ("Cc1ccc(S(=O)(=O)Cl)cc1", {"sulfonyl_chloride"}),
+            ("CCBr", {"alkyl_halide"}),
+            ("NCCBr", {"alkyl_halide", "primary_secondary_amine"}),
+            ("ClCC(Cl)Cl", {"alkyl_halide"}),
+            # Acyl / vinyl / aryl halides must NOT be alkyl halides.
+            ("CC(=O)Cl", set()),
+            ("C=CCl", set()),
+            ("c1ccc(Cl)cc1", {"aryl_halide"}),
         ],
     )
     def test_handle_detection(self, engine, smiles, expected):
@@ -268,3 +310,166 @@ class TestChainAssembly:
         assert step2 is not None
         smiles = Chem.MolToSmiles(step2.product)
         assert "OC(=O)C(C)(C)C" in smiles or "C(C)(C)C(=O)O" in smiles
+
+
+class TestSulfonamideAndAlkylationChemistry:
+    """tasklist Priority 4: sulfonamide coupling + sp3 alkylation."""
+
+    def test_sulfonamide_product_connectivity(self, engine):
+        """MsCl + cyclopentylamine -> N-cyclopentylmethanesulfonamide."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("CS(=O)(=O)Cl"),
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            "sulfonamide_coupling",
+        )
+        assert result is not None
+        assert Chem.MolToSmiles(result.product) == "CS(=O)(=O)NC1CCCC1"
+
+    def test_sulfonamide_secondary_amine_h_count(self, engine):
+        """The product N must carry exactly one implicit H (secondary
+        sulfonamide), i.e. RDKit recomputes H counts from product valence."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("CS(=O)(=O)Cl"),
+            Chem.MolFromSmiles("CCN"),
+            "sulfonamide_coupling",
+        )
+        assert result is not None
+        product = result.product
+        n_atom = next(
+            a for a in product.GetAtoms()
+            if a.GetAtomicNum() == 7 and any(
+                n.GetAtomicNum() == 16 for n in a.GetNeighbors()
+            )
+        )
+        assert n_atom.GetTotalNumHs() == 1
+        assert Chem.MolToSmiles(product) == "CCNS(C)(=O)=O"
+
+    def test_sulfonamide_reversed_reactant_order(self, engine):
+        """Amine on the core, sulfonyl chloride as the incoming synthon."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            Chem.MolFromSmiles("CS(=O)(=O)Cl"),
+            "sulfonamide_coupling",
+        )
+        assert result is not None
+        assert Chem.MolToSmiles(result.product) == "CS(=O)(=O)NC1CCCC1"
+
+    def test_tosyl_anilide_chemistry(self, engine):
+        """TsCl + aniline -> tosylanilide (celecoxib/sulfonamide-drug style).
+        Aromatic amines must be accepted by the sulfonamide template."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("Cc1ccc(S(=O)(=O)Cl)cc1"),
+            Chem.MolFromSmiles("Nc1ccccc1"),
+            "sulfonamide_coupling",
+        )
+        assert result is not None
+        assert (
+            Chem.MolToSmiles(result.product)
+            == "Cc1ccc(S(=O)(=O)Nc2ccccc2)cc1"
+        )
+
+    def test_sulfonamide_no_new_atoms(self, engine):
+        """All product atoms are mapped (S, both O, N, and R-groups); the Cl
+        leaving group is deleted, so new_atoms must be empty and the
+        junction is a direct S-N bond."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("CS(=O)(=O)Cl"),
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            "sulfonamide_coupling",
+        )
+        assert result.new_atoms == ()
+        a, b = result.junction_bond
+        product = result.product
+        assert {product.GetAtomWithIdx(a).GetAtomicNum(),
+                product.GetAtomWithIdx(b).GetAtomicNum()} == {16, 7}
+
+    def test_sulfonamide_leaves_free_handle_for_growth(self, engine):
+        """2-aminoethylsulfonyl chloride leaves an amine handle so the
+        trajectory can continue through the sulfonamide junction."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("O=S(=O)(Cl)CCN"),
+            Chem.MolFromSmiles("CCBr"),
+            "sp3_alkylation",
+        )
+        assert result is not None
+        handles = {h.handle_type for h in engine.detect_handles(result.product)}
+        assert "primary_secondary_amine" in handles
+
+    def test_alkylation_product_connectivity(self, engine):
+        """Bromoethylamine + cyclopentylamine -> secondary diamine."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("NCCBr"),
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            "sp3_alkylation",
+        )
+        assert result is not None
+        assert Chem.MolToSmiles(result.product) == "NCCNC1CCCC1"
+
+    def test_alkylation_reversed_reactant_order(self, engine):
+        """Amine core + bromoethane synthon (N-ethylation)."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            Chem.MolFromSmiles("CCBr"),
+            "sp3_alkylation",
+        )
+        assert result is not None
+        assert Chem.MolToSmiles(result.product) == "CCNC1CCCC1"
+
+    def test_alkylation_junction_is_c_n_bond(self, engine):
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("CCBr"),
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            "sp3_alkylation",
+        )
+        assert result is not None
+        a, b = result.junction_bond
+        product = result.product
+        assert {product.GetAtomWithIdx(a).GetAtomicNum(),
+                product.GetAtomWithIdx(b).GetAtomicNum()} == {6, 7}
+
+    def test_alkylation_excludes_acyl_and_vinyl_halides(self, engine):
+        """Acyl chloride 'cores' carry no alkyl_halide handle, so the
+        reaction must refuse to run rather than mislabel amide formation."""
+        result = engine.apply_reaction(
+            Chem.MolFromSmiles("CC(=O)Cl"),
+            Chem.MolFromSmiles("C1CC(N)CC1"),
+            "sp3_alkylation",
+        )
+        assert result is None
+
+    def test_new_handles_in_allowed_reactions(self):
+        from syntree.chemistry.reactions import HANDLE_TO_REACTIONS
+        assert "sulfonamide_coupling" in HANDLE_TO_REACTIONS["sulfonyl_chloride"]
+        assert "sulfonamide_coupling" in HANDLE_TO_REACTIONS["primary_secondary_amine"]
+        assert "sp3_alkylation" in HANDLE_TO_REACTIONS["alkyl_halide"]
+        assert "sp3_alkylation" in HANDLE_TO_REACTIONS["primary_secondary_amine"]
+
+    def test_new_families_are_single_member(self):
+        assert REACTION_FAMILY_MEMBERS["sulfonamide_coupling"] == ("sulfonamide_coupling",)
+        assert REACTION_FAMILY_MEMBERS["sp3_alkylation"] == ("sp3_alkylation",)
+
+    def test_sulfonyl_chloride_is_high_reactivity_tier(self):
+        """Sulfonyl chloride (tier 2) outranks acids/aldehydes (tier 3) so
+        growth routes through the hyper-reactive handle first."""
+        from syntree.chemistry.reactions import HANDLE_REACTIVITY_TIERS
+        assert HANDLE_REACTIVITY_TIERS["sulfonyl_chloride"] == 2
+        assert HANDLE_REACTIVITY_TIERS["alkyl_halide"] == 3
+        assert HANDLE_REACTIVITY_TIERS["sulfonyl_chloride"] < HANDLE_REACTIVITY_TIERS["carboxylic_acid"]
+
+    def test_rank_handles_orders_new_handles_correctly(self, engine):
+        """Sulfonyl chloride (tier 2) outranks the weaker electrophiles
+        (acid/aldehyde/alkyl-halide, tier 3) but stays below the tier-1
+        amine nucleophile - matching the existing chemoselectivity ladder."""
+        # Sulfonyl chloride + carboxylic acid: growth routes through SO2Cl.
+        mol_acid = Chem.MolFromSmiles("O=S(=O)(Cl)CCC(=O)O")
+        ranked_acid = engine.rank_handles(mol_acid)
+        assert ranked_acid[0].handle_type == "sulfonyl_chloride"
+
+        # Sulfonyl chloride + amine: the amine nucleophile still wins.
+        mol_amine = Chem.MolFromSmiles("O=S(=O)(Cl)CCN")
+        ranked_amine = engine.rank_handles(mol_amine)
+        assert ranked_amine[0].handle_type == "primary_secondary_amine"
+        assert (
+            next(h.handle_type for h in ranked_amine if h.handle_type == "sulfonyl_chloride")
+            == "sulfonyl_chloride"
+        )

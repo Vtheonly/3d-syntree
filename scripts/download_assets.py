@@ -90,6 +90,31 @@ _BIFUNCTIONAL_SYNTHONS = [
     ("OB(O)c1ccc(N)cc1", "boronic_acid"),     # boronic acid + amine
 ]
 
+# --- tasklist Priority 4 families: sulfonamide + sp3-alkylation chemistry ---
+# Sulfonyl chlorides (Fsp3-exempt when aryl: they are the precursors of the
+# most common FDA motif, R-SO2-NH-R') and primary/secondary alkyl halides
+# (SN2 electrophiles). Includes multifunctional entries so growth can pass
+# *through* the new junctions instead of always terminating on them.
+_SULFONAMIDE_ALKYLATION_SYNTHONS = [
+    # sulfonyl chlorides (mono-functional caps)
+    ("CS(=O)(=O)Cl", "sulfonyl_chloride"),            # methanesulfonyl chloride (MsCl)
+    ("CCS(=O)(=O)Cl", "sulfonyl_chloride"),           # ethanesulfonyl chloride
+    ("O=S(=O)(Cl)c1ccccc1", "sulfonyl_chloride"),     # benzenesulfonyl chloride (aryl)
+    ("Cc1ccc(S(=O)(=O)Cl)cc1", "sulfonyl_chloride"),  # p-toluenesulfonyl chloride (TsCl)
+    # sulfonyl chlorides with a second handle (growth continues)
+    ("O=S(=O)(Cl)CCN", "sulfonyl_chloride"),          # 2-aminoethylsulfonyl chloride (amine)
+    ("O=S(=O)(Cl)CCCO", "sulfonyl_chloride"),         # 3-hydroxypropylsulfonyl chloride (alcohol)
+    # alkyl halides (mono-functional caps)
+    ("CCBr", "alkyl_halide"),                         # bromoethane
+    ("BrCCC", "alkyl_halide"),                         # 1-bromopropane
+    ("CCCCI", "alkyl_halide"),                         # 1-iodobutane
+    ("ClCC(C)(C)C", "alkyl_halide"),                   # neopentyl chloride-ish cap
+    # alkyl halides with a second handle (growth continues)
+    ("NCCBr", "alkyl_halide"),                         # 2-bromoethylamine (amine)
+    ("OCCBr", "alkyl_halide"),                         # 2-bromoethanol (alcohol)
+    ("N=[N+]=[N-]CCCBr", "alkyl_halide"),              # 3-bromopropyl azide (azide)
+]
+
 # --- aryl coupling partners (Fsp3-exempt: aromatic by chemistry) ----------
 _ARYL_SYNTHONS = [
     ("BrC1=CC=C(Cl)C=C1", "aryl_halide"),
@@ -141,7 +166,12 @@ def build_synthetic_catalog(output_dir: str, num_copies: int = 40) -> str:
 
     engine = ReactionEngine()
     rows = []
-    all_synthons = _SP3_RICH_SYNTHONS + _BIFUNCTIONAL_SYNTHONS + _ARYL_SYNTHONS
+    all_synthons = (
+        _SP3_RICH_SYNTHONS
+        + _BIFUNCTIONAL_SYNTHONS
+        + _SULFONAMIDE_ALKYLATION_SYNTHONS
+        + _ARYL_SYNTHONS
+    )
     for base_idx, (smiles, handle) in enumerate(all_synthons):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
@@ -172,11 +202,13 @@ def build_synthetic_catalog(output_dir: str, num_copies: int = 40) -> str:
 
     n_sp3 = len(_SP3_RICH_SYNTHONS) * num_copies
     n_bifunctional = len(_BIFUNCTIONAL_SYNTHONS) * num_copies
+    n_sulf_alkyl = len(_SULFONAMIDE_ALKYLATION_SYNTHONS) * num_copies
     n_aryl = len(_ARYL_SYNTHONS) * num_copies
     print(f"  Synthetic Enamine 3D catalog: {catalog_path}")
     print(
         f"    {len(df)} synthons ({n_sp3} sp3-rich + "
-        f"{n_bifunctional} multifunctional + {n_aryl} aryl partners)"
+        f"{n_bifunctional} multifunctional + {n_sulf_alkyl} sulfonamide/alkylation + "
+        f"{n_aryl} aryl partners)"
     )
     return catalog_path
 

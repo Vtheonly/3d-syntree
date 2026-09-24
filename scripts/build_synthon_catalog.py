@@ -53,7 +53,7 @@ def main(argv=None) -> int:
                         help="development/smoke-test mode; disables the size gate")
     parser.add_argument(
         "--exempt-handles",
-        default="aryl_halide,boronic_acid",
+        default="aryl_halide,boronic_acid,sulfonyl_chloride",
         help="comma-separated handles exempt from the Fsp3 floor",
     )
     args = parser.parse_args(argv)

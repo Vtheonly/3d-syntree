@@ -44,8 +44,22 @@ GLOBAL_FEATURE_DIM = 4
 #   [26, 34)  one-hot formal charge in [-3, +4]
 #   [34, 44)  one-hot total valence
 #   [44, 52)  one-hot num H neighbours
-#   [52, 56)  handle-class one-hot start (classes 0..7)
-#   [56, 64)  neighbour element histogram (C, N, O, S, halogens, other)
+#   [52, 60)  handle-class one-hot (legacy classes 0..7)
+#   [56, 62)  neighbour element histogram (C, N, O, S, halogens, other)
+#   [62, 64)  extended handle classes 8..9 (sulfonyl_chloride, alkyl_halide)
+#
+# KNOWN LEGACY ALIASING (kept deliberately for data compatibility): the
+# original layout booked the 8-wide handle-class one-hot at offset 52 while
+# the neighbour element histogram starts at 56, so classes 4..7 (aldehyde,
+# alcohol, alkyne, azide) overlap slots 56..59 with the C/N/O/S neighbour
+# counts. Every existing dataset shard, processed cache and checkpoint was
+# produced under those semantics, so re-mapping the slots would silently
+# change the meaning of stored 64-dim vectors. The two tasklist-Priority-4
+# handle classes are therefore placed in the two genuinely unused padding
+# slots 62..63, which keeps ``HANDLE_FEATURE_DIM`` at 64 and leaves every
+# historical byte identical. In newly *written* samples slots 62/63 are
+# simply newly-informative (weights for always-zero inputs receive zero
+# gradient, so old checkpoints transition gracefully).
 _ATOMIC_NUM_SLOTS = 16
 _DEGREE_OFFSET = 16
 _AROMATIC_OFFSET = 24
@@ -54,7 +68,9 @@ _VALENCE_OFFSET = 34
 _NUMH_OFFSET = 44
 _HANDLE_CLASS_OFFSET = 52
 _NEIGHBOR_OFFSET = 56
+_EXTENDED_HANDLE_CLASS_OFFSET = 62
 
+# Legacy handle classes 0..7 (order frozen: slots 52..59 in stored data).
 _HANDLE_CLASSES = [
     "carboxylic_acid",
     "primary_secondary_amine",
@@ -65,6 +81,26 @@ _HANDLE_CLASSES = [
     "alkyne",
     "azide",
 ]
+
+# Extended handle classes 8..9 -> unused padding slots 62..63 (see layout
+# note above). Appending further handle classes is NOT possible without
+# widening HANDLE_FEATURE_DIM (breaking stored data); use the reserved
+# slots sparingly.
+_EXTENDED_HANDLE_CLASSES = [
+    "sulfonyl_chloride",
+    "alkyl_halide",
+]
+
+# Explicit handle-name -> slot map. Legacy classes keep their historical
+# (aliased) slots; extended classes take the padding slots.
+_HANDLE_CLASS_SLOTS = {
+    **{name: _HANDLE_CLASS_OFFSET + i for i, name in enumerate(_HANDLE_CLASSES)},
+    **{name: _EXTENDED_HANDLE_CLASS_OFFSET + i
+       for i, name in enumerate(_EXTENDED_HANDLE_CLASSES)},
+}
+
+# Public mirror used by tests to pin the layout contract.
+HANDLE_CLASS_SLOTS = dict(_HANDLE_CLASS_SLOTS)
 
 # ---------------------------------------------------------------------------
 # Physiological protonation states (pH 7.4) for standard amino-acid
@@ -215,8 +251,8 @@ class MolecularFeaturizer:
 
         feats[_NUMH_OFFSET + min(atom.GetTotalNumHs(), 7)] = 1.0
 
-        if handle_type is not None and handle_type in _HANDLE_CLASSES:
-            feats[_HANDLE_CLASS_OFFSET + _HANDLE_CLASSES.index(handle_type)] = 1.0
+        if handle_type is not None and handle_type in _HANDLE_CLASS_SLOTS:
+            feats[_HANDLE_CLASS_SLOTS[handle_type]] = 1.0
 
         # Neighbourhood element histogram.
         for nbr in atom.GetNeighbors():
@@ -406,4 +442,5 @@ __all__ = [
     "HANDLE_FEATURE_DIM",
     "HANDLE_CHEMICAL_FEATURE_DIM",
     "GLOBAL_FEATURE_DIM",
+    "HANDLE_CLASS_SLOTS",
 ]

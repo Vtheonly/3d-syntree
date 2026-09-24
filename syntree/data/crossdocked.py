@@ -123,8 +123,15 @@ class CrossDockedDataset(InMemoryDataset):
             import hashlib
             with open(self.split_manifest_path, "rb") as handle:
                 manifest_key = hashlib.sha1(handle.read()).hexdigest()[:10]
+        # Grammar fingerprint: any change to the reaction templates or the
+        # retro-family tuple invalidates processed caches built under the old
+        # grammar (e.g. before sulfonamide/alkylation retro support existed),
+        # so stale caches can never be silently reused (data integrity).
+        from syntree.chemistry.reactions import grammar_fingerprint
+
+        grammar_key = grammar_fingerprint()
         return [
-            f"{self.split}_{mode}_n{self.num_synthetic}_s{self.seed}_k{catalog_key}_m{manifest_key}.pt"
+            f"{self.split}_{mode}_n{self.num_synthetic}_s{self.seed}_k{catalog_key}_m{manifest_key}_g{grammar_key}.pt"
         ]
 
     def download(self):
@@ -203,15 +210,26 @@ class CrossDockedDataset(InMemoryDataset):
         w_rxn = torch.randn(n_feat, generator=g)
         scale = float(math.sqrt(n_feat))
 
-        family_handles = {
-            "amide_coupling": ("carboxylic_acid", "primary_secondary_amine"),
-            "reductive_amination": ("aldehyde", "primary_secondary_amine"),
-            "suzuki_coupling": ("aryl_halide", "boronic_acid"),
-            "aryl_amination": ("aryl_halide", "primary_secondary_amine"),
-            "urea_formation": ("primary_secondary_amine",),
-            "esterification": ("carboxylic_acid", "alcohol"),
-            "click_triazole": ("alkyne", "azide"),
-        }
+        # Derive the family -> core-handle mapping directly from the reaction
+        # grammar so it can never drift when new families (e.g.
+        # sulfonamide_coupling, sp3_alkylation) are appended. The tuple keeps
+        # the union of both reaction sides, matching the previous hardcoded
+        # table for the seven legacy families.
+        from syntree.chemistry.reactions import (
+            REACTION_FAMILY_MEMBERS,
+            REACTION_FAMILY_NAMES as _FAMILY_NAMES,
+            REACTION_SIDES as _SIDES,
+        )
+
+        family_handles = {}
+        for family in _FAMILY_NAMES:
+            sides: List[str] = []
+            for reaction in REACTION_FAMILY_MEMBERS[family]:
+                side_a, side_b = _SIDES[reaction]
+                for handle in (side_a, side_b):
+                    if handle not in sides:
+                        sides.append(handle)
+            family_handles[family] = tuple(sides)
 
         samples: List[Data] = []
         for _ in range(self.num_synthetic):

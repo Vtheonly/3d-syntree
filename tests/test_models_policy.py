@@ -9,8 +9,11 @@ import torch
 from torch_geometric.data import Batch
 
 from syntree.chemistry.catalog import SynthonCatalog
+from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
 from syntree.data.crossdocked import CrossDockedDataset
 from syntree.models.policy import SynTreePolicy
+
+_NUM_FAMILIES = len(REACTION_FAMILY_NAMES)
 
 
 @pytest.fixture(scope="module")
@@ -59,8 +62,8 @@ class TestConstruction:
 class TestForward:
     def test_output_shapes(self, model, batch, catalog):
         out = model(batch, catalog.embeddings)
-        assert out["reaction_logits"].shape == (4, 7)
-        assert out["reaction_log_probs"].shape == (4, 7)
+        assert out["reaction_logits"].shape == (4, _NUM_FAMILIES)
+        assert out["reaction_log_probs"].shape == (4, _NUM_FAMILIES)
         # K synthons + 1 learned STOP action.
         assert out["synthon_logits"].shape == (4, len(catalog) + 1)
         assert out["synthon_log_probs"].shape == (4, len(catalog) + 1)
@@ -160,7 +163,7 @@ class TestAct:
         data = dataset[0]
         decision = model.act(data, catalog.embeddings)
         assert decision["reaction_family_idx"].shape == (1,)
-        assert 0 <= decision["reaction_family_idx"][0].item() < 7
+        assert 0 <= decision["reaction_family_idx"][0].item() < _NUM_FAMILIES
         assert decision["synthon_idx"].shape == (1,)
         # STOP (synthon_idx == -1) is a legal argmax action for an untrained
         # policy; otherwise the index must address the catalog.

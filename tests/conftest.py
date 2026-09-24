@@ -117,6 +117,11 @@ def assets_dir(tmp_path_factory):
         # aryl partners (Fsp3-exempt)
         ("Brc1ccc(F)cc1", "aryl_halide"),
         ("B(c1ccccc1)(O)O", "boronic_acid"),
+        # tasklist Priority 4 families: sulfonamide + sp3 alkylation
+        ("CS(=O)(=O)Cl", "sulfonyl_chloride"),
+        ("Cc1ccc(S(=O)(=O)Cl)cc1", "sulfonyl_chloride"),
+        ("NCCBr", "alkyl_halide"),
+        ("CCBr", "alkyl_halide"),
     ]
     rows = []
     for idx, (smiles, handle) in enumerate(synthons):
