@@ -303,6 +303,106 @@ for bit-reproducible reference runs). If the dataset is too small to fill
 the card, the trainer prints a note suggesting a larger
 `data.synthetic_samples` or the real CrossDocked data.
 
+### Fully offline execution on the RTX 6000 Ada accelerator (96 GB)
+
+Kaggle's RTX 6000 Ada sessions have **no internet access** — any network
+call (`huggingface_hub`, `urllib`, `pip install`) crashes immediately. The
+`kaggle_offline` data backend serves the exact same sharded dataset format
+entirely from a mounted read-only directory, with zero sockets:
+
+```bash
+# 1. On an internet-connected machine: build shards + catalog once
+python scripts/build_full_dataset.py --output-dir ./dataset
+python scripts/shard_and_upload.py --dataset-dir ./dataset --no-upload
+# (then upload ./dataset as a private Kaggle Dataset, e.g. "3d-syntree-dataset")
+
+# 2. In the offline notebook/session (dataset mounted at /kaggle/input):
+python main.py --mode train --config configs/train_kaggle_96gb.json \
+    --output-dir /kaggle/working --fresh
+
+# 3. Next session (Persistence: Files only) — resume exactly where it stopped:
+python main.py --mode train --config configs/train_kaggle_96gb.json \
+    --output-dir /kaggle/working --resume-auto
+```
+
+`configs/train_kaggle_96gb.json` encodes the full battle-tested profile for
+the 96 GB card: `data.backend: kaggle_offline`, **RAM preloading** of the
+entire dataset (`preload_to_ram: true` — a 30k-complex dataset is only
+~8–15 GB against 175 GB host RAM, making batch collation instantaneous),
+**bf16 autocast + TF32** (the RTX 6000 Ada's compute capability 8.9 tensor
+cores; bfloat16 carries float32's dynamic range so no loss scaling is ever
+needed), a **512-dim / 12-layer / 8-head** model with a 6.5 Å cutoff,
+`time_budget_hours: 11.2` (graceful checkpoint-and-exit before the 12-hour
+session kill), and `keep_last_n_checkpoints: 2` (~500 MB, safely inside the
+57.6 GB disk quota). Every shard is SHA-256-verified against its manifest on
+load — data integrity does not depend on network transport.
+
+**Precision safety:** `mixed_precision: "bf16"` is now resolved end-to-end —
+the trainer passes `dtype=torch.bfloat16` into every autocast region and
+disables the GradScaler (bf16 has fp32's exponent range). On pre-Ampere
+GPUs (T4, compute capability < 8) a `bf16` config automatically falls back
+to fp16 + loss scaling with a warning instead of silently mis-running.
+`system.tf32` is honoured explicitly (`true` / `false` / omitted = auto).
+
+### Stage 2 algorithm choice: PPO → GFlowNet / DPO
+
+`reinforcement_learning.algorithm` selects the Stage-2 optimizer:
+
+* **`ppo`** (default) — the buffered PPO loop with GAE, unchanged.
+* **`gflownet`** — Trajectory-Balance GFlowNet (Malkin et al., 2022). Instead
+  of maximising expected reward (which provably collapses onto one greedy
+  hit), the policy learns to sample molecules *proportional to their
+  reward*, `P(x) ∝ R(x)`, so every high-reward scaffold gets sampled
+  according to its reward mass. The learnable `log Z` normalizer trains at
+  its own higher learning rate and is persisted inside checkpoints.
+* **`dpo`** — Direct Preference Optimization over reward-ranked same-batch
+  pairs; no value network, no clipping, supervised-like stability.
+
+All three share the mode-collapse-hardened reward
+(`reinforcement_learning.reward`): a **batch Tanimoto diversity term**
+(`diversity_weight`, computed over each rollout batch exactly as the
+R_div formula prescribes) and a **pharmacophore key-interaction bonus**
+(`key_interaction_weight`: +1.5 for a verified salt bridge with a charged
+Asp/Glu/Lys/Arg pocket residue; hydrogen bonds contribute up to half the
+bonus) so the policy cannot win by burying lipophilic grease.
+
+### Reaction grammar: 10 certified reaction classes
+
+`syntree/chemistry/reactions.py` implements ten medicinal-chemistry
+reactions: the original eight (amide coupling, reductive amination, Suzuki,
+SNAr, urea formation, Buchwald–Hartwig, esterification, click triazole)
+plus **sulfonamide coupling** (sulfonyl chloride + primary/secondary amine —
+the R–SO2–NH–R' junction found in celecoxib, sildenafil and darunavir) and
+**SN2 sp3-alkylation** (alkyl halide + amine). Both new reactions work
+forward (generation) and retro (dataset supervision), and all indices are
+append-only so previously built datasets and shards stay compatible.
+
+### Synthon embedding encoder: 3D pharmacophore descriptors
+
+`catalog.encoder` selects how building blocks are embedded:
+
+* **`pharm3d`** (default) — a deterministic, fully offline 3D-pharmacophore
+  descriptor: seeded ETKDG + MMFF94 conformer, Gasteiger charge statistics
+  and dipole, shape descriptors (radius of gyration, asphericity,
+  eccentricity, NPR1/2), pharmacophore fractions, per-handle attachment
+  direction vectors, classical 2D descriptors and the Morgan fingerprint,
+  projected through a seeded orthonormal (QR) Johnson–Lindenstrauss matrix.
+  The expensive conformer pass is cached on disk next to the catalog
+  (validated by ids/dim/seed; gracefully skipped on read-only mounts).
+* **`morgan2d`** — the legacy seeded random projection, bit-for-bit
+  reproducible for backward compatibility.
+
+Checkpoints record a `catalog_signature` (encoder, dim, ids hash) and the
+trainer warns loudly when a resumed checkpoint was trained against a
+different catalog or encoder.
+
+### Tokens / credentials
+
+Never paste live tokens into tracked files — GitHub push protection rejects
+the push and the credential must be considered compromised. Provide them at
+runtime instead: `export HF_TOKEN=...`, `git` credentials for pushes, or an
+untracked `.secrets/tokens.env` (already matched by `.gitignore`).
+
 ---
 
 ## 8. What is learned vs. guaranteed
