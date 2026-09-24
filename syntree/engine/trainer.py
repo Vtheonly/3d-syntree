@@ -38,6 +38,10 @@ from syntree.utils.logger import StructuredLogger
 
 logger = logging.getLogger(__name__)
 
+# Fail-closed backend registry: an unknown data.backend must never silently
+# fall through to the local CrossDocked loader (tasklist Step 6).
+SUPPORTED_DATA_BACKENDS = ("local", "huggingface", "kaggle_offline", "trajectory_pt")
+
 
 def seed_everything(seed: int) -> None:
     """Seed every RNG we rely on for reproducibility."""
@@ -113,7 +117,55 @@ class ResilientTrainer:
         trajectory_path = data_cfg.get("trajectory_dataset_path")
         self.data_backend = str(data_cfg.get("backend", "local")).lower()
 
-        if self.data_backend == "huggingface":
+        if self.data_backend not in SUPPORTED_DATA_BACKENDS:
+            raise ValueError(
+                f"data.backend '{self.data_backend}' is not one of "
+                f"{list(SUPPORTED_DATA_BACKENDS)}. Refusing to guess: an "
+                f"unknown backend silently falling through to the local "
+                f"loader could train on the wrong data."
+            )
+
+        if self.data_backend == "kaggle_offline":
+            # Offline RTX 6000 / Kaggle path (tasklist Steps 5-6): the sharded
+            # dataset is mounted read-only (e.g. /kaggle/input) and must be
+            # served with zero network access. preload_to_ram exploits the
+            # 175 GB host RAM; disabling it switches to an LRU shard cache.
+            from syntree.data.kaggle_loader import (
+                KaggleInMemoryDataset,
+                KaggleLazyDataset,
+            )
+
+            data_dir = str(
+                data_cfg.get("data_dir", "/kaggle/input/3d-syntree-dataset")
+            )
+            if not os.path.isdir(data_dir):
+                raise FileNotFoundError(
+                    f"data.backend='kaggle_offline' requires a mounted dataset "
+                    f"directory, but '{data_dir}' does not exist. Attach the "
+                    f"offline dataset (e.g. as a Kaggle Dataset) and point "
+                    f"data.data_dir at it."
+                )
+            preload = bool(data_cfg.get("preload_to_ram", True))
+            if preload:
+                print(
+                    f"[trainer] kaggle_offline backend: preloading the entire "
+                    f"dataset from {data_dir} into system RAM"
+                )
+                self.dataset = KaggleInMemoryDataset(data_dir, split="train")
+                self.val_dataset = KaggleInMemoryDataset(data_dir, split="val")
+            else:
+                max_cached = int(data_cfg.get("max_cached_shards", 2))
+                print(
+                    f"[trainer] kaggle_offline backend: lazy shard loading "
+                    f"(LRU cache of {max_cached}) from {data_dir}"
+                )
+                self.dataset = KaggleLazyDataset(
+                    data_dir, split="train", max_cached_shards=max_cached
+                )
+                self.val_dataset = KaggleLazyDataset(
+                    data_dir, split="val", max_cached_shards=max_cached
+                )
+        elif self.data_backend == "huggingface":
             hf_cfg = dict(data_cfg.get("huggingface", {}))
             repo_id = str(hf_cfg.get("repo_id", "")).strip()
             if not repo_id:
@@ -142,6 +194,11 @@ class ResilientTrainer:
             self.dataset = TrajectoryDataset(trajectory_path, split="train")
             self.val_dataset = TrajectoryDataset(trajectory_path, split="val")
         else:
+            if self.data_backend == "trajectory_pt":
+                raise ValueError(
+                    "data.backend='trajectory_pt' requires "
+                    "data.trajectory_dataset_path to be set"
+                )
             self.dataset = CrossDockedDataset(
                 data_cfg["data_dir"],
                 split="train",
@@ -190,10 +247,23 @@ class ResilientTrainer:
                     f"{'='*70}"
                 )
 
-        # Mixed-precision flags.
-        self.use_amp = bool(config.get("system", {}).get("mixed_precision") in ("fp16", "bf16")) and \
-            self.device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        # Mixed-precision flags. "bf16" selects bfloat16 autocast (RTX 6000
+        # Ada / A100 / H100, compute capability >= 8: fp32 dynamic range, so
+        # NO loss scaling); "fp16" keeps float16 + GradScaler (T4-class).
+        # Passing the dtype explicitly matters: torch.autocast defaults to
+        # float16 on CUDA, which would silently run a "bf16" config under
+        # fp16 semantics (the exact bug the tasklist's H100 section warns
+        # about - fp16's tiny dynamic range overflows vector norms).
+        mp_setting = str(
+            config.get("system", {}).get("mixed_precision", "fp32")
+        ).lower()
+        self.use_amp = mp_setting in ("fp16", "bf16") and self.device.type == "cuda"
+        self.amp_dtype = (
+            torch.bfloat16 if mp_setting == "bf16" else torch.float16
+        )
+        self.scaler = torch.amp.GradScaler(
+            "cuda", enabled=self.use_amp and self.amp_dtype == torch.float16
+        )
         self.criterion = torch.nn.CrossEntropyLoss()
 
         # GPU auto-scaling.
@@ -344,7 +414,9 @@ class ResilientTrainer:
                 target,
             )
             synthon_mask, reaction_mask = self._build_training_masks(batch)
-            with torch.autocast(device_type="cuda", enabled=self.use_amp):
+            with torch.autocast(
+                device_type="cuda", dtype=self.amp_dtype, enabled=self.use_amp
+            ):
                 preds = self.model(
                     batch,
                     self.catalog.embeddings.to(self.device),
@@ -437,7 +509,9 @@ class ResilientTrainer:
             f"layers={m.get('num_equivariant_layers', 4)}, "
             f"heads={m.get('num_attention_heads', 4)} | "
             f"batch={self.batch_size} x accum={self.accum_steps} | "
-            f"steps/epoch={len(self.loader)} | amp={self.use_amp}"
+            f"steps/epoch={len(self.loader)} | "
+            f"amp={self.use_amp}"
+            + (f" ({self.amp_dtype})" if self.use_amp else "")
         )
 
         if self.start_epoch >= self.max_epochs:
@@ -499,7 +573,9 @@ class ResilientTrainer:
                 torsion_synthon_emb = self.catalog.embeddings.to(self.device)[target]
 
                 with torch.autocast(
-                    device_type=self.device.type, enabled=self.use_amp
+                    device_type=self.device.type,
+                    dtype=self.amp_dtype,
+                    enabled=self.use_amp,
                 ):
                     preds = self.model(
                         batch,

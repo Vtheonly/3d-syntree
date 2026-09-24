@@ -1,0 +1,101 @@
+{
+  "system": {
+    "project_name": "3D-SynTree-H100-Production",
+    "seed": 42,
+    "device": "cuda:0",
+    "mixed_precision": "bf16",
+    "tf32": true,
+    "num_workers": 8
+  },
+  "huggingface": {
+    "enabled": true,
+    "repo_id": "JJKK1212/3d-syntree-checkpoints",
+    "push_every_n_epochs": 1,
+    "private": false
+  },
+  "data": {
+    "backend": "huggingface",
+    "dataset_name": "multidataset_full",
+    "data_dir": "./data/crossdocked",
+    "synthon_catalog_path": "./data/enamine_50k_subset.parquet",
+    "require_real_data": true,
+    "min_real_samples": 5000,
+    "synthetic_fallback": false,
+    "huggingface": {
+      "repo_id": "JJKK1212/3d-syntree-multidataset",
+      "revision": "main",
+      "cache_dir": "./hf_cache",
+      "max_cached_shards": 8
+    },
+    "batch_size": 64,
+    "accumulate_grad_batches": 2,
+    "max_steps_per_molecule": 4,
+    "terminal_cap_min_mw": 260.0,
+    "val_fraction": 0.05
+  },
+  "model": {
+    "hidden_dim": 512,
+    "num_equivariant_layers": 12,
+    "num_radial_basis": 32,
+    "cutoff_radius": 6.5,
+    "synthon_embedding_dim": 512,
+    "num_attention_heads": 8,
+    "max_atomic_number": 100,
+    "dropout": 0.1
+  },
+  "training": {
+    "max_epochs": 100,
+    "time_budget_hours": 72.0,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.00001,
+    "lr_scheduler": "cosine_warmup",
+    "warmup_epochs": 5,
+    "grad_clip_norm": 1.0,
+    "keep_last_n_checkpoints": 5,
+    "loss_weights": {
+      "synthon_ce": 1.0,
+      "torsion_nll": 0.5,
+      "steric_clash": 0.1,
+      "reaction_ce": 0.5
+    },
+    "eval_interval_epochs": 1,
+    "auto_scale": {
+      "enabled": false
+    }
+  },
+  "reinforcement_learning": {
+    "enabled": false,
+    "algorithm": "gflownet",
+    "pocket_dir": "./data/test_pockets",
+    "episodes": 2048,
+    "ppo_epochs": 4,
+    "rollout_episodes": 64,
+    "minibatch_size": 64,
+    "clip_epsilon": 0.2,
+    "gamma": 0.99,
+    "value_coef": 0.5,
+    "entropy_coef": 0.02,
+    "learning_rate": 0.00001,
+    "lr_z": 0.01,
+    "max_grad_norm": 1.0,
+    "temperature": 1.0,
+    "checkpoint_every": 32,
+    "reward": {
+      "docking_weight": 1.0,
+      "clash_weight": 0.25,
+      "contact_weight": 0.35,
+      "diversity_weight": 0.2,
+      "key_interaction_weight": 1.5,
+      "fsp3_weight": 0.15,
+      "qed_weight": 0.15,
+      "validity_weight": 0.5
+    }
+  },
+  "catalog": {
+    "min_fsp3": 0.4,
+    "max_mw": 240.0,
+    "encoder": "pharm3d",
+    "seed": 42,
+    "cache_embeddings": true
+  }
+}

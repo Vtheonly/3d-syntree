@@ -41,6 +41,105 @@ def load_config(config_path: str, runtime_config_path: Optional[str]) -> dict:
     return config
 
 
+def validate_config(config: dict) -> list:
+    """Fail-closed structural validation of a merged config.
+
+    Returns a list of human-readable error strings (empty = valid). This is
+    deliberately lightweight - it catches the settings whose silent misuse
+    would waste an entire offline RTX 6000 session (unknown data backend,
+    unsupported mixed precision, impossible budgets, negative sizes)
+    without duplicating every default.
+    """
+    from syntree.engine.trainer import SUPPORTED_DATA_BACKENDS
+
+    errors = []
+
+    system = config.get("system", {}) or {}
+    mp = str(system.get("mixed_precision", "fp32")).lower()
+    if mp not in ("fp32", "fp16", "bf16", "none", ""):
+        errors.append(
+            f"system.mixed_precision must be fp32 | fp16 | bf16, got '{mp}'"
+        )
+
+    data = config.get("data", {}) or {}
+    backend = str(data.get("backend", "local")).lower()
+    if backend not in SUPPORTED_DATA_BACKENDS:
+        errors.append(
+            f"data.backend must be one of {list(SUPPORTED_DATA_BACKENDS)}, "
+            f"got '{backend}'"
+        )
+    if backend == "huggingface" and not str(
+        (data.get("huggingface") or {}).get("repo_id", "")
+    ).strip():
+        errors.append(
+            "data.huggingface.repo_id is required when data.backend='huggingface'"
+        )
+    if backend == "kaggle_offline" and not str(data.get("data_dir", "")).strip():
+        errors.append(
+            "data.data_dir is required when data.backend='kaggle_offline' "
+            "(the mounted offline dataset directory)"
+        )
+    if backend == "trajectory_pt" and not data.get("trajectory_dataset_path"):
+        errors.append(
+            "data.trajectory_dataset_path is required when "
+            "data.backend='trajectory_pt'"
+        )
+    for key in ("batch_size",):
+        if key in data and int(data[key]) < 1:
+            errors.append(f"data.{key} must be >= 1")
+    # synthetic_samples == 0 is a valid production setting (no synthetic
+    # fallback); only negatives are meaningless.
+    if "synthetic_samples" in data and int(data["synthetic_samples"]) < 0:
+        errors.append("data.synthetic_samples must be >= 0")
+    if "accumulate_grad_batches" in data and int(data["accumulate_grad_batches"]) < 1:
+        errors.append("data.accumulate_grad_batches must be >= 1")
+
+    model = config.get("model", {}) or {}
+    hidden = int(model.get("hidden_dim", 128))
+    heads = int(model.get("num_attention_heads", 4))
+    if hidden <= 0:
+        errors.append("model.hidden_dim must be positive")
+    if heads <= 0 or hidden % heads != 0:
+        errors.append(
+            f"model.hidden_dim ({hidden}) must be divisible by "
+            f"model.num_attention_heads ({heads})"
+        )
+    if "synthon_embedding_dim" in model and int(model["synthon_embedding_dim"]) <= 0:
+        errors.append("model.synthon_embedding_dim must be positive")
+
+    training = config.get("training", {}) or {}
+    budget = float(training.get("time_budget_hours", 11.5))
+    if budget <= 0:
+        errors.append("training.time_budget_hours must be positive")
+    if int(training.get("max_epochs", 40)) < 1:
+        errors.append("training.max_epochs must be >= 1")
+    if float(training.get("learning_rate", 3e-4)) <= 0:
+        errors.append("training.learning_rate must be positive")
+    if "keep_last_n_checkpoints" in training and int(
+        training["keep_last_n_checkpoints"]
+    ) < 1:
+        errors.append("training.keep_last_n_checkpoints must be >= 1")
+
+    rl = config.get("reinforcement_learning", {}) or {}
+    algorithm = str(rl.get("algorithm", "ppo")).strip().lower()
+    if algorithm not in ("ppo", "gflownet", "dpo"):
+        errors.append(
+            f"reinforcement_learning.algorithm must be ppo | gflownet | dpo, "
+            f"got '{algorithm}'"
+        )
+    if int(rl.get("episodes", 256)) < 1:
+        errors.append("reinforcement_learning.episodes must be >= 1")
+
+    catalog = config.get("catalog", {}) or {}
+    encoder = str(catalog.get("encoder", "pharm3d")).strip().lower()
+    if encoder not in ("pharm3d", "morgan2d"):
+        errors.append(
+            f"catalog.encoder must be pharm3d | morgan2d, got '{encoder}'"
+        )
+
+    return errors
+
+
 def build_model(config: dict):
     from syntree.models.policy import SynTreePolicy
 
@@ -95,6 +194,14 @@ def main(argv=None) -> int:
     # Fresh mode overrides resume
     if args.fresh:
         args.resume_auto = False
+
+    # Fail-closed config validation (before any hardware work or asset
+    # staging: a session-wasting typo should die in milliseconds).
+    validation_errors = validate_config(config)
+    if validation_errors:
+        for error in validation_errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 2
 
     # ---- hardware ------------------------------------------------------
     from syntree.utils.hardware import configure_runtime_environment
