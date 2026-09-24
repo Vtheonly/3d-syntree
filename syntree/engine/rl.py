@@ -11,6 +11,18 @@ policy rather than a post-hoc molecular score.
 
 The implementation deliberately reports when docking is unavailable instead
 of substituting a fabricated score.
+
+tasklist Priority 6 (mode-collapse prevention): the terminal reward
+additionally supports a **batch Tanimoto diversity term**
+
+    R_div(M_i) = mean_{j != i} (1 - Tanimoto(M_i, M_j))
+
+computed over the molecules of the same rollout batch, and a **pharmacophore
+key-interaction bonus** (salt bridges with charged pocket residues plus
+verified hydrogen bonds) so the policy cannot win by burying lipophilic
+grease in the pocket. Both terms default to weight 0 (legacy behaviour) and
+are activated through ``reinforcement_learning.reward.diversity_weight`` /
+``key_interaction_weight``.
 """
 
 from __future__ import annotations
@@ -23,11 +35,140 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from rdkit import Chem
-from rdkit.Chem import QED
+from rdkit.Chem import DataStructs, QED, rdFingerprintGenerator
 
 from syntree.engine.evaluator import EvaluationPipeline
 
 logger = logging.getLogger(__name__)
+
+# Geometric cutoffs for the pharmacophore key-interaction reward (Angstrom).
+SALT_BRIDGE_CUTOFF_A = 4.0
+HBOND_CUTOFF_A = 3.5
+
+
+def _morgan_fp(mol: Chem.Mol):
+    try:
+        generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+        return generator.GetFingerprint(mol)
+    except (AttributeError, NameError):  # pragma: no cover - old RDKit
+        from rdkit.Chem import AllChem
+
+        return AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+
+
+def _positive_residue(residue: str) -> bool:
+    return residue in ("LYS", "ARG", "HIP")
+
+
+def _negative_residue(residue: str) -> bool:
+    return residue in ("ASP", "GLU")
+
+
+def count_key_interactions(
+    ligand_mol: Optional[Chem.Mol],
+    pocket_mol: Optional[Chem.Mol],
+) -> Tuple[int, int]:
+    """Count verified pocket-ligand key interactions.
+
+    Returns ``(n_salt_bridges, n_hbonds)``:
+
+    * **salt bridges** - a formally charged ligand atom within
+      ``SALT_BRIDGE_CUTOFF_A`` (4.0 A) of a pocket atom carrying an
+      opposite-sign physiological charge (Asp/Glu carboxylates, Lys/Arg
+      cations, protonated His - the same protonation convention the pocket
+      featurizer assigns, so the policy is rewarded for the interactions its
+      input features describe);
+    * **hydrogen bonds** - ligand donor (N/O/S bearing H) facing a pocket
+      acceptor, or ligand acceptor facing a pocket donor (N/O/S of
+      non-cationic / non-anionic residues), heavy-atom distance below
+      ``HBOND_CUTOFF_A`` (3.5 A).
+
+    Both molecules must carry conformers (the assembly env guarantees this);
+    missing inputs simply yield zero interactions.
+    """
+    if ligand_mol is None or pocket_mol is None:
+        return 0, 0
+    if ligand_mol.GetNumConformers() == 0 or pocket_mol.GetNumConformers() == 0:
+        return 0, 0
+
+    lig = Chem.RemoveHs(Chem.Mol(ligand_mol))
+    lig_conf = lig.GetConformer()
+    pocket_conf = pocket_mol.GetConformer()
+
+    lig_pos = np.array(
+        [list(lig_conf.GetAtomPosition(a.GetIdx())) for a in lig.GetAtoms()],
+        dtype=np.float64,
+    )
+    pocket_pos = np.array(
+        [list(pocket_conf.GetAtomPosition(a.GetIdx())) for a in pocket_mol.GetAtoms()],
+        dtype=np.float64,
+    )
+    if lig_pos.size == 0 or pocket_pos.size == 0:
+        return 0, 0
+
+    distances = np.linalg.norm(
+        lig_pos[:, None, :] - pocket_pos[None, :, :], axis=-1
+    )
+
+    from syntree.data.featurizer import assign_pocket_formal_charges
+
+    pocket_charges = assign_pocket_formal_charges(pocket_mol)
+
+    # --- salt bridges ---------------------------------------------------
+    lig_charges = np.array(
+        [float(a.GetFormalCharge()) for a in lig.GetAtoms()], dtype=np.float64
+    )
+    salt = 0
+    charged_lig = np.nonzero(np.abs(lig_charges) > 0.5)[0]
+    if charged_lig.size:
+        close = distances[charged_lig] <= SALT_BRIDGE_CUTOFF_A
+        opposite = (
+            np.sign(lig_charges[charged_lig])[:, None]
+            * np.sign(pocket_charges)[None, :]
+        ) < -0.5
+        salt = int(np.count_nonzero(close & opposite))
+
+    # --- hydrogen bonds ---------------------------------------------------
+    lig_donors, lig_acceptors = [], []
+    for atom in lig.GetAtoms():
+        if atom.GetAtomicNum() not in (7, 8, 16):
+            continue
+        is_donor = atom.GetTotalNumHs() > 0
+        is_acceptor = atom.GetFormalCharge() <= 0
+        if is_donor:
+            lig_donors.append(atom.GetIdx())
+        if is_acceptor:
+            lig_acceptors.append(atom.GetIdx())
+
+    pocket_donors, pocket_acceptors = [], []
+    for atom in pocket_mol.GetAtoms():
+        info = atom.GetPDBResidueInfo()
+        residue = info.GetResidueName().strip().upper() if info else ""
+        if atom.GetAtomicNum() not in (7, 8, 16):
+            continue
+        if _negative_residue(residue) and atom.GetAtomicNum() == 8:
+            # carboxylate oxygen: pure acceptor
+            pocket_acceptors.append(atom.GetIdx())
+        elif _positive_residue(residue) and atom.GetAtomicNum() == 7:
+            # cationic nitrogen: pure donor
+            pocket_donors.append(atom.GetIdx())
+        else:
+            pocket_donors.append(atom.GetIdx())
+            pocket_acceptors.append(atom.GetIdx())
+
+    hbonds = 0
+    for lig_idx in lig_donors:
+        for pocket_idx in pocket_acceptors:
+            if distances[lig_idx, pocket_idx] <= HBOND_CUTOFF_A:
+                hbonds += 1
+                break
+    for lig_idx in lig_acceptors:
+        for pocket_idx in pocket_donors:
+            if distances[lig_idx, pocket_idx] <= HBOND_CUTOFF_A:
+                hbonds += 1
+                break
+
+    return salt, hbonds
 
 
 @dataclass
@@ -41,6 +182,10 @@ class ThreeDRewardConfig:
     docking_scale: float = 10.0
     clash_scale: float = 25.0
     contact_scale: float = 5.0
+    # tasklist Priority 6: mode-collapse prevention. Defaults keep the
+    # legacy reward exactly; production configs opt in explicitly.
+    diversity_weight: float = 0.0
+    key_interaction_weight: float = 0.0
 
 
 class ThreeDReward:
@@ -58,7 +203,45 @@ class ThreeDReward:
             docking_scale=float(cfg.get("docking_scale", 10.0)),
             clash_scale=float(cfg.get("clash_scale", 25.0)),
             contact_scale=float(cfg.get("contact_scale", 5.0)),
+            diversity_weight=float(cfg.get("diversity_weight", 0.0)),
+            key_interaction_weight=float(cfg.get("key_interaction_weight", 0.0)),
         )
+
+    # ------------------------------------------------------------------
+    # Batch diversity (tasklist Priority 6)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def batch_diversity(mols: Sequence[Optional[Chem.Mol]]) -> List[float]:
+        """Per-molecule batch Tanimoto diversity.
+
+        ``R_div(M_i) = mean_{j != i} (1 - Tanimoto(M_i, M_j))`` over the
+        molecules of the same rollout batch. Identical molecules score 0,
+        singleton batches (or batches with one valid molecule) score 1.0 by
+        convention (nothing to be redundant with).
+        """
+        valid = [Chem.RemoveHs(Chem.Mol(m)) for m in mols if m is not None]
+        n = len(valid)
+        if n == 0:
+            return [0.0 for _ in mols]
+        if n == 1:
+            return [1.0 if m is not None else 0.0 for m in mols]
+
+        fps = [_morgan_fp(m) for m in valid]
+        diversities = []
+        for i, fp in enumerate(fps):
+            others = [f for j, f in enumerate(fps) if j != i]
+            sims = DataStructs.BulkTanimotoSimilarity(fp, others)
+            diversities.append(float(np.mean([1.0 - s for s in sims])))
+
+        out: List[float] = []
+        k = 0
+        for mol in mols:
+            if mol is None:
+                out.append(0.0)
+            else:
+                out.append(diversities[k])
+                k += 1
+        return out
 
     def compute(
         self,
@@ -66,6 +249,8 @@ class ThreeDReward:
         pocket_pdb_path: Optional[str] = None,
         clash_score: float = 0.0,
         contact_energy: float = 0.0,
+        pocket_mol: Optional[Chem.Mol] = None,
+        batch_reference_smiles: Optional[Sequence[str]] = None,
     ) -> Dict[str, float]:
         components: Dict[str, float] = {
             "docking": 0.0,
@@ -74,6 +259,8 @@ class ThreeDReward:
             "fsp3": 0.0,
             "qed": 0.0,
             "validity": 0.0,
+            "key_interaction": 0.0,
+            "diversity": 0.0,
         }
         if mol is None:
             return {"reward": 0.0, **components, "docking_available": 0.0}
@@ -118,6 +305,40 @@ class ThreeDReward:
             np.tanh(-contact_energy / max(self.cfg.contact_scale, 1e-6))
         )
 
+        # tasklist Priority 6: pharmacophore key-interaction bonus. One
+        # verified salt bridge earns the full weight (tasklist suggests
+        # +1.5 with weight 1.5); hydrogen bonds contribute up to half the
+        # bonus so multiple weak contacts cannot fully replace a real
+        # ionic anchor.
+        if self.cfg.key_interaction_weight > 0.0:
+            try:
+                n_salt, n_hbond = count_key_interactions(mol, pocket_mol)
+                components["n_salt_bridges"] = float(n_salt)
+                components["n_hbonds"] = float(n_hbond)
+                components["key_interaction"] = float(
+                    min(1.0, n_salt + 0.5 * min(n_hbond, 2))
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("key-interaction counting failed: %s", exc)
+
+        # tasklist Priority 6: batch Tanimoto diversity against the other
+        # molecules of the same rollout batch.
+        if self.cfg.diversity_weight > 0.0 and batch_reference_smiles:
+            try:
+                reference_mols = [
+                    Chem.MolFromSmiles(s) for s in batch_reference_smiles
+                ]
+                reference_mols = [m for m in reference_mols if m is not None]
+                if reference_mols:
+                    query_fp = _morgan_fp(Chem.RemoveHs(Chem.Mol(mol)))
+                    ref_fps = [_morgan_fp(Chem.RemoveHs(m)) for m in reference_mols]
+                    sims = DataStructs.BulkTanimotoSimilarity(query_fp, ref_fps)
+                    components["diversity"] = float(
+                        np.mean([1.0 - s for s in sims])
+                    )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("batch diversity failed: %s", exc)
+
         docking_available = False
         if pocket_pdb_path:
             try:
@@ -154,6 +375,8 @@ class ThreeDReward:
             + self.cfg.fsp3_weight * components["fsp3"]
             + self.cfg.qed_weight * components["qed"]
             + self.cfg.validity_weight * components["validity"]
+            + self.cfg.key_interaction_weight * components["key_interaction"]
+            + self.cfg.diversity_weight * components["diversity"]
         )
         return {
             "reward": float(reward),
@@ -627,6 +850,44 @@ def collect_episode(
     return transitions, reward_details
 
 
+def apply_terminal_rewards(
+    batch: List[Tuple[Optional[object], Optional[Chem.Mol], Dict[str, float]]],
+    reward_fn: ThreeDReward,
+) -> List[Dict[str, float]]:
+    """Finalize a rollout batch with the diversity-aware terminal rewards.
+
+    Args:
+        batch: list of ``(transitions, final_mol, base_reward_details)``
+            collected for the *same* rollout batch (the diversity term is
+            only meaningful within one batch, exactly as the tasklist's
+            R_div formula prescribes).
+        reward_fn: the configured :class:`ThreeDReward`.
+
+    Returns:
+        Per-episode reward details with the ``diversity`` component added
+        and the final ``reward`` updated; the terminal reward has been added
+        onto the last transition of every episode (exactly where GAE
+        bootstrapping expects it).
+    """
+    mols = [mol for _, mol, _ in batch]
+    if reward_fn.cfg.diversity_weight > 0.0:
+        diversities = ThreeDReward.batch_diversity(mols)
+    else:
+        diversities = [0.0] * len(batch)
+
+    finalized: List[Dict[str, float]] = []
+    for (transitions, mol, base), diversity in zip(batch, diversities):
+        details = dict(base)
+        details["diversity"] = float(diversity)
+        details["reward"] = float(base.get("reward", 0.0)) + float(
+            reward_fn.cfg.diversity_weight * diversity
+        )
+        if transitions:
+            transitions[-1].reward += float(details["reward"])
+        finalized.append(details)
+    return finalized
+
+
 __all__ = [
     "ThreeDRewardConfig",
     "ThreeDReward",
@@ -635,4 +896,8 @@ __all__ = [
     "RolloutBuffer",
     "PPOFineTuner",
     "collect_episode",
+    "count_key_interactions",
+    "apply_terminal_rewards",
+    "SALT_BRIDGE_CUTOFF_A",
+    "HBOND_CUTOFF_A",
 ]

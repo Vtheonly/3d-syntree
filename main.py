@@ -220,7 +220,11 @@ def main(argv=None) -> int:
         finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
 
         from syntree.engine.environment import MolecularAssemblyEnv
-        from syntree.engine.rl import RolloutBuffer, collect_episode
+        from syntree.engine.rl import (
+            RolloutBuffer,
+            apply_terminal_rewards,
+            collect_episode,
+        )
 
         assembly_env = MolecularAssemblyEnv(
             rxn_engine=generator.rxn_engine,
@@ -284,31 +288,50 @@ def main(argv=None) -> int:
             gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
         )
         last_stats: Dict[str, float] = {}
+        # Deferred terminal rewards: base components are computed per episode
+        # right after collection, and the batch Tanimoto diversity term is
+        # applied when the rollout batch closes (tasklist Priority 6).
+        pending: list = []
 
         for episode in range(rl_start_episode, episodes):
             pocket = pocket_paths[episode % len(pocket_paths)]
             model.eval()
-            transitions, reward_details = collect_episode(
+            transitions, _ = collect_episode(
                 assembly_env,
                 model,
                 generator.catalog,
                 pocket_pdb_path=pocket,
-                terminal_reward_fn=lambda env, p=pocket: reward_fn.compute(
-                    env.current_mol,
-                    p,
-                    clash_score=float(env.total_clash),
-                    contact_energy=float(env.contact_energy()),
-                ),
+                terminal_reward_fn=None,
                 sample=True,
                 temperature=temperature,
             )
+            final_mol = assembly_env.current_mol
+            base_details = reward_fn.compute(
+                final_mol,
+                pocket,
+                clash_score=float(assembly_env.total_clash),
+                contact_energy=float(assembly_env.contact_energy()),
+                pocket_mol=assembly_env.pocket_mol,
+            )
             buffer.add_episode(transitions)
+            pending.append({
+                "episode": episode,
+                "pocket": os.path.basename(pocket),
+                "transitions": transitions,
+                "mol": final_mol,
+                "base": base_details,
+            })
             model.train()
 
             if (
                 buffer.num_episodes >= rollout_episodes
                 or episode == episodes - 1
             ):
+                details_list = apply_terminal_rewards(
+                    [(item["transitions"], item["mol"], item["base"])
+                     for item in pending],
+                    reward_fn,
+                )
                 last_stats = finetuner.update_rollout(
                     buffer, minibatch_size=minibatch_size
                 )
@@ -316,35 +339,38 @@ def main(argv=None) -> int:
                     gamma=finetuner.gamma,
                     gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
                 )
+                for item, details in zip(pending, details_list):
+                    entry = {
+                        "episode": item["episode"],
+                        "pocket": item["pocket"],
+                        **details,
+                        "buffered_episodes": 0,
+                        **{
+                            k: v
+                            for k, v in last_stats.items()
+                            if isinstance(v, (int, float))
+                        },
+                    }
+                    history.append(entry)
+                    print(
+                        f"[rl] episode {entry['episode']:04d} | "
+                        f"reward={entry['reward']:.4f} | "
+                        f"transitions={last_stats.get('transitions', 0)} | "
+                        f"loss={entry.get('loss', 0.0):.4f} | "
+                        f"clip={entry.get('clip_fraction', 0.0):.3f}"
+                    )
+                pending = []
 
-            model.eval()
-            entry = {
-                "episode": episode,
-                "pocket": os.path.basename(pocket),
-                **reward_details,
-                "buffered_episodes": buffer.num_episodes,
-                **{
-                    k: v
-                    for k, v in last_stats.items()
-                    if isinstance(v, (int, float))
-                },
-            }
-            history.append(entry)
-            print(
-                f"[rl] episode {episode:04d} | reward={entry['reward']:.4f} | "
-                f"transitions={last_stats.get('transitions', 0)} | "
-                f"loss={entry.get('loss', 0.0):.4f} | "
-                f"clip={entry.get('clip_fraction', 0.0):.3f}"
-            )
             if checkpoint_every > 0 and (episode + 1) % checkpoint_every == 0:
                 rl_manager.save_checkpoint(
                     epoch=episode,
                     step=episode + 1,
                     model=model,
                     optimizer=finetuner.optimizer,
-                    metrics=entry,
+                    metrics=history[-1] if history else {},
                     is_best=False,
                     model_config=config.get("model"),
+                    catalog_signature=generator.catalog.embedding_signature,
                 )
 
         rl_manager.save_checkpoint(
@@ -356,6 +382,7 @@ def main(argv=None) -> int:
             is_best=True,
             final=True,
             model_config=config.get("model"),
+            catalog_signature=generator.catalog.embedding_signature,
         )
         rl_output = args.output_dir or "./rl_outputs"
         os.makedirs(rl_output, exist_ok=True)

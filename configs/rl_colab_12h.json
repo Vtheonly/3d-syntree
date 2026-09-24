@@ -99,7 +99,9 @@
       "validity_weight": 0.5,
       "docking_scale": 10,
       "clash_scale": 25,
-      "contact_scale": 5
+      "contact_scale": 5,
+      "diversity_weight": 0.2,
+      "key_interaction_weight": 1.5
     }
   },
   "evaluation": {
