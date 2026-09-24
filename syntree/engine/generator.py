@@ -60,11 +60,15 @@ class SBDDGenerator:
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.rxn_engine = ReactionEngine()
+        catalog_cfg = dict(config.get("catalog", {}))
         self.catalog = SynthonCatalog(
             config["data"]["synthon_catalog_path"],
             embedding_dim=config["model"].get("synthon_embedding_dim", 128),
-            min_fsp3=float(config.get("catalog", {}).get("min_fsp3", 0.42)),
-            max_mw=float(config.get("catalog", {}).get("max_mw", 220.0)),
+            min_fsp3=float(catalog_cfg.get("min_fsp3", 0.42)),
+            max_mw=float(catalog_cfg.get("max_mw", 220.0)),
+            seed=int(catalog_cfg.get("seed", 42)),
+            encoder=str(catalog_cfg.get("encoder", "pharm3d")),
+            cache_embeddings=bool(catalog_cfg.get("cache_embeddings", True)),
         )
         self.conformer_engine = ConformerEngine()
         self.validator = ChemicalValidator()

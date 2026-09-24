@@ -18,13 +18,13 @@ reaction grammar could not close.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import torch
-from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem, rdFingerprintGenerator
+from rdkit import Chem
 
 from syntree.chemistry.reactions import (
     REACTION_FAMILY_MEMBERS,
@@ -33,6 +33,14 @@ from syntree.chemistry.reactions import (
     HANDLE_SMARTS,
     ReactionEngine,
 )
+from syntree.chemistry.synthon_encoder import (
+    ENCODER_VERSION,
+    SUPPORTED_ENCODERS,
+    catalog_ids_hash,
+    encode_catalog_morgan2d,
+    encode_catalog_pharm3d,
+)
+from syntree.data.synthon_library import SynthonLibraryStore
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +70,16 @@ class SynthonCatalog:
             rows whose ``primary_handle`` cannot be verified chemically.
         exempt_handles: Handle types allowed to bypass the Fsp3 floor
             (aryl coupling partners).
+        encoder: Synthon embedding encoder. ``"pharm3d"`` (default,
+            tasklist Priority 1: deterministic 3D-pharmacophore descriptor
+            with conformer shape/electrostatics/handle-direction features and
+            an orthonormal QR projection, cached on disk) or ``"morgan2d"``
+            (legacy seeded random projection of the Morgan bit fingerprint,
+            bit-for-bit identical to the historical implementation).
+        cache_embeddings: Persist pharm3d embeddings next to the catalog
+            (``<catalog>_embeddings_<dim>d_<encoder>.h5``). The cache is
+            validated against ids/dim/seed/encoder and silently skipped when
+            the catalog directory is read-only (e.g. Kaggle ``/kaggle/input``).
     """
 
     def __init__(
@@ -73,15 +91,24 @@ class SynthonCatalog:
         seed: int = 42,
         validate_handles: bool = True,
         exempt_handles: Sequence[str] = DEFAULT_EXEMPT_HANDLES,
+        encoder: str = "pharm3d",
+        cache_embeddings: bool = True,
     ):
         if embedding_dim <= 0:
             raise ValueError(f"embedding_dim must be positive, got {embedding_dim}")
+        if encoder not in SUPPORTED_ENCODERS:
+            raise ValueError(
+                f"Unknown synthon encoder '{encoder}'. "
+                f"Supported: {list(SUPPORTED_ENCODERS)}"
+            )
         self.catalog_path = str(catalog_path)
         self.embedding_dim = int(embedding_dim)
         self.min_fsp3 = float(min_fsp3)
         self.max_mw = float(max_mw)
         self.seed = int(seed)
         self.exempt_handles = tuple(exempt_handles or ())
+        self.encoder_name = str(encoder)
+        self.cache_embeddings = bool(cache_embeddings)
 
         self.engine = ReactionEngine()
         self.df = self._load_and_filter(validate_handles)
@@ -92,9 +119,10 @@ class SynthonCatalog:
                 f"(Fsp3 >= {min_fsp3}, MW <= {max_mw})."
             )
 
-        self.embeddings = self._compute_embeddings()
+        self.embeddings, self.embedding_info = self._compute_embeddings()
         self.handle_masks, self._handle_counts = self._build_compatibility_indices()
         self._canonical_smiles_index = self._build_canonical_smiles_index()
+        self._ids_hash = catalog_ids_hash(self.df["id"].astype(str).tolist())
         self._family_mask_cache: Dict[Tuple[str, Optional[str]], torch.Tensor] = {}
         self._smiles_cache: Dict[int, Optional[str]] = {}
 
@@ -146,41 +174,112 @@ class SynthonCatalog:
         return filtered
 
     # ------------------------------------------------------------------
-    # Embeddings: deterministic Morgan-fingerprint projections
+    # Embeddings: 3D-pharmacophore encoder (default) or legacy Morgan
+    # projection, with a validated on-disk cache for the expensive 3D pass.
     # ------------------------------------------------------------------
-    def _compute_embeddings(self) -> torch.Tensor:
-        """Embed every synthon via a seeded random projection of its Morgan
-        count fingerprint.
+    def _compute_embeddings(self) -> Tuple[torch.Tensor, Dict[str, object]]:
+        """Embed every synthon with the configured encoder.
 
-        The mapping is deterministic (fixed seed) and chemically informed:
-        structurally similar synthons receive similar embeddings, while no
-        gradient state is kept inside the catalog.
+        Both encoders are deterministic for a fixed seed; ``pharm3d`` also
+        caches the result next to the catalog so repeated training runs skip
+        the conformer/force-field pass (the cache is skipped silently when
+        the catalog directory is read-only, e.g. on Kaggle input mounts).
         """
-        rng = np.random.default_rng(self.seed)
-        projection = rng.standard_normal((2048, self.embedding_dim)).astype(np.float32)
-        projection /= np.sqrt(2048)
+        if self.encoder_name == "morgan2d":
+            embeddings = encode_catalog_morgan2d(
+                self.df["smiles"].tolist(), self.embedding_dim, self.seed
+            )
+            return embeddings, {"encoder": "morgan2d"}
 
-        rows = np.zeros((self.num_synthons, self.embedding_dim), dtype=np.float32)
-        for i, smiles in enumerate(self.df["smiles"]):
-            mol = Chem.MolFromSmiles(str(smiles))
-            if mol is None:
-                continue
-            try:
-                # Modern API (RDKit >= 2022): dedicated generator objects.
-                generator = rdFingerprintGenerator.GetMorganGenerator(
-                    radius=2, fpSize=2048
+        cache_path = self._embedding_cache_path()
+        if self.cache_embeddings and cache_path is not None:
+            cached = self._load_embedding_cache(cache_path)
+            if cached is not None:
+                logger.info(
+                    "Loaded cached %s embeddings for %d synthons from %s",
+                    self.encoder_name, self.num_synthons, cache_path,
                 )
-                fp = generator.GetFingerprint(mol)
-            except (AttributeError, NameError):
-                fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-            vec = np.zeros((2048,), dtype=np.float32)
-            DataStructs.ConvertToNumpyArray(fp, vec)
-            rows[i] = vec @ projection
+                return cached, {"encoder": self.encoder_name, "from_cache": True}
 
-        norms = np.linalg.norm(rows, axis=1, keepdims=True)
-        norms[norms == 0.0] = 1.0
-        emb = torch.from_numpy(rows / norms)
+        embeddings, info = encode_catalog_pharm3d(
+            self.df["smiles"].tolist(),
+            self.embedding_dim,
+            self.seed,
+            engine=self.engine,
+        )
+        if self.cache_embeddings and cache_path is not None:
+            self._save_embedding_cache(cache_path, embeddings, info)
+        return embeddings, info
+
+    def _embedding_cache_path(self) -> Optional[str]:
+        base = os.path.splitext(self.catalog_path)[0]
+        return f"{base}_embeddings_{self.embedding_dim}d_{self.encoder_name}.h5"
+
+    def _load_embedding_cache(self, cache_path: str) -> Optional[torch.Tensor]:
+        """Return cached embeddings when they match this catalog exactly."""
+        if not os.path.exists(cache_path):
+            return None
+        store = SynthonLibraryStore(cache_path)
+        try:
+            payload = store.load()
+        except Exception as exc:
+            logger.warning("Embedding cache unreadable (%s); recomputing.", exc)
+            return None
+        meta = payload.get("meta", {}) or {}
+        ids = list(payload.get("ids", []) or [])
+        emb = payload.get("embeddings")
+        expected_ids = self.df["id"].astype(str).tolist()
+        if (
+            meta.get("encoder") != self.encoder_name
+            or meta.get("encoder_version") != ENCODER_VERSION
+            or meta.get("seed") != self.seed
+            or meta.get("dim") != self.embedding_dim
+            or list(map(str, ids)) != expected_ids
+            or emb is None
+            or tuple(emb.shape) != (self.num_synthons, self.embedding_dim)
+        ):
+            logger.info("Embedding cache signature mismatch; recomputing.")
+            return None
         return emb
+
+    def _save_embedding_cache(
+        self, cache_path: str, embeddings: torch.Tensor, info: Dict[str, object]
+    ) -> None:
+        """Atomically persist embeddings; skip gracefully on read-only dirs."""
+        store = SynthonLibraryStore(cache_path)
+        try:
+            store.save(
+                embeddings,
+                ids=self.df["id"].astype(str).tolist(),
+                smiles=self.df["smiles"].astype(str).tolist(),
+                handles=self.df["primary_handle"].astype(str).tolist(),
+                source_catalog=self.catalog_path,
+                seed=self.seed,
+                extra_meta={
+                    "encoder": self.encoder_name,
+                    "encoder_version": ENCODER_VERSION,
+                    **{k: v for k, v in info.items() if k != "encoder"},
+                },
+            )
+        except Exception as exc:
+            # Read-only mount (Kaggle /kaggle/input) or missing h5py: the
+            # in-memory embeddings are still valid, just not cached.
+            logger.info(
+                "Embedding cache not written to %s (%s); continuing in-memory.",
+                cache_path, exc,
+            )
+
+    @property
+    def embedding_signature(self) -> Dict[str, object]:
+        """Signature of the embedding table for checkpoint validation."""
+        return {
+            "encoder": self.encoder_name,
+            "encoder_version": ENCODER_VERSION if self.encoder_name == "pharm3d" else "legacy",
+            "dim": self.embedding_dim,
+            "seed": self.seed,
+            "ids_hash": self._ids_hash,
+            "num_synthons": self.num_synthons,
+        }
 
     # ------------------------------------------------------------------
     # Compatibility masks
@@ -429,6 +528,7 @@ class SynthonCatalog:
         return (
             f"SynthonCatalog(path={self.catalog_path!r}, "
             f"n={self.num_synthons}, dim={self.embedding_dim}, "
+            f"encoder={self.encoder_name}, "
             f"min_fsp3={self.min_fsp3}, max_mw={self.max_mw})"
         )
 

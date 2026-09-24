@@ -99,11 +99,15 @@ class ResilientTrainer:
         self.struct_logger = StructuredLogger(os.path.join(self.output_dir, "metrics.jsonl"))
 
         # Data.
+        catalog_cfg = dict(config.get("catalog", {}))
         self.catalog = SynthonCatalog(
             config["data"]["synthon_catalog_path"],
             embedding_dim=config["model"].get("synthon_embedding_dim", 128),
-            min_fsp3=float(config.get("catalog", {}).get("min_fsp3", 0.42)),
-            max_mw=float(config.get("catalog", {}).get("max_mw", 220.0)),
+            min_fsp3=float(catalog_cfg.get("min_fsp3", 0.42)),
+            max_mw=float(catalog_cfg.get("max_mw", 220.0)),
+            seed=int(catalog_cfg.get("seed", 42)),
+            encoder=str(catalog_cfg.get("encoder", "pharm3d")),
+            cache_embeddings=bool(catalog_cfg.get("cache_embeddings", True)),
         )
         val_fraction = float(data_cfg.get("val_fraction", 0.1))
         trajectory_path = data_cfg.get("trajectory_dataset_path")
@@ -223,6 +227,7 @@ class ResilientTrainer:
                     self.model, self.optimizer, self.scheduler
                 )
             )
+            self._warn_on_catalog_signature_mismatch()
             for _ in range(self.global_step):
                 self.scheduler.step()
         else:
@@ -232,6 +237,28 @@ class ResilientTrainer:
     # ------------------------------------------------------------------
     # Setup helpers
     # ------------------------------------------------------------------
+    def _warn_on_catalog_signature_mismatch(self) -> None:
+        """Warn loudly when a restored checkpoint was trained against a
+        different synthon catalog or embedding encoder (tasklist Priority 1
+        changed the default encoder; old checkpoints + new encoder means
+        mismatched input distributions, which must never pass silently)."""
+        saved = getattr(self.ckpt_manager, "last_catalog_signature", None)
+        if not saved:
+            return  # legacy checkpoint: nothing recorded, nothing to compare
+        current = self.catalog.embedding_signature
+        diffs = [key for key in ("encoder", "dim", "ids_hash", "num_synthons")
+                 if saved.get(key) != current.get(key)]
+        if diffs:
+            print(
+                f"[trainer] WARNING: catalog/embedding signature mismatch vs "
+                f"checkpoint ({', '.join(diffs)}). Checkpoint encoder="
+                f"{saved.get('encoder')} ({saved.get('num_synthons')} synthons); "
+                f"current encoder={current['encoder']} ({current['num_synthons']} "
+                f"synthons). Stage-1 predictions will be degraded until "
+                f"retrained; set catalog.encoder='" + str(saved.get("encoder")) +
+                "' to continue with the original embedding space."
+            )
+
     @staticmethod
     def _collate(items):
         """Robust PyG batch collator that guards against 0-dim tensor errors."""
@@ -568,6 +595,7 @@ class ResilientTrainer:
                 metrics=entry,
                 is_best=is_best,
                 model_config=self.config.get("model"),
+                catalog_signature=self.catalog.embedding_signature,
             )
             self._write_latest_metrics(entry)
 
@@ -746,6 +774,7 @@ class ResilientTrainer:
                 is_best=True,
                 final=True,
                 model_config=self.config.get("model"),
+                catalog_signature=self.catalog.embedding_signature,
             )
 
         self.ckpt_manager.wait_for_uploads()

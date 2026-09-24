@@ -72,6 +72,10 @@ class CheckpointManager:
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+        # Catalog/embedding signature of the most recently restored
+        # checkpoint (None until a restore happens, or for legacy payloads).
+        self.last_catalog_signature: Optional[dict] = None
+
         self.token = os.environ.get("HF_TOKEN")
         self.api = None
         self._upload_lock = threading.Lock()
@@ -266,8 +270,15 @@ class CheckpointManager:
         is_best: bool = False,
         final: bool = False,
         model_config: Optional[dict] = None,
+        catalog_signature: Optional[dict] = None,
     ) -> Optional[Path]:
-        """Persist a fully completed epoch and optionally sync it to the Hub."""
+        """Persist a fully completed epoch and optionally sync it to the Hub.
+
+        ``catalog_signature`` (optional) records which synthon catalog /
+        embedding encoder produced the checkpoint's input space, so a later
+        resume with a different catalog or encoder can warn loudly instead
+        of silently feeding the policy mismatched embeddings.
+        """
         epoch = int(epoch)
         if epoch < 0:
             raise ValueError("checkpoint epoch must be >= 0")
@@ -278,6 +289,7 @@ class CheckpointManager:
             "step": int(step),
             "model_state_dict": _to_cpu_state(model.state_dict()),
             "model_config": model_config,
+            "catalog_signature": catalog_signature,
             "optimizer_state_dict": (
                 optimizer.state_dict() if optimizer is not None else None
             ),
@@ -507,6 +519,11 @@ class CheckpointManager:
             )
             self._purge_all_checkpoints()
             return 0, 0, float("inf")
+
+        # Remember the catalog/embedding signature the checkpoint was trained
+        # with (None for legacy checkpoints) so callers can warn when the
+        # current catalog no longer matches the checkpoint's input space.
+        self.last_catalog_signature = checkpoint.get("catalog_signature") or None
 
         missing, unexpected = model.load_state_dict(
             checkpoint["model_state_dict"], strict=False

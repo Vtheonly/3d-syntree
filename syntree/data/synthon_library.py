@@ -45,8 +45,14 @@ class SynthonLibraryStore:
         handles,
         source_catalog: str,
         seed: int,
+        extra_meta: Optional[Dict] = None,
     ) -> str:
-        """Atomically persist the embedding table and metadata."""
+        """Atomically persist the embedding table and metadata.
+
+        ``extra_meta`` merges into the stored JSON meta blob (used by the
+        pharm3d encoder to record the encoder name/version for cache
+        validation) and is ignored by older readers.
+        """
         os.makedirs(os.path.dirname(os.path.abspath(self.path)) or ".", exist_ok=True)
 
         emb = (
@@ -61,6 +67,7 @@ class SynthonLibraryStore:
                 "seed": int(seed),
                 "dim": int(emb.shape[1]),
                 "num_synthons": int(emb.shape[0]),
+                **(dict(extra_meta) if extra_meta else {}),
             }
         )
 
