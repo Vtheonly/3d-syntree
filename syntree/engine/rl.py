@@ -487,6 +487,52 @@ class RolloutBuffer:
         )
 
 
+def joint_log_prob_and_entropy(
+    model: torch.nn.Module,
+    catalog,
+    device: torch.device,
+    transition: "PPOTransition",
+):
+    """Re-evaluate a transition under the *current* policy.
+
+    Shared by PPO (importance-sampling ratios), the GFlowNet Trajectory
+    Balance loss (needs d/dtheta of sum_t log P_F) and DPO (log-ratios
+    against the frozen reference policy). Returns
+    ``(joint_log_prob, state_value, entropy)`` where the joint log-prob is
+    ``log P(reaction family) + log P(synthon | family)`` (synthon-only for
+    STOP) - the same factorization PPO trains.
+    """
+    batch = transition.state.to(device)
+    reaction_mask = transition.reaction_mask.to(device)
+    synthon_masks = transition.synthon_masks.to(device)
+    family = int(transition.family_idx)
+    selected_mask = synthon_masks[:, family, :]
+
+    out = model(
+        batch,
+        catalog.embeddings.to(device),
+        selected_mask,
+        reaction_mask,
+    )
+    action_log_prob = out["synthon_log_probs"][0, transition.action_idx]
+    if transition.action_idx == len(catalog):
+        joint_log_prob = action_log_prob
+    else:
+        reaction_log_prob = out["reaction_log_probs"][0, family]
+        joint_log_prob = reaction_log_prob + action_log_prob
+
+    reaction_probs = out["reaction_log_probs"][0].exp()
+    synthon_probs = out["synthon_log_probs"][0].exp()
+    reaction_entropy = -(reaction_probs * out["reaction_log_probs"][0]).sum()
+    synthon_entropy = -(synthon_probs * out["synthon_log_probs"][0]).sum()
+
+    return (
+        joint_log_prob,
+        out["state_value"][0],
+        reaction_entropy + synthon_entropy,
+    )
+
+
 class PPOFineTuner:
     """Clipped PPO optimizer over chemistry-constrained SBDD trajectories.
 
@@ -519,34 +565,8 @@ class PPOFineTuner:
         )
 
     def _log_prob_and_value(self, transition: PPOTransition):
-        batch = transition.state.to(self.device)
-        reaction_mask = transition.reaction_mask.to(self.device)
-        synthon_masks = transition.synthon_masks.to(self.device)
-        family = int(transition.family_idx)
-        selected_mask = synthon_masks[:, family, :]
-
-        out = self.model(
-            batch,
-            self.catalog.embeddings.to(self.device),
-            selected_mask,
-            reaction_mask,
-        )
-        action_log_prob = out["synthon_log_probs"][0, transition.action_idx]
-        if transition.action_idx == len(self.catalog):
-            joint_log_prob = action_log_prob
-        else:
-            reaction_log_prob = out["reaction_log_probs"][0, family]
-            joint_log_prob = reaction_log_prob + action_log_prob
-
-        reaction_probs = out["reaction_log_probs"][0].exp()
-        synthon_probs = out["synthon_log_probs"][0].exp()
-        reaction_entropy = -(reaction_probs * out["reaction_log_probs"][0]).sum()
-        synthon_entropy = -(synthon_probs * out["synthon_log_probs"][0]).sum()
-
-        return (
-            joint_log_prob,
-            out["state_value"][0],
-            reaction_entropy + synthon_entropy,
+        return joint_log_prob_and_entropy(
+            self.model, self.catalog, self.device, transition
         )
 
     @staticmethod
@@ -898,6 +918,7 @@ __all__ = [
     "collect_episode",
     "count_key_interactions",
     "apply_terminal_rewards",
+    "joint_log_prob_and_entropy",
     "SALT_BRIDGE_CUTOFF_A",
     "HBOND_CUTOFF_A",
 ]

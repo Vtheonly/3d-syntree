@@ -211,13 +211,12 @@ def main(argv=None) -> int:
                 print(f"[main] Stage 2 initialized with Stage 1 checkpoint (epoch {s1_epoch - 1}, step {s1_step})")
             else:
                 print("[main] Stage 2: No Stage 1 checkpoint found; starting with initialized weights.")
-        print(f"[main] Stage 2 PPO starting at episode {rl_start_episode}")
+        print(f"[main] Stage 2 starting at episode {rl_start_episode}")
 
         generator = SBDDGenerator(
             model, config, device, output_dir=args.output_dir or "./rl_outputs"
         )
         reward_fn = ThreeDReward(rl_cfg.get("reward", {}))
-        finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
 
         from syntree.engine.environment import MolecularAssemblyEnv
         from syntree.engine.rl import (
@@ -225,6 +224,39 @@ def main(argv=None) -> int:
             apply_terminal_rewards,
             collect_episode,
         )
+
+        # Stage-2 algorithm selection (tasklist RL modernisation): PPO
+        # (default, unchanged), Trajectory-Balance GFlowNet (samples all
+        # reward modes, P(x) ~ R(x)), or pairwise DPO.
+        algorithm = str(rl_cfg.get("algorithm", "ppo")).strip().lower()
+        if algorithm not in ("ppo", "gflownet", "dpo"):
+            print(
+                f"[main] reinforcement_learning.algorithm must be one of "
+                f"ppo | gflownet | dpo, got '{algorithm}'.",
+                file=sys.stderr,
+            )
+            return 2
+
+        if algorithm == "gflownet":
+            from syntree.engine.gflownet import GFlowNetTrainer
+
+            finetuner = GFlowNetTrainer(model, generator.catalog, device, rl_cfg)
+            print(
+                f"[main] Stage 2 algorithm: GFlowNet Trajectory Balance "
+                f"(lr={finetuner.lr}, lr_z={finetuner.lr_z}, "
+                f"reward_floor={finetuner.reward_floor})"
+            )
+        elif algorithm == "dpo":
+            from syntree.engine.dpo import DPOTrainer, build_preference_pairs
+
+            finetuner = DPOTrainer(model, generator.catalog, device, rl_cfg)
+            print(
+                f"[main] Stage 2 algorithm: Direct Preference Optimization "
+                f"(beta={finetuner.beta})"
+            )
+        else:
+            finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
+            print("[main] Stage 2 algorithm: PPO")
 
         assembly_env = MolecularAssemblyEnv(
             rxn_engine=generator.rxn_engine,
@@ -234,6 +266,29 @@ def main(argv=None) -> int:
             config=config,
             device=device,
         )
+
+        # Restore algorithm-specific state (GFlowNet log Z, DPO reference
+        # policy) that lives outside the model parameters.
+        def _algorithm_extra_state():
+            if algorithm == "gflownet":
+                return finetuner.state_dict()
+            if algorithm == "dpo":
+                return finetuner.state_dict()
+            return None
+
+        if getattr(rl_manager, "last_extra_state", None):
+            try:
+                if algorithm == "gflownet":
+                    finetuner.load_state_dict(rl_manager.last_extra_state)
+                    print(
+                        f"[main] restored GFlowNet log_Z="
+                        f"{float(finetuner.log_Z.item()):.4f} from checkpoint"
+                    )
+                elif algorithm == "dpo":
+                    finetuner.load_state_dict(rl_manager.last_extra_state)
+                    print("[main] restored DPO reference policy from checkpoint")
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[main] could not restore algorithm state: {exc}")
 
         candidate_dirs = [
             args.pocket_dir,
@@ -284,7 +339,7 @@ def main(argv=None) -> int:
         minibatch_size = max(1, int(rl_cfg.get("minibatch_size", 32)))
         history = []
         buffer = RolloutBuffer(
-            gamma=finetuner.gamma,
+            gamma=float(rl_cfg.get("gamma", 0.99)),
             gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
         )
         last_stats: Dict[str, float] = {}
@@ -332,11 +387,28 @@ def main(argv=None) -> int:
                      for item in pending],
                     reward_fn,
                 )
-                last_stats = finetuner.update_rollout(
-                    buffer, minibatch_size=minibatch_size
-                )
+                if algorithm == "gflownet":
+                    last_stats = finetuner.train_step(
+                        [
+                            (item["transitions"], details["reward"])
+                            for item, details in zip(pending, details_list)
+                        ]
+                    )
+                elif algorithm == "dpo":
+                    pair_episodes = [
+                        {"transitions": item["transitions"],
+                         "reward": details["reward"]}
+                        for item, details in zip(pending, details_list)
+                    ]
+                    last_stats = finetuner.train_step(
+                        build_preference_pairs(pair_episodes)
+                    )
+                else:
+                    last_stats = finetuner.update_rollout(
+                        buffer, minibatch_size=minibatch_size
+                    )
                 buffer = RolloutBuffer(
-                    gamma=finetuner.gamma,
+                    gamma=float(rl_cfg.get("gamma", 0.99)),
                     gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
                 )
                 for item, details in zip(pending, details_list):
@@ -371,6 +443,7 @@ def main(argv=None) -> int:
                     is_best=False,
                     model_config=config.get("model"),
                     catalog_signature=generator.catalog.embedding_signature,
+                    extra_state=_algorithm_extra_state(),
                 )
 
         rl_manager.save_checkpoint(
@@ -383,12 +456,13 @@ def main(argv=None) -> int:
             final=True,
             model_config=config.get("model"),
             catalog_signature=generator.catalog.embedding_signature,
+            extra_state=_algorithm_extra_state(),
         )
         rl_output = args.output_dir or "./rl_outputs"
         os.makedirs(rl_output, exist_ok=True)
         with open(os.path.join(rl_output, "rl_history.json"), "w") as f:
             json.dump(history, f, indent=2)
-        print(f"[main] Stage 2 complete: {episodes} PPO episodes")
+        print(f"[main] Stage 2 complete: {episodes} {algorithm.upper()} episodes")
         return 0
 
     if args.mode == "generate":

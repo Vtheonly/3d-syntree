@@ -75,6 +75,9 @@ class CheckpointManager:
         # Catalog/embedding signature of the most recently restored
         # checkpoint (None until a restore happens, or for legacy payloads).
         self.last_catalog_signature: Optional[dict] = None
+        # Algorithm-specific payload of the most recently restored
+        # checkpoint (e.g. GFlowNet log_Z + optimizer, DPO reference model).
+        self.last_extra_state: Optional[dict] = None
 
         self.token = os.environ.get("HF_TOKEN")
         self.api = None
@@ -271,6 +274,7 @@ class CheckpointManager:
         final: bool = False,
         model_config: Optional[dict] = None,
         catalog_signature: Optional[dict] = None,
+        extra_state: Optional[dict] = None,
     ) -> Optional[Path]:
         """Persist a fully completed epoch and optionally sync it to the Hub.
 
@@ -278,6 +282,11 @@ class CheckpointManager:
         embedding encoder produced the checkpoint's input space, so a later
         resume with a different catalog or encoder can warn loudly instead
         of silently feeding the policy mismatched embeddings.
+
+        ``extra_state`` (optional) carries algorithm-specific training state
+        that is not part of the model parameters - the GFlowNet's learnable
+        ``log Z`` and its optimizer, or the DPO frozen reference policy.
+        All values must be ``torch.save``-compatible.
         """
         epoch = int(epoch)
         if epoch < 0:
@@ -290,6 +299,7 @@ class CheckpointManager:
             "model_state_dict": _to_cpu_state(model.state_dict()),
             "model_config": model_config,
             "catalog_signature": catalog_signature,
+            "extra_state": extra_state,
             "optimizer_state_dict": (
                 optimizer.state_dict() if optimizer is not None else None
             ),
@@ -524,6 +534,7 @@ class CheckpointManager:
         # with (None for legacy checkpoints) so callers can warn when the
         # current catalog no longer matches the checkpoint's input space.
         self.last_catalog_signature = checkpoint.get("catalog_signature") or None
+        self.last_extra_state = checkpoint.get("extra_state") or None
 
         missing, unexpected = model.load_state_dict(
             checkpoint["model_state_dict"], strict=False
