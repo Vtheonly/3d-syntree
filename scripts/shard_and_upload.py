@@ -17,9 +17,15 @@ from huggingface_hub import HfApi
 
 
 def serialize_samples(samples: List) -> bytes:
+    """Serialize a sample list into deterministic gzipped torch bytes.
+
+    ``mtime=0`` pins the gzip header timestamp: otherwise every shard embeds
+    the wall-clock time and identical data produces differing SHA-256
+    digests, breaking cross-run reproducibility and dataset verification.
+    """
     buffer = io.BytesIO()
     torch.save(samples, buffer, _use_new_zipfile_serialization=True)
-    return gzip.compress(buffer.getvalue(), compresslevel=6)
+    return gzip.compress(buffer.getvalue(), compresslevel=6, mtime=0)
 
 
 def _write_batch(batch: List, split: str, out_dir: Path, start: int,

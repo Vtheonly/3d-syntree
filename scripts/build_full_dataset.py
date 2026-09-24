@@ -80,30 +80,46 @@ def download_and_extract(raw_dir: Path, zenodo_url: str = ZENODO_CROSSDOCKED_URL
     return raw_dir
 
 
+def _normalize_pocket_stem(stem: str) -> str:
+    """Strip the pocket marker from a pocket file stem."""
+    for suffix in ("_pocket10", "_pocket"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
+def _normalize_ligand_stem(stem: str) -> str:
+    """Strip the ligand marker from a ligand file stem."""
+    for suffix in ("_ligand", "_lig", "_dock"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
 def _best_ligand_match(pocket_stem: str, ligand_paths: List[Path]) -> Path:
     """Pick the ligand file that best matches a pocket stem.
 
     Preference order:
-    1. exact stem equality (``<id>_pocket10.pdb`` <-> ``<id>_ligand.sdf``),
-    2. longest shared prefix with the pocket stem (CrossDocked naming keeps
-       the complex id as the common prefix of both files),
+    1. exact normalized-stem equality (``<id>_pocket10.pdb`` <->
+       ``<id>_ligand.sdf`` / ``<id>_ligand.mol2``),
+    2. longest shared prefix with the normalized pocket stem (CrossDocked
+       naming keeps the complex id as the common prefix of both files),
     3. first ligand in the directory (single-complex folders).
     """
+    pocket_norm = _normalize_pocket_stem(pocket_stem)
     best = ligand_paths[0]
     best_score = -1
     for candidate in ligand_paths:
-        stem = candidate.stem
-        for suffix in ("_ligand", "_lig", "_dock"):
-            if stem.endswith(suffix):
-                stem = stem[: -len(suffix)]
-                break
-        if stem == pocket_stem:
+        ligand_norm = _normalize_ligand_stem(candidate.stem)
+        if ligand_norm == pocket_norm:
             return candidate
         common = 0
-        for a, b in zip(pocket_stem, stem):
+        for a, b in zip(pocket_norm, ligand_norm):
             if a != b:
                 break
             common += 1
+        # Prefer an exact-prefix ligand over one that merely shares a prefix
+        # with the raw (un-normalised) pocket stem.
         if common > best_score:
             best_score = common
             best = candidate
