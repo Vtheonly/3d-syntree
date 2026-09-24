@@ -81,6 +81,20 @@ class TestBuilderCLI:
         assert result.returncode == 1
         assert "No pocket/ligand pairs" in result.stderr
 
+    @pytest.mark.parametrize("n", [0, 1, 2, -5])
+    def test_max_complexes_below_three_rejected(self, tmp_path, n):
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        (raw / ".extracted_marker").touch()
+        result = _run([
+            "scripts/build_full_dataset.py",
+            "--raw-dir", str(raw),
+            "--output-dir", str(tmp_path / "out"),
+            "--max-complexes", str(n),
+        ])
+        assert result.returncode == 1
+        assert "--max-complexes must be >= 3" in result.stderr
+
     def test_help_documents_workflow(self):
         result = _run(["scripts/build_full_dataset.py", "--help"])
         assert result.returncode == 0

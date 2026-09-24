@@ -211,6 +211,12 @@ def main() -> int:
     if args.upload and not token:
         print("ERROR: --upload requires HF_TOKEN environment variable", file=sys.stderr)
         return 1
+    if args.max_complexes is not None and args.max_complexes < 3:
+        print(
+            "ERROR: --max-complexes must be >= 3 (one complex per 80/10/10 split)",
+            file=sys.stderr,
+        )
+        return 1
 
     catalog_path = Path(args.catalog)
     if not catalog_path.exists():
