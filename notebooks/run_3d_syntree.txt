@@ -1,0 +1,442 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "RC5O_z05JEOx"
+   },
+   "source": [
+    "# 3D-SynTree: Execution & Training Engine\n",
+    "**Structure-Based Molecular Design via Reaction-Constrained Synthon Assembly**\n",
+    "\n",
+    "This notebook acts purely as an execution and download wrapper for the `3d-syntree` repository.\n",
+    "All business logic, dataset streaming, and modeling reside strictly in the codebase.\n",
+    "\n",
+    "**Workflow:**\n",
+    "1. Environment & HF Authentication\n",
+    "2. Clone Repository\n",
+    "3. **Dedicated Update Cell (Always sync to latest Git commit)**\n",
+    "4. Dependency Installation\n",
+    "5. Download Pre-filtered Dataset & Synthon Assets (from HF Dataset Repo)\n",
+    "6. Hardware Verification\n",
+    "7. Execute Multi-Day Resilient Training (Checkpoints sync to HF Model Repo)\n",
+    "8. Verification & Diagnostics\n",
+    "9. Stage 2 Chemistry-Constrained PPO Fine-Tuning\n",
+    "10. Comparative Benchmark Battery"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "--LqfWJlJEO0"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 1: Environment & Hugging Face Authentication\n",
+    "import os, json\n",
+    "\n",
+    "HF_TOKEN = os.environ.get(\"HF_TOKEN\", \"\")\n",
+    "if not HF_TOKEN:\n",
+    "    try:\n",
+    "        from google.colab import userdata\n",
+    "        HF_TOKEN = userdata.get(\"HF_TOKEN\")\n",
+    "    except Exception:\n",
+    "        try:\n",
+    "            from kaggle_secrets import UserSecretsClient\n",
+    "            HF_TOKEN = UserSecretsClient().get_secret(\"HF_TOKEN\")\n",
+    "        except Exception:\n",
+    "            HF_TOKEN = \"\"\n",
+    "\n",
+    "if not HF_TOKEN:\n",
+    "    from getpass import getpass\n",
+    "    HF_TOKEN = getpass(\"\\nEnter your HuggingFace WRITE token (blank = local checkpoints only): \").strip()\n",
+    "\n",
+    "os.environ[\"HF_TOKEN\"] = HF_TOKEN\n",
+    "\n",
+    "if HF_TOKEN:\n",
+    "    from huggingface_hub import whoami\n",
+    "    try:\n",
+    "        info = whoami(token=HF_TOKEN)\n",
+    "        user = info.get(\"name\", \"?\")\n",
+    "        role = (info.get(\"auth\", {}).get(\"accessToken\", {}) or {}).get(\"role\", \"unknown\")\n",
+    "        print(f\"HF token verified for '{user}' (reported role: '{role}').\")\n",
+    "    except Exception as e:\n",
+    "        raise RuntimeError(f\"HF token validation failed: {e}\")\n",
+    "else:\n",
+    "    print(\"HF_TOKEN is empty. Dataset reads remain public; model checkpoints will stay local.\")\n",
+    "\n",
+    "RUNTIME_CONFIG = {\n",
+    "    \"repo_url\": \"https://github.com/Vtheonly/3d-syntree.git\",\n",
+    "    \"branch\": \"main\",\n",
+    "    \"hf_dataset_repo_id\": \"JJKK1212/3d-syntree-multidataset\",\n",
+    "    \"hf_model_repo_id\": \"JJKK1212/3d-syntree-checkpoints\",\n",
+    "    \"config_override\": {\n",
+    "        \"huggingface\": {\n",
+    "            \"enabled\": bool(HF_TOKEN),\n",
+    "            \"repo_id\": \"JJKK1212/3d-syntree-checkpoints\",\n",
+    "            \"push_every_n_epochs\": 2,\n",
+    "            \"private\": False\n",
+    "        },\n",
+    "        \"data\": {\n",
+    "            \"backend\": \"huggingface\",\n",
+    "            \"use_hf_dataset\": True,\n",
+    "            \"hf_dataset_repo\": \"JJKK1212/3d-syntree-multidataset\",\n",
+    "            \"data_dir\": \"./data/crossdocked\",\n",
+    "            \"synthon_catalog_path\": \"./data/enamine_3d_subset.parquet\",\n",
+    "            \"require_real_data\": True,\n",
+    "            \"min_real_samples\": 50,\n",
+    "            \"synthetic_fallback\": False,\n",
+    "            \"huggingface\": {\n",
+    "                \"repo_id\": \"JJKK1212/3d-syntree-multidataset\",\n",
+    "                \"revision\": \"main\",\n",
+    "                \"cache_dir\": \"./hf_cache\",\n",
+    "                \"max_cached_shards\": 4\n",
+    "            }\n",
+    "        },\n",
+    "        \"training\": {\n",
+    "            \"time_budget_hours\": 11.5,\n",
+    "            \"auto_scale\": {\n",
+    "                \"enabled\": True,\n",
+    "                \"target_vram_fraction\": 0.85,\n",
+    "                \"max_batch_size\": 2048,\n",
+    "                \"scale_model\": True\n",
+    "            }\n",
+    "        }\n",
+    "    }\n",
+    "}\n",
+    "\n",
+    "with open(\"runtime_config.json\", \"w\") as f:\n",
+    "    json.dump(RUNTIME_CONFIG, f, indent=2)\n",
+    "print(\"Runtime configuration profile generated successfully.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "a6AYhstLJEO2"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 2: Clone Repository (First-Time Setup)\n",
+    "import os\n",
+    "\n",
+    "REPO_DIR = \"3d-syntree\"\n",
+    "REPO_URL = RUNTIME_CONFIG[\"repo_url\"]\n",
+    "BRANCH = RUNTIME_CONFIG[\"branch\"]\n",
+    "\n",
+    "if not os.path.exists(REPO_DIR):\n",
+    "    print(f\"Cloning {REPO_URL} (branch: {BRANCH})...\")\n",
+    "    !git clone --branch {BRANCH} {REPO_URL} {REPO_DIR}\n",
+    "else:\n",
+    "    print(f\"{REPO_DIR} directory already exists.\")\n",
+    "\n",
+    "%cd {REPO_DIR}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "pElHLrW9JEO2"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 3: Dedicated Force-Update Cell\n",
+    "import os\n",
+    "\n",
+    "BRANCH = RUNTIME_CONFIG[\"branch\"]\n",
+    "\n",
+    "print(f\"Fetching latest commits and hard-resetting to origin/{BRANCH}...\")\n",
+    "!git fetch --all --prune\n",
+    "!git checkout {BRANCH}\n",
+    "!git reset --hard origin/{BRANCH}\n",
+    "!git clean -fd\n",
+    "\n",
+    "print(\"\\nCurrent commit:\")\n",
+    "!git log -1 --oneline"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "ywgYCz19JEO3"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 4: Install Dependencies & Setup GNINA Docking Oracle\n",
+    "!wget -q https://github.com/gnina/gnina/releases/download/v1.1/gnina -O /usr/local/bin/gnina && chmod +x /usr/local/bin/gnina\n",
+    "!/usr/local/bin/gnina --version || echo 'gnina unavailable'\n",
+    "\n",
+    "print(\"Installing requirements and package in editable mode...\")\n",
+    "!pip install --quiet --upgrade pip\n",
+    "!pip install --quiet -r requirements.txt\n",
+    "!pip install --quiet -e .\n",
+    "\n",
+    "import rdkit, torch, torch_geometric, huggingface_hub\n",
+    "print(\n",
+    "    f\"Environment Verified: PyTorch {torch.__version__} | \"\n",
+    "    f\"PyG {torch_geometric.__version__} | RDKit {rdkit.__version__} | \"\n",
+    "    f\"Hugging Face Hub {huggingface_hub.__version__}\"\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "build-real-dataset-cell"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 4.5: (RUN ONCE) Build & Upload Complete Real Dataset to HF Hub\n",
+    "# Set BUILD_REAL_DATASET = True to download full CrossDocked2020 (~4GB from Zenodo),\n",
+    "# extract 10A pockets, validate reaction trajectories with RDKit, and upload to HF.\n",
+    "# Once uploaded, set this back to False for all future training sessions.\n",
+    "BUILD_REAL_DATASET = False\n",
+    "\n",
+    "if BUILD_REAL_DATASET:\n",
+    "    print(\"Starting automated full-scale dataset build and upload to Hugging Face...\")\n",
+    "    !python scripts/build_full_dataset.py \\\n",
+    "        --repo-id JJKK1212/3d-syntree-multidataset \\\n",
+    "        --upload\n",
+    "else:\n",
+    "    print(\"Skipping dataset build. Using preprocessed shards from Hugging Face.\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "x9VpfievJEO3"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 5: Sync Clean Sharded Dataset & Synthon Catalog from HF Dataset Hub\n",
+    "DATASET_REPO = RUNTIME_CONFIG[\"hf_dataset_repo_id\"]\n",
+    "print(f\"Synchronizing preprocessed assets from HF Dataset: {DATASET_REPO}...\")\n",
+    "\n",
+    "!python scripts/download_assets.py \\\n",
+    "    --dataset-repo {DATASET_REPO} \\\n",
+    "    --dataset-revision main \\\n",
+    "    --output-dir ./data\n",
+    "\n",
+    "import json\n",
+    "with open(\"./data/assets_manifest.json\") as f:\n",
+    "    meta = json.load(f)\n",
+    "\n",
+    "train_samples = meta[\"splits\"][\"train\"][\"total_samples\"]\n",
+    "print(f\"\\nAsset Sync Complete: {train_samples} training samples available from {DATASET_REPO}.\")\n",
+    "\n",
+    "assert train_samples >= 50, (\n",
+    "    f\"ERROR: {DATASET_REPO} only contains {train_samples} samples (2-sample stub).\\n\"\n",
+    "    \"To run full multi-hour production training, build and upload the real dataset using:\\n\"\n",
+    "    \"  Set BUILD_REAL_DATASET = True in CELL 4.5 and run it once, or locally:\\n\"\n",
+    "    \"  python scripts/build_full_dataset.py --upload\"\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "4sa3sckgJEO4"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 6: Hardware Verification\n",
+    "import json, torch\n",
+    "from syntree.utils.hardware import configure_runtime_environment, free_vram_bytes\n",
+    "\n",
+    "device_info = configure_runtime_environment()\n",
+    "print(\"Hardware Execution Profile:\")\n",
+    "print(json.dumps(device_info, indent=2))\n",
+    "\n",
+    "assert device_info[\"device\"].startswith(\"cuda\"), (\n",
+    "    \"ERROR: No GPU detected! Go to Runtime > Change runtime type > GPU.\"\n",
+    ")\n",
+    "\n",
+    "free_gb = free_vram_bytes() / 1024**3\n",
+    "print(f\"Free VRAM: {free_gb:.2f} GB -> Target 85% utilization: {0.85 * free_gb:.2f} GB\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "checkpoint-clean-reset"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 6.5: Training Mode Configuration (Fresh Run vs Auto-Resume)\n",
+    "# Set FRESH_TRAINING = True to completely wipe old checkpoints and start from epoch 0.\n",
+    "# Set FRESH_TRAINING = False to auto-resume from the latest checkpoint (disconnection immunity).\n",
+    "FRESH_TRAINING = True\n",
+    "\n",
+    "import os, shutil\n",
+    "from huggingface_hub import HfApi\n",
+    "\n",
+    "if FRESH_TRAINING:\n",
+    "    # 1. Clean local checkpoint artifacts\n",
+    "    checkpoint_dir = os.path.join(\"experiments\", \"checkpoints\")\n",
+    "    for path in (\n",
+    "        checkpoint_dir,\n",
+    "        os.path.join(\"experiments\", \"latest_metrics.json\"),\n",
+    "        os.path.join(\"experiments\", \"progress.json\"),\n",
+    "        os.path.join(\"experiments\", \"history.json\"),\n",
+    "    ):\n",
+    "        if os.path.isdir(path):\n",
+    "            shutil.rmtree(path)\n",
+    "        elif os.path.exists(path):\n",
+    "            os.remove(path)\n",
+    "\n",
+    "    # 2. Clean remote Hugging Face checkpoint artifacts\n",
+    "    token = os.environ.get(\"HF_TOKEN\")\n",
+    "    model_repo = RUNTIME_CONFIG.get(\"hf_model_repo_id\")\n",
+    "    if token and model_repo:\n",
+    "        try:\n",
+    "            api = HfApi(token=token)\n",
+    "            remote_files = api.list_repo_files(repo_id=model_repo, repo_type=\"model\")\n",
+    "            deleted = 0\n",
+    "            for f in remote_files:\n",
+    "                if f in (\"manifest.json\", \"progress.json\") or f.startswith(\"checkpoints/\"):\n",
+    "                    api.delete_file(path_in_repo=f, repo_id=model_repo, repo_type=\"model\")\n",
+    "                    deleted += 1\n",
+    "            print(f\"Fresh mode: purged {deleted} old checkpoint file(s) from HF Hub ({model_repo}).\")\n",
+    "        except Exception as e:\n",
+    "            print(f\"Notice: Could not purge remote repo ({e}); --fresh will overwrite on save.\")\n",
+    "\n",
+    "    TRAIN_FLAG = \"--fresh\"\n",
+    "    print(\"Training mode: FRESH RUN (--fresh, starting from epoch 0).\")\n",
+    "else:\n",
+    "    TRAIN_FLAG = \"--resume-auto\"\n",
+    "    print(\"Training mode: AUTO-RESUME (--resume-auto, continuing from latest checkpoint).\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "l7SvCIlDJEO4"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 7: Launch Resilient Training\n",
+    "print(f\"Starting 3D-SynTree training engine ({TRAIN_FLAG})...\")\n",
+    "\n",
+    "!python main.py \\\n",
+    "    --mode train \\\n",
+    "    --config configs/train_colab_12h.json \\\n",
+    "    --runtime-config ../runtime_config.json \\\n",
+    "    $TRAIN_FLAG"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "RBdZFS7TJEO4"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 8: Status & Checkpoint Sync Verification\n",
+    "import json, os\n",
+    "from syntree.utils.checkpoint import verify_hf_sync\n",
+    "\n",
+    "MODEL_REPO = RUNTIME_CONFIG[\"hf_model_repo_id\"]\n",
+    "status = verify_hf_sync(MODEL_REPO)\n",
+    "\n",
+    "print(\"=== SESSION STATUS ===\")\n",
+    "print(f\"Hugging Face Model Repo: {MODEL_REPO}\")\n",
+    "print(f\"Latest Remote Checkpoint: {status['latest_remote_checkpoint']}\")\n",
+    "print(f\"Total Epochs Completed:   {status['epochs_completed']}\")\n",
+    "print(f\"Sync Operational:         {status['sync_ok']}\")\n",
+    "if \"error\" in status and status[\"error\"]:\n",
+    "    print(f\"Sync Alert: {status['error']}\")\n",
+    "\n",
+    "progress_path = \"experiments/checkpoints/progress.json\"\n",
+    "if os.path.exists(progress_path):\n",
+    "    with open(progress_path) as f:\n",
+    "        progress = json.load(f)\n",
+    "    print(f\"Local sequential progress: {progress.get('completed_epochs', [])}\")\n",
+    "\n",
+    "if os.path.exists(\"experiments/latest_metrics.json\"):\n",
+    "    with open(\"experiments/latest_metrics.json\") as f:\n",
+    "        print(\"\\nLatest Validation Metrics:\")\n",
+    "        print(json.dumps(json.load(f), indent=2))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "OXsm4UXfJEO5"
+   },
+   "source": [
+    "## Stage 2: Chemistry-Constrained PPO Fine-Tuning\n",
+    "Optimizes the policy using the GNINA/Vina docking oracle and soft Lennard-Jones contact energy without relaxing the Enamine reaction grammar."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "lR0daEzhJEO5"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 9: Stage 2 PPO\n",
+    "print(\"Starting chemistry-constrained PPO fine-tuning...\")\n",
+    "!python main.py \\\n",
+    "    --mode rl \\\n",
+    "    --config configs/rl_colab_12h.json \\\n",
+    "    --pocket-dir ./data/test_pockets \\\n",
+    "    --resume-auto"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "MkgoKiGYJEO5"
+   },
+   "source": [
+    "## Comparative Evaluation Battery\n",
+    "Executes PoseBusters physical validity, Fsp3, uniqueness, and docking benchmarks across target pockets."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "bJQzxPDuJEO6"
+   },
+   "outputs": [],
+   "source": [
+    "# CELL 10: Comparative Benchmark\n",
+    "!python scripts/run_comparative_benchmark.py \\\n",
+    "    --manifest ./benchmarks/targets.jsonl \\\n",
+    "    --outputs ./benchmarks/outputs \\\n",
+    "    --methods 3d-syntree \\\n",
+    "    --limit 100"
+   ]
+  }
+ ],
+ "metadata": {
+  "accelerator": "GPU",
+  "colab": {
+   "gpuType": "T4",
+   "provenance": []
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 0
+}

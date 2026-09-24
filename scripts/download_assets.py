@@ -51,7 +51,7 @@ _SP3_RICH_SYNTHONS = [
     ("CCC(C)C(C)C=O", "aldehyde"),                      # branched aliphatic aldehyde
     # alkynes
     ("CCCCCC#C", "alkyne"),                             # 1-hexyne (Fsp3 0.67)
-    ("CCC#CCCCO", "alkyne"),                            # 5-hexyn-1-ol (Fsp3 0.67)
+    ("CCCC#CCCO", "alkyne"),                            # 5-hexyn-1-ol (Fsp3 0.67)
     # azides
     ("CCCCCN=[N+]=[N-]", "azide"),                      # 1-azidopentane (Fsp3 1.0)
     ("CC(C)CCN=[N+]=[N-]", "azide"),                    # branched alkyl azide
@@ -81,8 +81,8 @@ _BIFUNCTIONAL_SYNTHONS = [
     ("CC(O)CO", "alcohol"),
     ("C#CCO", "alkyne"),
     ("C#CCN", "alkyne"),
-    ("N=[N+]=[N-]CCO", "azide"),
-    ("N=[N+]=[N-]CC#C", "azide"),
+    ("[N-]=[N+]=NCCO", "azide"),
+    ("[N-]=[N+]=NCC#C", "azide"),
     ("Brc1ccc(B(O)O)cc1", "aryl_halide"),     # aryl halide + boronic acid
     ("Brc1ccc(N)cc1", "aryl_halide"),         # aryl halide + amine
     ("Brc1ccc(O)cc1", "aryl_halide"),         # aryl halide + alcohol
@@ -112,7 +112,7 @@ _SULFONAMIDE_ALKYLATION_SYNTHONS = [
     # alkyl halides with a second handle (growth continues)
     ("NCCBr", "alkyl_halide"),                         # 2-bromoethylamine (amine)
     ("OCCBr", "alkyl_halide"),                         # 2-bromoethanol (alcohol)
-    ("N=[N+]=[N-]CCCBr", "alkyl_halide"),              # 3-bromopropyl azide (azide)
+    ("[N-]=[N+]=NCCCBr", "alkyl_halide"),              # 3-bromopropyl azide (azide)
 ]
 
 # --- aryl coupling partners (Fsp3-exempt: aromatic by chemistry) ----------
