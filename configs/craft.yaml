@@ -1,5 +1,3 @@
-# Craft Mode (Kaggle) configuration.
-# Usage: python craft/craft_mode.py --config configs/craft.yaml
 search_root: "/kaggle/input"
 output_dir: "/kaggle/working/3d-syntree-dataset"
 shard_mb: 500

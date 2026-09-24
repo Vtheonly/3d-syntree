@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from core.checksums import verify_file
 from core.manifest import ManifestManager
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class DatasetDiscovery:
         search_root: Path | str = "/kaggle/input",
         expected_sources: Tuple[str, ...] = ("crossdocked", "enamine_catalog"),
     ) -> Path:
-        """Locate the raw unprocessed dataset directory by manifest verification."""
+        """Locate raw unprocessed dataset directory by manifest verification."""
         root = Path(search_root).resolve()
         if not root.is_dir():
             raise FileNotFoundError(f"Search root does not exist: {root}")
@@ -45,13 +46,10 @@ class DatasetDiscovery:
                     logger.debug("Skipping invalid manifest at %s: %s", manifest_path, exc)
 
         if not candidates:
-            # Fallback signature search: exact archive name + catalog parquet.
+            # Fallback signature search: check for raw archives directly
             for dirpath, _, filenames in os.walk(root):
-                has_archive = "crossdocked_pocket10.tar.gz" in filenames
-                has_catalog = any(
-                    "enamine" in f.lower() and f.endswith(".parquet")
-                    for f in filenames
-                )
+                has_archive = any(f == "crossdocked_pocket10.tar.gz" for f in filenames)
+                has_catalog = any("enamine" in f.lower() and f.endswith(".parquet") for f in filenames)
                 if has_archive and has_catalog:
                     candidates.append(Path(dirpath))
 
@@ -61,21 +59,16 @@ class DatasetDiscovery:
                 "Ensure the Hugging Face raw dataset is mounted as a Kaggle Input."
             )
         if len(candidates) > 1:
-            logger.warning(
-                "Multiple raw datasets found: %s. Selecting best match: %s",
-                candidates,
-                candidates[0],
-            )
+            logger.warning("Multiple raw datasets found: %s. Selecting best match: %s", candidates, candidates[0])
+
         return candidates[0]
 
     @staticmethod
     def discover_crafted_dataset(
         search_root: Path | str = "/kaggle/input",
     ) -> Path:
-        """Locate a processed shards directory by validating train/manifest.json."""
+        """Locate processed shards directory by validating train/manifest.json."""
         root = Path(search_root).resolve()
-        if not root.is_dir():
-            raise FileNotFoundError(f"Search root does not exist: {root}")
         candidates: List[Path] = []
 
         for dirpath, _, filenames in os.walk(root):
@@ -85,7 +78,5 @@ class DatasetDiscovery:
                     candidates.append(parent)
 
         if not candidates:
-            raise FileNotFoundError(
-                f"No valid crafted dataset with train/val splits found under {root}"
-            )
+            raise FileNotFoundError(f"No valid crafted dataset with train/val splits found under {root}")
         return candidates[0]
