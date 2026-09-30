@@ -87,8 +87,6 @@ def validate_config(config: dict) -> list:
     for key in ("batch_size",):
         if key in data and int(data[key]) < 1:
             errors.append(f"data.{key} must be >= 1")
-    # synthetic_samples == 0 is a valid production setting (no synthetic
-    # fallback); only negatives are meaningless.
     if "synthetic_samples" in data and int(data["synthetic_samples"]) < 0:
         errors.append("data.synthetic_samples must be >= 0")
     if "accumulate_grad_batches" in data and int(data["accumulate_grad_batches"]) < 1:
@@ -174,6 +172,18 @@ def main(argv=None) -> int:
         help="Directory of pocket PDBs for --mode rl (overrides the "
              "config and the data-dir scan).",
     )
+    # Direct CLI dataset path overrides
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="override data.data_dir")
+    parser.add_argument("--catalog", type=str, default=None,
+                        help="override data.synthon_catalog_path")
+    parser.add_argument("--data-backend", type=str, default=None,
+                        help="override data.backend (e.g. kaggle_offline, huggingface, local)")
+    parser.add_argument("--preload-ram", dest="preload_ram", action="store_true", default=None,
+                        help="override data.preload_to_ram=True")
+    parser.add_argument("--no-preload-ram", dest="preload_ram", action="store_false",
+                        help="override data.preload_to_ram=False")
+
     args = parser.parse_args(argv)
 
     from syntree.utils.logger import configure_logging
@@ -190,13 +200,20 @@ def main(argv=None) -> int:
         config.setdefault("data", {})["output_dir"] = args.output_dir
     if args.epochs is not None:
         config.setdefault("training", {})["max_epochs"] = int(args.epochs)
+    if args.data_dir is not None:
+        config.setdefault("data", {})["data_dir"] = args.data_dir
+    if args.catalog is not None:
+        config.setdefault("data", {})["synthon_catalog_path"] = args.catalog
+    if args.data_backend is not None:
+        config.setdefault("data", {})["backend"] = args.data_backend
+    if args.preload_ram is not None:
+        config.setdefault("data", {})["preload_to_ram"] = args.preload_ram
 
     # Fresh mode overrides resume
     if args.fresh:
         args.resume_auto = False
 
-    # Fail-closed config validation (before any hardware work or asset
-    # staging: a session-wasting typo should die in milliseconds).
+    # Fail-closed config validation
     validation_errors = validate_config(config)
     if validation_errors:
         for error in validation_errors:
@@ -227,7 +244,7 @@ def main(argv=None) -> int:
     if not os.path.exists(catalog_path):
         print(
             f"[main] catalog missing ({catalog_path}); "
-            "run scripts/download_assets.py first.",
+            "run scripts/download_assets.py or craft/craft_mode.py first.",
             file=sys.stderr,
         )
         return 2
@@ -306,8 +323,6 @@ def main(argv=None) -> int:
         rl_output_dir = args.output_dir or "./rl_outputs"
         rl_ckpt_dir = os.path.join(rl_output_dir, "checkpoints")
         rl_checkpoint_config = {**config, "huggingface": {"enabled": False}}
-        # Stage 2 checkpoints fire every `checkpoint_every` episodes, so
-        # progress entries are monotonic but intentionally non-contiguous.
         rl_manager = CheckpointManager(
             rl_checkpoint_config, ckpt_dir=rl_ckpt_dir, progress_mode="episode"
         )
@@ -331,17 +346,10 @@ def main(argv=None) -> int:
             apply_terminal_rewards,
             collect_episode,
         )
-
-        # Deterministic Stage 2: seed every RNG before the first rollout so
-        # identical configs produce identical episodes, rewards and updates
-        # (the policy's action sampling draws from the global torch RNG).
         from syntree.engine.trainer import seed_everything
 
         seed_everything(int(config.get("system", {}).get("seed", 42)))
 
-        # Stage-2 algorithm selection (tasklist RL modernisation): PPO
-        # (default, unchanged), Trajectory-Balance GFlowNet (samples all
-        # reward modes, P(x) ~ R(x)), or pairwise DPO.
         algorithm = str(rl_cfg.get("algorithm", "ppo")).strip().lower()
         if algorithm not in ("ppo", "gflownet", "dpo"):
             print(
@@ -381,8 +389,6 @@ def main(argv=None) -> int:
             device=device,
         )
 
-        # Restore algorithm-specific state (GFlowNet log Z, DPO reference
-        # policy) that lives outside the model parameters.
         def _algorithm_extra_state():
             if algorithm == "gflownet":
                 return finetuner.state_dict()
@@ -401,13 +407,15 @@ def main(argv=None) -> int:
                 elif algorithm == "dpo":
                     finetuner.load_state_dict(rl_manager.last_extra_state)
                     print("[main] restored DPO reference policy from checkpoint")
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:
                 print(f"[main] could not restore algorithm state: {exc}")
 
         candidate_dirs = [
             args.pocket_dir,
             rl_cfg.get("pocket_dir"),
             "./data/test_pockets",
+            os.path.join(data_dir, "targets"),
+            os.path.join(os.path.dirname(data_dir.rstrip("/")), "targets"),
             os.path.join(os.path.dirname(data_dir.rstrip("/")), "test_pockets"),
             os.path.join(data_dir, "test_pockets"),
             data_dir,
@@ -440,7 +448,7 @@ def main(argv=None) -> int:
         if not pocket_paths:
             print(
                 f"[main] no pocket PDB files found for --mode rl: tried {[c for c in candidate_dirs if c]}. "
-                "Provide --pocket-dir or ensure test_pockets/ is staged.",
+                "Provide --pocket-dir or ensure targets/ is staged.",
                 file=sys.stderr,
             )
             return 2
@@ -457,9 +465,6 @@ def main(argv=None) -> int:
             gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
         )
         last_stats: Dict[str, float] = {}
-        # Deferred terminal rewards: base components are computed per episode
-        # right after collection, and the batch Tanimoto diversity term is
-        # applied when the rollout batch closes (tasklist Priority 6).
         pending: list = []
 
         for episode in range(rl_start_episode, episodes):
@@ -643,28 +648,4 @@ def main(argv=None) -> int:
 
 
 def _load_generated(sdf_dir: str):
-    """Load generated molecules + recipes from an outputs directory."""
-    from rdkit import Chem
-
-    mols, recipes = [], []
-    if not os.path.isdir(sdf_dir):
-        return mols, recipes
-
-    for name in sorted(os.listdir(sdf_dir)):
-        if name.startswith("ligand_") and name.endswith(".sdf"):
-            supplier = Chem.SDMolSupplier(os.path.join(sdf_dir, name), removeHs=False)
-            mol = supplier[0] if len(supplier) else None
-            mols.append(mol)
-            recipe_path = os.path.join(
-                sdf_dir, name.replace("ligand_", "recipe_").replace(".sdf", ".json")
-            )
-            if os.path.exists(recipe_path):
-                with open(recipe_path) as f:
-                    recipes.append(json.load(f))
-            else:
-                recipes.append(None)
-    return mols, recipes
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    """Load generate
