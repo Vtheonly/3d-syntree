@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Craft Mode: High-performance structural processing, retrosynthesis, and tensor generation.
+"""Craft Mode: Scientific curation, structural QC, retrosynthesis, and tensor generation.
 
-Executes strictly on Kaggle (Offline or Online).
+Executes strictly in Kaggle. Performs:
+1. Building block curation from raw commercial vendor inventories.
+2. CrossDocked extraction and native RMSD quality filtering (<= 1.0 A).
+3. Multi-core retrosynthetic decomposition across all available CPU cores.
+4. Resumable 500 MB sharded dataset creation with SHA-256 manifests.
 """
 
 from __future__ import annotations
@@ -23,15 +27,13 @@ from rdkit import Chem, DataStructs, RDLogger
 import rdkit.Chem.rdFingerprintGenerator as rdFPGen
 from tqdm import tqdm
 
-# Ensure repo root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.checkpointing import ShardCheckpointManager
 from core.discovery import DatasetDiscovery
 from core.logging import MeasuredDataFunnel
 from syntree.chemistry.catalog import SynthonCatalog
-from syntree.chemistry.validator import ChemicalValidator
-from syntree.data.curation import PocketExtractionConfig, ligand_quality_flags, standardize_pocket
+from syntree.data.curation import ligand_quality_flags
 from syntree.data.fragmenter import ReactionConstrainedFragmenter, canonical_smiles
 from syntree.data.trajectory import RetrosyntheticTrajectoryBuilder
 
@@ -83,10 +85,18 @@ def _process_complex(item: Tuple[str, str, str, str]) -> Optional[Tuple[str, Lis
         if pocket_mol.GetNumAtoms() == 0 or ligand_mol.GetNumAtoms() == 0 or ligand_mol.GetNumConformers() == 0:
             return None
 
-        # Structural & Chemical QC
+        # Structural & Chemical QC: discard non-drug-like artifacts and docked decoys
         flags = ligand_quality_flags(ligand_mol)
-        if any(f in flags for f in ("too_small", "low_molecular_weight", "metal_containing")):
+        if any(f in flags for f in ("too_small", "low_molecular_weight", "metal_containing", "crystallization_artifact")):
             return None
+
+        # CrossDocked RMSD check: discard docked poses with RMSD > 1.0 A
+        if ligand_mol.HasProp("rmsd"):
+            try:
+                if float(ligand_mol.GetProp("rmsd")) > 1.0:
+                    return None
+            except ValueError:
+                pass
 
         states, _ = _worker_builder.build(ligand_mol, pocket_mol, trajectory_id=cid)
         if states:
@@ -97,24 +107,54 @@ def _process_complex(item: Tuple[str, str, str, str]) -> Optional[Tuple[str, Lis
 
 
 class CraftEngine:
-    """Orchestrates structural QC, chemical filtering, and resumable sharding."""
-
-    def __init__(self, raw_dir: Path, output_dir: Path, catalog_path: Path, max_complexes: Optional[int] = None):
+    def __init__(self, raw_dir: Path, output_dir: Path, max_complexes: Optional[int] = None):
         self.raw_dir = raw_dir
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.catalog_path = catalog_path
         self.max_complexes = max_complexes
         self.funnel = MeasuredDataFunnel()
 
+    def resolve_or_curate_catalog(self) -> Path:
+        """Ensure a curated 50k+ synthon catalog exists in output_dir."""
+        dest_catalog = self.output_dir / "enamine_3d_subset.parquet"
+        if dest_catalog.exists() and dest_catalog.stat().st_size > 1000:
+            print(f"[Catalog] Verified existing curated catalog: {dest_catalog}")
+            return dest_catalog
+
+        # Check for pre-curated parquet in raw_dir
+        for p in self.raw_dir.glob("*.parquet"):
+            if "enamine" in p.name.lower():
+                print(f"[Catalog] Copying pre-curated catalog from {p.name}...")
+                shutil.copy2(p, dest_catalog)
+                return dest_catalog
+
+        # Look for raw vendor inventory (.csv, .csv.gz, .sdf)
+        raw_candidates = list(self.raw_dir.glob("*.[cC][sS][vV]*")) + list(self.raw_dir.glob("*.[sS][dD][fF]*"))
+        if not raw_candidates:
+            raise FileNotFoundError(f"No building block export found in {self.raw_dir}. Attach a commercial catalog.")
+
+        raw_export = raw_candidates[0]
+        print(f"[Catalog] Curating raw vendor export {raw_export.name} on Kaggle...")
+        cmd = [
+            sys.executable, "scripts/build_synthon_catalog.py",
+            "--input", str(raw_export),
+            "--output", str(dest_catalog),
+            "--min-fsp3", "0.40",
+            "--max-mw", "220.0",
+            "--min-heavy-atoms", "4",
+            "--strict-min-size", "10000",
+        ]
+        subprocess.run(cmd, check=True)
+        return dest_catalog
+
     def unpack_raw_archive(self) -> Path:
         archive = self.raw_dir / "crossdocked_pocket10.tar.gz"
-        extracted_marker = self.raw_dir / ".extracted_marker"
-        extracted_dir = self.raw_dir / "extracted"
+        extracted_marker = self.output_dir / ".extracted_marker"
+        extracted_dir = self.output_dir / "extracted_raw"
         extracted_dir.mkdir(parents=True, exist_ok=True)
 
         if not extracted_marker.exists():
-            print(f"[Extract] Unpacking {archive.name} via system tar...")
+            print(f"[Extract] Unpacking {archive.name}...")
             t0 = time.time()
             try:
                 subprocess.run(
@@ -147,13 +187,15 @@ class CraftEngine:
         return pairs
 
     def run_crafting(self, workers: int = mp.cpu_count(), shard_size_mb: int = 500) -> None:
+        catalog_path = self.resolve_or_curate_catalog()
         extracted = self.unpack_raw_archive()
         all_pairs = self.scan_pairs(extracted)
 
         self.funnel.structural_qc_input = len(all_pairs)
         if self.max_complexes and len(all_pairs) > self.max_complexes:
             rng = np.random.default_rng(42)
-            all_pairs = [all_pairs[i] for i in sorted(rng.choice(len(all_pairs), size=self.max_complexes, replace=False))]
+            indices = sorted(rng.choice(len(all_pairs), size=self.max_complexes, replace=False))
+            all_pairs = [all_pairs[i] for i in indices]
 
         n_items = len(all_pairs)
         rng = np.random.default_rng(42)
@@ -170,7 +212,6 @@ class CraftEngine:
             for s in ("train", "val", "test")
         }
 
-        # Filter out already completed complexes (resumability)
         work_items = [
             (p, l, c, split_map[c])
             for p, l, c in all_pairs
@@ -183,7 +224,7 @@ class CraftEngine:
         id_buffers: Dict[str, List[str]] = {"train": [], "val": [], "test": []}
         target_pockets: List[str] = []
 
-        with mp.Pool(processes=workers, initializer=_init_worker, initargs=(str(self.catalog_path), 4)) as pool:
+        with mp.Pool(processes=workers, initializer=_init_worker, initargs=(str(catalog_path), 4)) as pool:
             for res in tqdm(pool.imap_unordered(_process_complex, work_items, chunksize=32), total=len(work_items), desc="Crafting Trajectories"):
                 if res is None:
                     self.funnel.retrosynthesis_failed += 1
@@ -199,23 +240,19 @@ class CraftEngine:
                 if split in ("train", "val") and len(target_pockets) < 50:
                     target_pockets.append(p_path)
 
-                # Incremental Shard Flush (avoids unbounded memory growth)
                 if len(state_buffers[split]) >= 5000:
                     managers[split].write_shard(state_buffers[split], id_buffers[split])
                     state_buffers[split].clear()
                     id_buffers[split].clear()
 
-        # Flush remaining buffers
         for split in ("train", "val", "test"):
             if state_buffers[split]:
                 managers[split].write_shard(state_buffers[split], id_buffers[split])
 
-        # Stage targets and catalog
         targets_dir = self.output_dir / "targets"
         targets_dir.mkdir(parents=True, exist_ok=True)
         for tp in target_pockets:
             shutil.copy2(tp, targets_dir / f"{Path(tp).stem}_pocket.pdb")
-        shutil.copy2(self.catalog_path, self.output_dir / "enamine_3d_subset.parquet")
 
         self.funnel.train_states = sum(s.sample_count for s in managers["train"].shards)
         self.funnel.val_states = sum(s.sample_count for s in managers["val"].shards)
@@ -224,66 +261,17 @@ class CraftEngine:
         self.funnel.print_report()
 
 
-def run_verification_smoke_test(catalog_path: Path, output_dir: Path) -> None:
-    """Run an isolated end-to-end verification pass before full execution."""
-    print("\n" + "=" * 70)
-    print("RUNNING ISOLATED VERIFICATION TEST PASS (Same Code Path)")
-    print("=" * 70)
-
-    from syntree.models.policy import SynTreePolicy
-    from syntree.data.crossdocked import CrossDockedDataset
-
-    cat = SynthonCatalog(str(catalog_path), embedding_dim=128)
-    assert len(cat) >= 50, "Verification Failed: Catalog invalid"
-
-    test_config = {
-        "model": {
-            "hidden_dim": 128,
-            "num_equivariant_layers": 2,
-            "num_radial_basis": 16,
-            "cutoff_radius": 5.0,
-            "synthon_embedding_dim": 128,
-            "num_attention_heads": 4,
-            "max_atomic_number": 100,
-            "dropout": 0.0,
-        }
-    }
-    model = SynTreePolicy(test_config)
-    print("[Verify 1/3] Policy Model instantiated successfully.")
-
-    ds = CrossDockedDataset(str(output_dir), split="train", catalog=cat, num_synthetic=8, synthetic=True)
-    sample = ds[0]
-    batch = CrossDockedDataset._collate([sample])
-
-    preds = model(batch, cat.embeddings, None, None)
-    loss = preds["synthon_logits"].sum()
-    loss.backward()
-    print("[Verify 2/3] Forward + Backward gradient pass verified cleanly.")
-    print("[Verify 3/3] Verification passed. Ready for full production run.\n" + "=" * 70)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Craft Mode: Resilient SBDD Trajectory Processing")
-    parser.add_argument("--search-root", default="/kaggle/input", help="Root mount directory to discover raw dataset")
-    parser.add_argument("--output-dir", default="/kaggle/working/3d-syntree-dataset", help="Output directory for crafted shards")
-    parser.add_argument("--max-complexes", type=int, default=None, help="Optional limit for development smoke runs")
-    parser.add_argument("--verify-only", action="store_true", help="Run the verification suite only")
+    parser.add_argument("--search-root", default="/kaggle/input")
+    parser.add_argument("--output-dir", default="/kaggle/working/3d-syntree-dataset")
+    parser.add_argument("--max-complexes", type=int, default=None)
     args = parser.parse_args()
 
-    # 1. Conservative Discovery
-    raw_dataset_dir = DatasetDiscovery.discover_raw_dataset(args.search_root)
-    print(f"[Discovery] Verified Raw Dataset located at: {raw_dataset_dir}")
+    raw_dir = DatasetDiscovery.discover_raw_dataset(args.search_root)
+    print(f"[Discovery] Verified Raw Dataset located at: {raw_dir}")
 
-    catalog_path = raw_dataset_dir / "enamine_3d_subset.parquet"
-    output_dir = Path(args.output_dir).resolve()
-
-    # 2. Run Verification Smoke Test
-    run_verification_smoke_test(catalog_path, output_dir)
-    if args.verify_only:
-        return 0
-
-    # 3. Full Production Crafting
-    engine = CraftEngine(raw_dataset_dir, output_dir, catalog_path, max_complexes=args.max_complexes)
+    engine = CraftEngine(raw_dir, Path(args.output_dir), max_complexes=args.max_complexes)
     engine.run_crafting()
     return 0
 

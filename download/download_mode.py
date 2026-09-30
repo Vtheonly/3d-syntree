@@ -8,38 +8,33 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from huggingface_hub import HfApi
 
-# Ensure repo root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.checksums import compute_sha256
+from core.checksums import compute_sha256, verify_file
 from core.manifest import ManifestManager
 
 RAW_SOURCES = {
     "crossdocked": {
         "url": "https://huggingface.co/datasets/Yukk1Zz/if3-crossdocked2020/resolve/main/crossdocked_pocket10.tar.gz",
         "expected_filename": "crossdocked_pocket10.tar.gz",
-        "expected_sha256": "59416d06c2c366f6e05b91fdff8584f7",
-        "size_mb": 1620,
+        "expected_hash": "59416d06c2c366f6e05b91fdff8584f7",  # Zenodo MD5
     },
     "enamine_catalog": {
-        "url": "https://huggingface.co/datasets/JJKK1212/3d-syntree-multidataset/resolve/main/enamine_3d_subset.parquet",
-        "expected_filename": "enamine_3d_subset.parquet",
-        "expected_sha256": None,
-        "size_mb": 5,
+        "url": "https://huggingface.co/datasets/JJKK1212/3d-syntree-multidataset/resolve/main/enamine_real_vendor_export.csv.gz",
+        "fallback_url": "https://huggingface.co/datasets/JJKK1212/3d-syntree-multidataset/resolve/main/enamine_3d_subset.parquet",
+        "expected_filename": "enamine_real_vendor_export.csv.gz",
+        "expected_hash": None,
     },
 }
 
 
 class RawDatasetAcquisition:
-    """Manages resumable downloads, checksum auditing, and raw HF publishing."""
-
     def __init__(self, workspace_dir: Path | str, hf_repo_id: str, hf_token: str):
         self.workspace_dir = Path(workspace_dir).resolve()
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -51,34 +46,36 @@ class RawDatasetAcquisition:
         dest_file = self.workspace_dir / config["expected_filename"]
         print(f"\n[Acquire] Downloading {key} -> {dest_file.name}...")
 
-        if dest_file.exists():
-            print(f"[Check] Existing file found: {dest_file.name}. Verifying...")
-            sha = compute_sha256(dest_file)
-            if config["expected_sha256"] and sha.lower() == config["expected_sha256"].lower():
-                print(f"[Verified] Existing file valid (SHA-256: {sha[:12]}...). Skipping download.")
+        if dest_file.exists() and dest_file.stat().st_size > 1000:
+            if config.get("expected_hash") and verify_file(dest_file, config["expected_hash"]):
+                print(f"[Verified] Existing file matches checksum. Skipping download.")
                 return dest_file
-            print("[Warning] Checksum mismatch or unpinned file; redownloading via aria2...")
 
-        # Resumable, multi-connection download via aria2c
+        url = config["url"]
         cmd = [
-            "aria2c",
-            "-x", "16",
-            "-s", "16",
-            "-k", "1M",
-            "-c",  # Enable HTTP range resume
+            "aria2c", "-x", "16", "-s", "16", "-k", "1M", "-c",
             "-d", str(self.workspace_dir),
             "-o", config["expected_filename"],
-            config["url"],
+            url,
         ]
         res = subprocess.run(cmd, check=False)
-        if res.returncode != 0:
-            raise RuntimeError(f"Download failed for {key} from {config['url']}")
+        if res.returncode != 0 or not dest_file.exists() or dest_file.stat().st_size == 0:
+            if "fallback_url" in config:
+                print(f"[Fallback] Primary URL failed; attempting fallback: {config['fallback_url']}")
+                fallback_name = Path(config["fallback_url"]).name
+                dest_file = self.workspace_dir / fallback_name
+                config["expected_filename"] = fallback_name
+                cmd[-2] = fallback_name
+                cmd[-1] = config["fallback_url"]
+                res = subprocess.run(cmd, check=True)
+            else:
+                raise RuntimeError(f"Download failed for {key} from {url}")
+
+        if config.get("expected_hash") and not verify_file(dest_file, config["expected_hash"]):
+            raise IOError(f"Checksum mismatch for {dest_file.name}")
 
         sha = compute_sha256(dest_file)
-        if config["expected_sha256"] and sha.lower() != config["expected_sha256"].lower():
-            raise IOError(f"Corrupt download for {dest_file.name}: expected {config['expected_sha256']}, got {sha}")
-
-        print(f"[Success] {dest_file.name} acquired and verified (SHA-256: {sha[:12]}...).")
+        print(f"[Success] {dest_file.name} acquired (SHA-256: {sha[:12]}...).")
         return dest_file
 
     def generate_raw_manifest(self) -> Path:
@@ -95,7 +92,7 @@ class RawDatasetAcquisition:
 
         manifest = {
             "dataset_type": "3d_syntree_raw_unprocessed",
-            "version": 1,
+            "version": 3,
             "created_at": time.time(),
             "files": records,
         }
@@ -105,7 +102,7 @@ class RawDatasetAcquisition:
         return manifest_path
 
     def upload_raw_to_hf(self) -> None:
-        print(f"\n[Upload] Publishing untouched raw dataset to Hugging Face: {self.hf_repo_id}...")
+        print(f"\n[Upload] Publishing raw dataset to Hugging Face: {self.hf_repo_id}...")
         self.api.create_repo(repo_id=self.hf_repo_id, repo_type="dataset", exist_ok=True)
 
         readme_text = f"""---
@@ -121,34 +118,25 @@ size_categories:
 - 10K<n<100K
 ---
 
-# 3D-SynTree: Raw SBDD Source Repositories
+# 3D-SynTree: Raw Unprocessed SBDD Sources
 
-This repository contains **unprocessed, raw structural biology archives**.
-No chemical filtering, structural trimming, retrosynthetic decomposition, or tensor conversion
-has been performed on these files.
-
-### Contents:
-- `crossdocked_pocket10.tar.gz`: Complete, unmodified CrossDocked2020 10Å pocket complexes.
-- `enamine_3d_subset.parquet`: Certified canonical Enamine building blocks catalog.
-- `raw_manifest.json`: SHA-256 signed provenance and integrity registry.
-
-*Consumers: Import this raw dataset into Kaggle to run Craft Mode.*
+Contains untouched structural biology archives and authentic commercial building block stock.
+Zero in silico crafting or retrosynthetic manipulation has been performed on these files.
 """
         (self.workspace_dir / "README.md").write_text(readme_text, encoding="utf-8")
-
         self.api.upload_folder(
             folder_path=str(self.workspace_dir),
             repo_id=self.hf_repo_id,
             repo_type="dataset",
-            commit_message="Publish verified raw SBDD datasets and provenance manifest",
+            commit_message="Publish raw CrossDocked archive, vendor inventory, and raw manifest",
         )
         print(f"[Upload] Complete: https://huggingface.co/datasets/{self.hf_repo_id}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download Mode: Raw SBDD Acquisition")
-    parser.add_argument("--workspace", default="./raw_workspace", help="Local directory to stage raw files")
-    parser.add_argument("--hf-repo", required=True, help="Target Hugging Face Dataset repository")
+    parser.add_argument("--workspace", default="./raw_workspace")
+    parser.add_argument("--hf-repo", required=True)
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN")
@@ -162,7 +150,6 @@ def main() -> int:
 
     acquisition.generate_raw_manifest()
     acquisition.upload_raw_to_hf()
-    print("\n[Done] Download Mode finished successfully.")
     return 0
 
 
