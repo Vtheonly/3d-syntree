@@ -47,3 +47,4 @@ data/crossdocked/
 *.parquet
 *.h5
 *.hdf5
+notebooks/run_3d_syntree.ipynb
