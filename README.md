@@ -809,12 +809,28 @@ early, hard-biased late, every level always ≥ 3% weight). Steps/epoch,
 LR schedule, and the time budget are unchanged. Level counts, stage,
 weights, and per-level validation metrics are printed and written to
 `metrics.jsonl` / `history.json`.
+**Verified before training (2026-10-29 CPU pre-flight):**
+`python scripts/verify_curriculum.py --config configs/train_colab_12h.json`
+replays the production curriculum build on the REAL HF dataset and passes a
+15-check fail-closed battery (15/15 PASS: balanced levels, monotone
+difficulty, leakage invariants, sampler floors, full-run coverage, cache
+round-trip); a 2-epoch CPU/fp32 smoke on real data confirmed the end-to-end
+training path (fresh start, milestone advance, per-level metrics) with zero
+NaN/OOM skips — see `docs/CURRICULUM.md` and `docs/evidence/`.
 
 **Known-error status.** A persistent Stage-1 NaN failure (fp16, T4) is
 **documented but deliberately not fixed** this iteration:
 `docs/PERSISTENT_ERRORS_NAN.md` records the evidence, the confirmed facts
 vs. hypotheses, and the next investigation steps. Do not assume the fresh
 restart cures it — it only guarantees clean starting state.
+**2026-10-29 forensics (CPU pass):** the preserved epoch-15 checkpoint is
+confirmed NaN-poisoned (113/119 model tensors 100% NaN; H1 for the resume
+incident); catalog and raw data are ruled out as sources; and a NEW primary
+anomaly was found — the GradScaler scale had already collapsed to a
+denormal (1.84e-40) at the last "healthy" checkpoint and to 0.0 by epoch 15,
+meaning the fp16 run's gradient path was broken from the start. The
+fp16-vs-fp32 A/B on the T4 is the decisive next control (a CPU fp32 run on
+the same data trains cleanly). See PERSISTENT_ERRORS_NAN §6.5.
 
 ## 14. Documentation Index
 

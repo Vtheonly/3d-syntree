@@ -1,0 +1,50 @@
+{
+ "utc": "2026-10-28T17:24:32Z",
+ "catalog": {
+  "n_rows": 2680,
+  "embedding_shape": [
+   2680,
+   256
+  ],
+  "dtype": "torch.float32",
+  "all_finite": true,
+  "n_nonfinite": 0,
+  "abs_min": 2.076915706084037e-08,
+  "abs_max": 0.24683134257793427,
+  "n_zero_rows": 0,
+  "ids_hash": "e90f58f92b14",
+  "num_synthons": 2680
+ },
+ "shard_train": {
+  "n_samples": 2194,
+  "n_samples_with_nonfinite": 0,
+  "nonfinite_fields": {},
+  "max_abs_per_field": {
+   "global_features": "1.916",
+   "handle_features": "3",
+   "handle_pos": "11.18",
+   "ligand_charge": "1",
+   "ligand_pos": "193.1",
+   "pocket_charge": "1",
+   "pocket_pos": "21.24",
+   "stop_mask": "0",
+   "target_dihedral": "3.138"
+  }
+ },
+ "shard_val": {
+  "n_samples": 286,
+  "n_samples_with_nonfinite": 0,
+  "nonfinite_fields": {},
+  "max_abs_per_field": {
+   "global_features": "1.686",
+   "handle_features": "3",
+   "handle_pos": "7.813",
+   "ligand_charge": "1",
+   "ligand_pos": "91.03",
+   "pocket_charge": "1",
+   "pocket_pos": "19.07",
+   "stop_mask": "0",
+   "target_dihedral": "3.138"
+  }
+ }
+}

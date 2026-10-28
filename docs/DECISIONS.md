@@ -196,6 +196,15 @@ prototypes/    train_observatory (verified, not yet integrated)
   occurred (PERSISTENT_ERRORS_NAN); the "fp16 is safe now" belief was
   falsified twice. The fp16-on-T4 decision is now [ASSUMPTION] pending the
   fp32 A/B control run — if fp32 runs clean, expect a policy change.
+  **Update (2026-10-29 forensics):** the preserved checkpoints show the
+  GradScaler scale was ALREADY collapsed to an fp32 denormal (1.84e-40) at
+  the last healthy epoch-5 save and hit exactly 0.0 by epoch 15 — the fp16
+  gradient path was broken from the START of the run (repeated found_inf
+  halvings), the "healthy" epochs were largely not learning (frozen val
+  accuracies), and a CPU fp32 run on the same real data trains cleanly
+  (7.77 → 6.59 over 2 epochs, zero NaN/OOM). The burden on the fp32 A/B is
+  now even heavier: fp16 must PROVE its scale stays healthy, not merely
+  avoid NaN (PERSISTENT_ERRORS_NAN H7).
 - **Confidence.** [EVIDENCE] for each individual guard (tested by
   `test_gpu_stability_fixes.py` / `test_oom_nan_resilience.py`);
   [ASSUMPTION] that the composition is sufficient.

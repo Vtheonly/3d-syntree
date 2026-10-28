@@ -3,6 +3,16 @@
 **Implementation:** `syntree/engine/curriculum.py` (production module, wired
 into `ResilientTrainer`), reference prototype `prototypes/train_observatory/curriculum.py`.
 
+**Pre-flight verification tool:** `scripts/verify_curriculum.py` (NEW,
+2026-10-29 CPU pass) — replays the exact production build path on the REAL
+HF dataset and runs a 15-check fail-closed battery (integrity, bounds,
+coverage, balance, monotone difficulty, val-assignment/leakage, sampler
+invariants, stage progression, epoch simulation, determinism, budget
+neutrality, milestone/patience advancement, full-run coverage, cache
+round-trip + invalidation). Run: `python scripts/verify_curriculum.py
+--config configs/train_colab_12h.json` (needs network for the HF shards,
+or a populated `./hf_cache`).
+
 **Implementation status (honest):**
 
 | Piece | State |
@@ -11,12 +21,17 @@ into `ResilientTrainer`), reference prototype `prototypes/train_observatory/curr
 | 9-level quantile assignment + cache | Implemented; unit-tested (`tests/test_curriculum_levels.py`) |
 | Mixed difficulty sampler (Approach C) | Implemented; unit-tested (`tests/test_curriculum_sampler.py`) |
 | Trainer wiring (steps/epoch invariance, logs, checkpoint state, per-level val metrics) | Implemented; CPU-tested end-to-end on the synthetic smoke dataset (`tests/test_curriculum_trainer_integration.py`) |
-| **Run on the real 2,194-sample HF dataset** | **NOT yet executed** — requires the Colab T4 run (user side) |
-| Level-histogram sanity on real data (balanced bins, plausible difficulty ordering) | **NOT yet verified** — first lines of the run log will show it |
+| **Real-data pre-flight (CPU, 2026-10-29):** 15/15 checks PASS on the real 2,194-sample HF dataset via `scripts/verify_curriculum.py` — balanced bins (worst deviation 0.3%: L1=244 … L9=244), strictly monotone mean difficulty, feature face-validity (pocket_n_atoms 351→577, rotatable bonds 0.55→1.0, ligand atoms 15.2→25.7, rings 0.27→1.0 from L1→L9), floor≥0.03 at all 6 stages, easy→hard mass shift (0.638→0.091 / 0.095→0.725), determinism, budget neutrality, cache round-trip, zero expected-unseen samples per level over a 40-epoch run | **VERIFIED (CPU, real data)** — evidence: `docs/evidence/2026-10-29_curriculum_realdata_verification.json` |
+| **Real-data end-to-end smoke (CPU, fp32, 2 epochs, reduced model):** fresh-start banners + archival + param health, curriculum build from cache, per-epoch `sampled:` lines summing to 2,194, milestone advance stage 0→1 at epoch 1 (val_loss 7.3087 → 6.2416), per-level val metrics + `curriculum_stage` in history.json, curriculum state in checkpoint `extra_state` | **VERIFIED (CPU, real data)** — zero NaN/OOM skips; the model LEARNS in fp32 (train 7.77 → 6.59) |
+| **GPU run (Colab T4, production model, fp16):** level histogram at full model scale, per-level val curves over 40 epochs, stage advancement under real dynamics, VRAM/speed, HF sync | **NOT yet executed** — requires the operator's GPU run (Batch 1) |
+| Level-histogram sanity on real data | **VERIFIED (CPU)** — see above; the GPU run re-prints it in the startup log |
 | Curriculum vs no-curriculum controlled comparison | **NOT yet run** — see §7 |
 
-Do not describe curriculum learning as "working on the real data" until the
-Colab run's log lines in §6 have been captured and reviewed.
+Curriculum learning is now verified to the maximum extent reachable without
+a GPU: the construction, the level assignment on the real data, the sampling
+mechanics, the training-loop integration, and the fresh-restart semantics
+are all proven. The remaining unknowns are GPU/fp16-specific behavior and
+the A/B benefit measurement.
 
 ---
 
@@ -68,6 +83,19 @@ conformer enumeration, which is too expensive to recompute per catalog/​config
 change at the seed-slice stage and was deferred; `pocket_n_atoms` +
 `synthon_n_rotatable` + charge features are the v1 proxies. Revisit when the
 full 75k dataset is in use.
+
+Known limitation (measured 2026-10-29, real data): **48.4% of train samples
+(48.9% val) are terminal STOP steps** (trajectory composition: ~531
+two-step trajectories dominate; step histogram {0: 1062, 1: 1062, 2: 67,
+3: 3}). The v1 difficulty schema does not encode is_stop, and the per-level
+stop fraction is uneven (L1=11% … L5=64% … L9=30%) — per-level metrics
+therefore mix two subtasks in varying proportion ("predict STOP on a
+near-complete molecule" vs "choose the next synthon + dihedral"). Both
+subtasks are present in every level, so no level is degenerate, but a v2
+schema could add an is_stop feature (or score the subtasks separately) if
+per-level metrics prove hard to interpret. Changing the schema invalidates
+the level cache by signature, so this is deliberately deferred to after the
+GPU run.
 
 ## 3. Level assignment (9 balanced bins)
 
@@ -148,6 +176,12 @@ instead of emitting misaligned numbers.
 
 ## 6. Verification protocol (user side, Colab T4)
 
+**Step 0 (pre-flight, CPU, optional but recommended):** on Colab BEFORE the
+GPU run, `python scripts/verify_curriculum.py --config
+configs/train_colab_12h.json` — expect `15 PASS / 0 FAIL / 0 ERROR` and
+verdict `READY-FOR-TRAINING` (already achieved in the sandbox on
+2026-10-29; re-running on Colab additionally proves the HF transport).
+
 Run `python main.py --mode train --config configs/train_colab_12h.json`
 (notebook cell 9; `--fresh` comes from TRAIN_ARGS). Then check, in order:
 
@@ -156,17 +190,30 @@ Run `python main.py --mode train --config configs/train_colab_12h.json`
    `[trainer] FRESH START CONFIRMED: no checkpoint restored...`,
    `[trainer] FRESH START param health: all N parameter tensors finite`,
    `[trainer] run mode: FRESH (from-scratch weights...)`.
+   (All four were already exercised on real data in the CPU smoke run.)
 2. **Curriculum build** — the three `[curriculum]` startup lines; all 9
    train levels populated and roughly balanced (each ~244 ± small tolerance);
    assignment=computed on first run, cache on re-runs.
+   (Expected exact counts from the CPU pre-flight:
+   L1=244 L2=244 L3=243 L4=244 L5=244 L6=244 L7=243 L8=244 L9=244;
+   val: L1=28 L2=39 L3=29 L4=32 L5=32 L6=37 L7=24 L8=34 L9=31.)
 3. **Per-epoch lines** — `sampled:` counts sum ≈ 2,194; every level > 0;
    stage never decreases; at least one milestone or patience advance per
    few epochs.
 4. **Per-level val metrics** — `L1/val_loss` … `L9/val_loss` present in
    `history.json`; expect a monotone-ish gradient (easier levels lower loss
    / higher accuracy) as a face-validity check of the difficulty ordering.
-5. **Budget neutrality** — steps/epoch = 60 (unchanged), VRAM peak
-   unchanged vs the 2026-10-28 runs.
+   **Expected-behavior note (from the CPU smoke): the AGGREGATE
+   val_synthon_acc / val_reaction_acc / val_joint_action_acc may sit frozen
+   at 0.4895 / 0.7671 / 0.0944 for the first epochs — this is the
+   constant-prediction baseline (the early model predicts the STOP class
+   for every sample; 48.4% of train targets are stop steps), NOT a bug or
+   a stall. Track val_loss and per-level val_loss for learning signal;
+   accuracies move only once argmax predictions diversify.**
+5. **Budget neutrality** — steps/epoch unchanged vs the plain-shuffle path
+   at the same batch size (60 on the 2026-10-28 autoscale; the CPU smoke
+   used 69 at batch 32 — the INVARIANT is equality, not the absolute
+   number), VRAM peak unchanged vs the 2026-10-28 runs.
 6. **NaN watch** — if any `non-finite loss` warning appears, STOP and
    capture per docs/PERSISTENT_ERRORS_NAN.md §6 (the NaN error is documented,
    not fixed; the curriculum changes sampling only and cannot mask it).

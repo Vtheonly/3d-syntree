@@ -208,11 +208,45 @@ class TestCell7Launch:
 
 
 class TestCell6HalfRemotePurge:
-    def test_purges_remote_checkpoints_on_fresh(self, notebook):
+    """2026-10-29 fresh-start policy (docs/DECISIONS.md D7).
+
+    The OLD contract (fresh purges remote by default via delete_file in the
+    notebook) was rejected: it destroyed the epoch-31 state once.  The NEW
+    contract is the exact opposite:
+    * the notebook contains ZERO purge logic (orchestrator-only principle);
+    * remote purge is an explicit, opt-in CLI flag (--purge-remote) that
+      lives in main.py and only takes effect together with --fresh.
+    """
+
+    def test_notebook_has_no_purge_logic(self, notebook):
         _, cell = _find_cell(notebook, "CELL 6.5: Training Mode")
         src = _src(cell)
-        assert "delete_file" in src
-        assert "checkpoints/" in src
+        assert "delete_file" not in src, (
+            "the notebook must not contain remote-purge logic (codebase-first; "
+            "see docs/DECISIONS.md D7)"
+        )
+        assert "purge_remote" not in src
+
+    def test_notebook_documents_opt_in_purge(self, notebook):
+        _, cell = _find_cell(notebook, "CELL 6.5: Training Mode")
+        src = _src(cell)
+        assert "--purge-remote" in src, (
+            "cell 6.5 must tell the operator remote purge is opt-in"
+        )
+        assert "ARCHIVED" in src, (
+            "cell 6.5 must document that --fresh archives local state"
+        )
+
+    def test_purge_is_opt_in_cli_flag_in_main(self, repo_root):
+        main_src = open(
+            os.path.join(repo_root, "main.py"), encoding="utf-8"
+        ).read()
+        assert "--purge-remote" in main_src
+        # opt-in only: purge must be gated behind the explicit flag, never the
+        # default fresh path
+        assert 'getattr(args, "purge_remote", False)' in main_src
+        # and the destructive path delegates to the checkpoint manager
+        assert "reset_all(purge_remote=True)" in main_src
 
 
 class TestNoSecrets:

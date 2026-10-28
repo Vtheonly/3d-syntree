@@ -1,0 +1,260 @@
+{
+ "utc": "2026-10-28T17:20:02Z",
+ "epoch_15": {
+  "keys": [
+   "epoch",
+   "step",
+   "model_state_dict",
+   "model_config",
+   "catalog_signature",
+   "extra_state",
+   "optimizer_state_dict",
+   "scheduler_state_dict",
+   "scaler_state_dict",
+   "rng_states",
+   "metrics",
+   "is_best",
+   "timestamp"
+  ],
+  "model": {
+   "section": "model",
+   "n_tensors": 119,
+   "n_float_tensors": 119,
+   "n_nonfinite_tensors": 113,
+   "first_bad": [
+    {
+     "name": "joint_encoder.atomic_embedding.weight",
+     "shape": [
+      100,
+      256
+     ],
+     "n_nonfinite": 25600,
+     "first_indices": [
+      0,
+      0,
+      0,
+      1,
+      0
+     ],
+     "n_nan": 25600,
+     "n_inf": 0,
+     "n_posinf": 0,
+     "n_neginf": 0
+    },
+    {
+     "name": "joint_encoder.node_type_embedding.weight",
+     "shape": [
+      2,
+      256
+     ],
+     "n_nonfinite": 512,
+     "first_indices": [
+      0,
+      0,
+      0,
+      1,
+      0
+     ],
+     "n_nan": 512,
+     "n_inf": 0,
+     "n_posinf": 0,
+     "n_neginf": 0
+    },
+    {
+     "name": "joint_encoder.handle_flag_embedding.weight",
+     "shape": [
+      2,
+      256
+     ],
+     "n_nonfinite": 512,
+     "first_indices": [
+      0,
+      0,
+      0,
+      1,
+      0
+     ],
+     "n_nan": 512,
+     "n_inf": 0,
+     "n_posinf": 0,
+     "n_neginf": 0
+    }
+   ],
+   "max_abs_finite": 5.0,
+   "n_nonfinite_elements_total": 5816846
+  },
+  "optimizer": {
+   "section": "optimizer",
+   "n_tensors": 339,
+   "n_float_tensors": 339,
+   "n_nonfinite_tensors": 226,
+   "first_bad": [
+    {
+     "name": "optimizer[0].exp_avg",
+     "shape": [
+      100,
+      256
+     ],
+     "n_nonfinite": 25600,
+     "first_indices": [
+      0,
+      0,
+      0,
+      1,
+      0
+     ],
+     "n_nan": 25600,
+     "n_inf": 0,
+     "n_posinf": 0,
+     "n_neginf": 0
+    },
+    {
+     "name": "optimizer[0].exp_avg_sq",
+     "shape": [
+      100,
+      256
+     ],
+     "n_nonfinite": 25600,
+     "first_indices": [
+      0,
+      0,
+      0,
+      1,
+      0
+     ],
+     "n_nan": 25600,
+     "n_inf": 0,
+     "n_posinf": 0,
+     "n_neginf": 0
+    },
+    {
+     "name": "optimizer[1].exp_avg",
+     "shape": [
+      2,
+      256
+     ],
+     "n_nonfinite": 512,
+     "first_indices": [
+      0,
+      0,
+      0,
+      1,
+      0
+     ],
+     "n_nan": 512,
+     "n_inf": 0,
+     "n_posinf": 0,
+     "n_neginf": 0
+    }
+   ],
+   "max_abs_finite": 38.0,
+   "n_nonfinite_elements_total": 11633692
+  },
+  "optimizer_n_slots": 113,
+  "scaler_state_dict": {
+   "scale": 0.0,
+   "growth_factor": 2.0,
+   "backoff_factor": 0.5,
+   "growth_interval": 2000,
+   "_growth_tracker": 1
+  },
+  "scaler_scale_finite": true,
+  "scaler_scale": 0.0,
+  "other_tensors": {
+   "section": "other",
+   "n_tensors": 0,
+   "n_float_tensors": 0,
+   "n_nonfinite_tensors": 0,
+   "first_bad": [],
+   "max_abs_finite": 0.0,
+   "n_nonfinite_elements_total": 0
+  }
+ },
+ "epoch_5": {
+  "keys": [
+   "epoch",
+   "step",
+   "model_state_dict",
+   "model_config",
+   "catalog_signature",
+   "extra_state",
+   "optimizer_state_dict",
+   "scheduler_state_dict",
+   "scaler_state_dict",
+   "rng_states",
+   "metrics",
+   "is_best",
+   "timestamp"
+  ],
+  "model": {
+   "section": "model",
+   "n_tensors": 119,
+   "n_float_tensors": 119,
+   "n_nonfinite_tensors": 0,
+   "first_bad": [],
+   "max_abs_finite": 5.0,
+   "n_nonfinite_elements_total": 0
+  },
+  "optimizer": {
+   "section": "optimizer",
+   "n_tensors": 339,
+   "n_float_tensors": 339,
+   "n_nonfinite_tensors": 0,
+   "first_bad": [],
+   "max_abs_finite": 37.0,
+   "n_nonfinite_elements_total": 0
+  },
+  "optimizer_n_slots": 113,
+  "scaler_state_dict": {
+   "scale": 1.8367099231598242e-40,
+   "growth_factor": 2.0,
+   "backoff_factor": 0.5,
+   "growth_interval": 2000,
+   "_growth_tracker": 0
+  },
+  "scaler_scale_finite": true,
+  "scaler_scale": 1.8367099231598242e-40,
+  "other_tensors": {
+   "section": "other",
+   "n_tensors": 0,
+   "n_float_tensors": 0,
+   "n_nonfinite_tensors": 0,
+   "first_bad": [],
+   "max_abs_finite": 0.0,
+   "n_nonfinite_elements_total": 0
+  }
+ },
+ "diff_5_to_15": {
+  "n_common_compared": 119,
+  "n_identical": 6,
+  "n_changed": 113,
+  "n_params_nonfinite_at_15": 113,
+  "examples": [
+   {
+    "param": "joint_encoder.layers.1.mixing.update_mlp.2.weight",
+    "n_diff_elements": 196608,
+    "max_abs_delta_finite": NaN
+   },
+   {
+    "param": "joint_encoder.layers.2.mixing.vec_proj.weight",
+    "n_diff_elements": 65536,
+    "max_abs_delta_finite": NaN
+   },
+   {
+    "param": "joint_encoder.layers.0.mixing.update_mlp.0.bias",
+    "n_diff_elements": 256,
+    "max_abs_delta_finite": NaN
+   },
+   {
+    "param": "joint_encoder.layers.6.mixing.update_mlp.2.weight",
+    "n_diff_elements": 196608,
+    "max_abs_delta_finite": NaN
+   },
+   {
+    "param": "joint_encoder.layers.7.mixing.update_mlp.2.bias",
+    "n_diff_elements": 768,
+    "max_abs_delta_finite": NaN
+   }
+  ]
+ }
+}

@@ -76,3 +76,39 @@ Observed facts:
   history; only the second incident's log is preserved verbatim in-repo.
 These gaps are what the observability prototype (`prototypes/train_observatory/`)
 is designed to close when integrated.
+
+---
+
+# Addendum — 2026-10-29 CPU forensics pass (agent-side)
+
+Three new evidence artifacts were produced by the pre-flight iteration
+(all machine-readable JSON, commands preserved in the iteration history):
+
+- `2026-10-29_checkpoint15_forensics.json` — tensor-level scan of the
+  preserved epoch-15 (suspect) and epoch-5 (last healthy) checkpoints
+  downloaded from `JJKK1212/3d-syntree-checkpoints`. Headline facts:
+  epoch-15 has 113/119 model tensors 100% NaN (5.82M elements), 226/339
+  optimizer tensors 100% NaN (11.63M elements), scaler scale = 0.0;
+  epoch-5 is fully finite BUT its scaler scale is 1.83671e-40 (collapsed
+  fp32 denormal); the epoch-5 → epoch-15 diff shows 113 params changed,
+  all into NaN. This converts the "checkpoints ≥ epoch 6 are assumed
+  poisoned" assumption into a measured fact and identifies the scaler
+  collapse as a new primary anomaly (PERSISTENT_ERRORS_NAN H7).
+- `2026-10-29_catalog_and_data_finiteness.json` — the production
+  SynthonCatalog built from the real Enamine parquet: all 2,680 x 256
+  embeddings finite (abs max 0.247), plus an every-tensor scan of the
+  real train (2,194) and val (286) shards: zero non-finite entries, all
+  magnitudes modest. Rules out catalog and raw-data inputs as NaN sources
+  (PERSISTENT_ERRORS_NAN §6 step 1).
+- `2026-10-29_curriculum_realdata_verification.json` — the 15-check
+  curriculum pre-flight report on the real dataset
+  (`scripts/verify_curriculum.py`): 15 PASS / 0 FAIL / 0 ERROR, verdict
+  READY-FOR-TRAINING. Includes the measured level histogram, difficulty
+  trends, sampler weights per stage, epoch simulations, and the full-run
+  coverage guarantee (docs/CURRICULUM.md status table summarizes it).
+
+The remote `progress.json` (also preserved in the checkpoints repo at the
+time of the scan) provided two additional facts used in the analysis: the
+frozen val accuracies across epochs 0–5 (constant-STOP-prediction
+baseline) and the ~52-minute gap + elapsed-hours reset between the epoch-5
+and epoch-6 entries (the run was restarted right before the onset).
