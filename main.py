@@ -225,7 +225,7 @@ def main(argv=None) -> int:
 
     hw_info = configure_runtime_environment(config.get("system", {}))
     device = torch.device(hw_info["device"])
-    print(f"[main] runtime profile: {json.dumps(hw_info, indent=2)}")
+    print(f"[main] runtime profile: {json.dumps(hw_info, indent=2, default=str)}")
 
     # ---- dispatch -------------------------------------------------------
     if args.mode == "info":

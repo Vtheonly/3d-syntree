@@ -158,7 +158,7 @@ def configure_runtime_environment(config: Dict[str, Any] | None = None) -> Dict[
         if amp_dtype is not None:
             info["mixed_precision_dtype"] = str(amp_dtype).replace("torch.", "")
             info["precision"] = "bf16" if amp_dtype == torch.bfloat16 else "fp16"
-            info["amp_dtype"] = amp_dtype
+            info["amp_dtype"] = str(amp_dtype)
         else:
             info["precision"] = "fp32"
 
