@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import shutil
@@ -561,6 +562,29 @@ class CheckpointManager:
         self.last_catalog_signature = checkpoint.get("catalog_signature") or None
         self.last_extra_state = checkpoint.get("extra_state") or None
 
+        # FINITENESS VERIFICATION (2026-10-29): "verified" must mean the
+        # payload is actually usable.  The 2026-10-28 resume restored an
+        # epoch-15 checkpoint that passed every structural check but was
+        # NaN-poisoned, so EVERY batch of epoch 16 produced loss=NaN from
+        # batch 0 (see docs/PERSISTENT_ERRORS_NAN.md).  A checkpoint whose
+        # parameters or optimizer state contain NaN/Inf must never be applied
+        # silently; refuse loudly and keep the file intact for forensics.
+        nonfinite = _find_nonfinite_checkpoint_tensors(checkpoint)
+        if nonfinite:
+            raise RuntimeError(
+                f"\n{'='*70}\n"
+                f"CHECKPOINT REFUSED: {ckpt_path} (epoch {latest_epoch}) contains\n"
+                f"non-finite values in {nonfinite['count']} tensor(s) "
+                f"(first: {nonfinite['first']}).\n\n"
+                f"Restoring this state would poison training immediately\n"
+                f"(NaN parameters -> NaN loss for every batch). The file was\n"
+                f"NOT modified or deleted - it is preserved as evidence.\n"
+                f"See docs/PERSISTENT_ERRORS_NAN.md for the investigation status.\n"
+                f"To start a clean run instead: pass --fresh (checkpoints are\n"
+                f"archived, not deleted) or set training.fresh_start=true.\n"
+                f"{'='*70}"
+            )
+
         # Robust, shape-adaptive parameter loading: slice overlapping weights
         # to prevent size-mismatch crashes when reaction or handle counts expand.
         model_state = model.state_dict()
@@ -865,6 +889,59 @@ class CheckpointManager:
         """Clear local checkpoint artifacts and re-initialize empty state."""
         self._purge_all_checkpoints()
 
+    def archive_local(self, reason: str = "fresh-start") -> Optional[Path]:
+        """PRESERVE-then-reset: move every existing checkpoint artifact into a
+        timestamped archive folder instead of deleting it.
+
+        Fresh-start policy (2026-10-29 handoff): previous checkpoints and
+        progress state are historical/forensic artifacts (the epoch-15
+        checkpoint of the 2026-10-28 run is NaN-poisoned evidence) and must
+        never be silently destroyed.  This method relocates them to
+        ``<ckpt_dir>/archive/<UTC-stamp>_<reason>/`` so that:
+
+        * no previous model weights / optimizer state can be restored by any
+          automatic resume or recovery mechanism (the authoritative manifest
+          and progress files are gone from their expected paths),
+        * nothing is lost for debugging or comparison.
+
+        Returns the archive directory when artifacts were moved, ``None``
+        when there was nothing to archive.  Never raises on individual file
+        failures (best-effort move, loud log lines).
+        """
+        patterns = ("checkpoint_epoch_*.pt", "checkpoint_best.pt", "*.pt.tmp")
+        movable: List[Path] = []
+        for pattern in patterns:
+            movable.extend(self.ckpt_dir.glob(pattern))
+        for name in (self.MANIFEST_NAME, self.PROGRESS_NAME):
+            path = self.ckpt_dir / name
+            if path.exists():
+                movable.append(path)
+        if not movable:
+            return None
+
+        from datetime import datetime, timezone
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe_reason = "".join(ch if ch.isalnum() else "-" for ch in reason)[:40] or "fresh"
+        dest = self.ckpt_dir / "archive" / f"{stamp}_{safe_reason}"
+        dest.mkdir(parents=True, exist_ok=True)
+        moved: List[str] = []
+        for path in movable:
+            try:
+                shutil.move(str(path), str(dest / path.name))
+                moved.append(path.name)
+            except OSError as exc:
+                logger.warning(
+                    "[checkpoint] could not archive %s (%s); leaving it in place",
+                    path, exc,
+                )
+        logger.info(
+            "[checkpoint] ARCHIVED %d existing checkpoint artifact(s) to %s "
+            "(preserved as historical artifacts; nothing was deleted): %s",
+            len(moved), dest, ", ".join(sorted(moved)),
+        )
+        return dest
+
     def reset_all(self, purge_remote: bool = False) -> None:
         """Completely reset local (and optionally remote) checkpoint state."""
         self._purge_all_checkpoints()
@@ -977,6 +1054,49 @@ class CheckpointManager:
                 torch.cuda.set_rng_state_all(states["cuda"])
         except Exception:
             logger.warning("RNG state restoration failed; continuing.")
+
+
+def _find_nonfinite_checkpoint_tensors(checkpoint: Dict) -> Optional[Dict]:
+    """Scan a loaded checkpoint payload for NaN/Inf model or optimizer tensors.
+
+    Returns ``None`` when every floating tensor is finite, otherwise a dict
+    ``{"count": int, "first": str}`` describing the contamination.  Only the
+    states that would actually be restored are checked: ``model_state_dict``
+    and ``optimizer_state_dict`` (plus the FP16 scaler scale, whose non-finite
+    value would poison every subsequent step).  Read-only - never mutates the
+    checkpoint - and bounded: it stops at the first bad tensor per section.
+    """
+    first_bad: Optional[str] = None
+    count = 0
+
+    def _scan(obj, prefix: str) -> None:
+        nonlocal first_bad, count
+        if first_bad is not None or not isinstance(obj, torch.Tensor):
+            return
+        if not obj.is_floating_point():
+            return
+        if not bool(torch.isfinite(obj).all().item()):
+            count += 1
+            if first_bad is None:
+                first_bad = prefix
+
+    for name, tensor in (checkpoint.get("model_state_dict") or {}).items():
+        _scan(tensor, f"model.{name}")
+
+    opt_state = checkpoint.get("optimizer_state_dict") or {}
+    for slot, entry in (opt_state.get("state") or {}).items():
+        for key, value in (entry or {}).items():
+            _scan(value, f"optimizer[{slot}].{key}")
+
+    scaler_state = checkpoint.get("scaler_state_dict") or {}
+    scale = scaler_state.get("scale")
+    if first_bad is None and isinstance(scale, (int, float)) and not math.isfinite(float(scale)):
+        count += 1
+        first_bad = "scaler.scale"
+
+    if count == 0:
+        return None
+    return {"count": count, "first": str(first_bad)}
 
 
 def _epoch_from_name(name: str) -> int:

@@ -54,6 +54,7 @@
     "gradient_checkpointing": true
   },
   "training": {
+    "fresh_start": true,
     "max_epochs": 40,
     "time_budget_hours": 11.5,
     "learning_rate": 0.0003,
@@ -79,6 +80,33 @@
       "lr_scale_rule": "linear"
     },
     "max_pocket_atoms": 1600
+  },
+  "curriculum": {
+    "enabled": true,
+    "n_levels": 9,
+    "n_stages": 6,
+    "min_weight": 0.03,
+    "sigma": 1.8,
+    "seed": 42,
+    "milestone_metric": "val_loss",
+    "lower_better": true,
+    "improve_thresh": 0.005,
+    "patience": 2,
+    "feature_sample_stride": 1,
+    "cache_path": "./experiments/curriculum_levels_v1.json",
+    "feature_weights": {
+      "ligand_n_atoms": 1.0,
+      "pocket_n_atoms": 1.2,
+      "pocket_mean_abs_charge": 0.6,
+      "ligand_mean_abs_charge": 0.4,
+      "synthon_n_atoms": 0.8,
+      "synthon_n_rings": 1.0,
+      "synthon_n_rotatable": 1.2,
+      "synthon_n_hetero": 0.6,
+      "synthon_symmetry_ratio": 0.4,
+      "reaction_family_rarity": 0.8,
+      "core_handle_rarity": 0.5
+    }
   },
   "reinforcement_learning": {
     "enabled": false,

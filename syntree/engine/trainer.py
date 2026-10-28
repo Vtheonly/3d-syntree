@@ -248,6 +248,26 @@ class ResilientTrainer:
                     f"{'='*70}"
                 )
 
+        # Curriculum learning (2026-10-29): difficulty-aware sampling over
+        # the FULL train split (9 levels, Approach C mixed sampling with a
+        # per-level floor; see docs/CURRICULUM.md).  Disabled unless config
+        # "curriculum": {"enabled": true, ...}.  Built before the loaders so
+        # the train loader can draw from the curriculum sampler; the val
+        # loader and the validation split itself are NEVER reweighted.
+        self.curriculum = None
+        curriculum_cfg = dict(config.get("curriculum", {}) or {})
+        if bool(curriculum_cfg.get("enabled", False)):
+            from syntree.engine.curriculum import CurriculumController
+
+            self.curriculum = CurriculumController.build(
+                curriculum_cfg,
+                self.dataset,
+                self.val_dataset,
+                self.catalog,
+                output_dir=self.output_dir,
+            )
+            self.curriculum.log_summary()
+
         # Mixed-precision flags. "bf16" selects bfloat16 autocast (RTX 6000
         # Ada / A100 / H100, compute capability >= 8: fp32 dynamic range, so
         # NO loss scaling); "fp16" keeps float16 + GradScaler (T4-class).
@@ -286,7 +306,10 @@ class ResilientTrainer:
         self.lr_scale_factor = 1.0
         self._autoscale_batch(train_cfg)
 
-        self.loader = self._make_loader(self.dataset, shuffle=True)
+        self.loader = self._make_loader(
+            self.dataset, shuffle=True,
+            curriculum_sampler=(self.curriculum.sampler if self.curriculum is not None else None),
+        )
         self.val_loader = self._make_loader(self.val_dataset, shuffle=False)
 
         # Optimization.
@@ -336,16 +359,78 @@ class ResilientTrainer:
             )
             self._warn_on_catalog_signature_mismatch()
             # Note: scheduler state is already restored by load_state_dict; no redundant step loop (Auditing B.1)
-            self._warn_on_catalog_signature_mismatch()
             for _ in range(self.global_step):
                 self.scheduler.step()
+            if self.curriculum is not None:
+                extra = getattr(self.ckpt_manager, "last_extra_state", None) or {}
+                self.curriculum.load_state(extra.get("curriculum"))
+                print(
+                    f"[trainer] RESUMED: restored checkpoint epoch "
+                    f"{self.start_epoch - 1} (step {self.global_step}); curriculum "
+                    f"stage {self.curriculum.sampler.stage}/"
+                    f"{self.curriculum.sampler.n_stages - 1} restored."
+                )
         else:
-            # Fresh run: reset any local checkpoint state to ensure clean start at epoch 0
-            self.ckpt_manager.reset_local()
+            # FRESH START (2026-10-29 handoff policy): never purge - ARCHIVE
+            # the previous local state as historical/forensic artifacts, then
+            # confirm loudly that nothing was restored.  The archive removes
+            # the authoritative manifest/progress files from their expected
+            # paths, so no automatic resume or recovery mechanism can restore
+            # the old model/optimizer state; the previous run (including the
+            # NaN-poisoned 2026-10-28 checkpoints) stays on disk for analysis.
+            archive_dir = self.ckpt_manager.archive_local(reason="fresh-start")
+            if archive_dir is not None:
+                print(
+                    f"[trainer] FRESH START: archived the previous checkpoint "
+                    f"state to {archive_dir} (preserved as historical "
+                    f"artifacts; nothing deleted)."
+                )
+            else:
+                print(
+                    "[trainer] FRESH START: no pre-existing local checkpoint "
+                    "state found to archive."
+                )
+            print(
+                f"[trainer] FRESH START CONFIRMED: no checkpoint restored; model "
+                f"weights freshly initialized (seed={seed}); optimizer / "
+                f"scheduler / scaler state freshly initialized; training starts "
+                f"at epoch 0/{self.max_epochs}."
+            )
+            bad_param = self._first_nonfinite_param()
+            if bad_param is not None:
+                raise RuntimeError(
+                    "FRESH START INVARIANT VIOLATED: freshly initialized "
+                    f"parameter '{bad_param}' is non-finite."
+                )
+            print(
+                f"[trainer] FRESH START param health: all {sum(1 for _ in self.model.parameters())} "
+                f"parameter tensors finite (max |w| = {self._max_abs_param():.4g})."
+            )
 
     # ------------------------------------------------------------------
     # Setup helpers
     # ------------------------------------------------------------------
+    def _first_nonfinite_param(self) -> Optional[str]:
+        """Name of the first non-finite model parameter (None = all finite).
+
+        Read-only sanity check of the freshly initialized weights so a fresh
+        run's logs can PROVE the start state was numerically healthy (the
+        2026-10-28 resumed run had NaN from batch 0 because the restored
+        state was poisoned - a fresh run must never inherit that ambiguity).
+        """
+        for name, param in self.model.named_parameters():
+            if param.is_floating_point() and not bool(torch.isfinite(param).all().item()):
+                return name
+        return None
+
+    def _max_abs_param(self) -> float:
+        """Largest absolute parameter value across the model (health log)."""
+        max_abs = 0.0
+        for _, param in self.model.named_parameters():
+            if param.numel():
+                max_abs = max(max_abs, float(param.detach().abs().max().item()))
+        return max_abs
+
     def _warn_on_catalog_signature_mismatch(self) -> None:
         """Warn loudly when a restored checkpoint was trained against a
         different synthon catalog or embedding encoder (tasklist Priority 1
@@ -482,11 +567,17 @@ class ResilientTrainer:
             batch.ligand_batch = getattr(batch, "ligand_pos_batch", None)
         return batch
 
-    def _make_loader(self, dataset, shuffle: bool) -> DataLoader:
-        """DataLoader over PyG dataset with shard-aware sampling."""
+    def _make_loader(self, dataset, shuffle: bool, curriculum_sampler=None) -> DataLoader:
+        """DataLoader over PyG dataset with shard-aware sampling.
+
+        ``curriculum_sampler`` (train loader only) replaces plain shuffling
+        with difficulty-aware curriculum sampling.  It yields exactly
+        ``len(dataset)`` indices per epoch, so steps/epoch and the LR
+        schedule are unchanged w.r.t. the plain shuffle path.
+        """
         workers = int(self.config.get("system", {}).get("num_workers", 0))
-        sampler = None
-        if shuffle and isinstance(dataset, ShardedHuggingFaceDataset):
+        sampler = curriculum_sampler
+        if sampler is None and shuffle and isinstance(dataset, ShardedHuggingFaceDataset):
             sampler = ShardAwareShuffleSampler(
                 dataset,
                 seed=int(self.config.get("system", {}).get("seed", 42)),
@@ -708,6 +799,16 @@ class ResilientTrainer:
             f"amp={self.use_amp}"
             + (f" ({self.amp_dtype})" if self.use_amp else "")
         )
+        if self.start_epoch == 0:
+            print(
+                "[trainer] run mode: FRESH (from-scratch weights; no previous "
+                "checkpoint or optimizer state was restored)"
+            )
+        else:
+            print(
+                f"[trainer] run mode: RESUMED (weights restored from the "
+                f"checkpoint at epoch {self.start_epoch - 1})"
+            )
 
         if self.start_epoch >= self.max_epochs:
             print(
@@ -925,7 +1026,12 @@ class ResilientTrainer:
                         flush=True,
                     )
                     self.batch_size = new_batch
-                    self.loader = self._make_loader(self.dataset, shuffle=True)
+                    self.loader = self._make_loader(
+                        self.dataset, shuffle=True,
+                        curriculum_sampler=(
+                            self.curriculum.sampler if self.curriculum is not None else None
+                        ),
+                    )
                 else:
                     print(
                         f"[trainer] WARNING: {epoch_oom} OOM batches this epoch even "
@@ -958,7 +1064,23 @@ class ResilientTrainer:
             }
 
             if (epoch + 1) % self.eval_interval == 0:
+                val_dropped_at_start = self.collate_stats.get("dropped_nonfinite", 0)
                 entry.update(self.validate())
+                if self.curriculum is not None:
+                    entry.update(
+                        self.curriculum.level_metrics_summary(
+                            dropped_delta=(
+                                self.collate_stats.get("dropped_nonfinite", 0)
+                                - val_dropped_at_start
+                            )
+                        )
+                    )
+
+            if self.curriculum is not None:
+                # Stage advancement (milestone or patience) + per-level
+                # sampled-count logging.  Runs every epoch; uses val metrics
+                # only when this epoch's entry carries them.
+                entry.update(self.curriculum.epoch_update(epoch, entry))
 
             history.append(entry)
             self.struct_logger.log({**entry, "phase": "train"})
@@ -988,6 +1110,11 @@ class ResilientTrainer:
                 is_best=is_best,
                 model_config=self.config.get("model"),
                 catalog_signature=self.catalog.embedding_signature,
+                extra_state=(
+                    {"curriculum": self.curriculum.state()}
+                    if self.curriculum is not None
+                    else None
+                ),
             )
             self._write_latest_metrics(entry)
 
@@ -1068,6 +1195,16 @@ class ResilientTrainer:
                 "val_synthon_acc_oracle_family": float("nan"),
                 "val_joint_action_acc": float("nan"),
             }
+
+        # Per-level curriculum tracking (2026-10-29): the val loader is
+        # sequential (shuffle=False, drop_last=False), so the flattened
+        # sample order maps 1:1 onto dataset indices.  Publication is blocked
+        # for any pass in which the collator dropped a non-finite sample
+        # (alignment would be undefined) - the summary call receives the
+        # drop delta and refuses loudly instead of emitting wrong numbers.
+        if self.curriculum is not None:
+            self.curriculum.begin_val_pass()
+        val_sample_cursor = 0
 
         total, reaction, synthon, torsion = 0.0, 0.0, 0.0, 0.0
         reaction_correct, synthon_correct = 0, 0
@@ -1178,6 +1315,35 @@ class ResilientTrainer:
             )
             n += int(target.numel())
 
+            if self.curriculum is not None:
+                # Per-sample loss vector for per-level reporting (same
+                # component weights as the headline val_loss; read-only -
+                # no effect on the aggregate metrics computed above).
+                rxn_ps = F.cross_entropy(
+                    preds["reaction_logits"], batch.target_reaction_family_idx,
+                    reduction="none",
+                )
+                syn_ps = F.cross_entropy(
+                    preds["synthon_logits"], target_action, reduction="none"
+                )
+                tor_ps = -ContinuousTorsionHead.log_prob(
+                    preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
+                )
+                non_stop_f = non_stop.float()
+                # Component weights mirror the headline val_loss formula
+                # exactly (reaction_loss_weight*r + synthon + 0.5*torsion) so
+                # the per-level means average out to the headline semantics.
+                per_sample = (
+                    self.reaction_loss_weight * rxn_ps * non_stop_f
+                    + syn_ps
+                    + 0.5 * tor_ps * non_stop_f
+                )
+                rxn_correct_ps = predicted_family == batch.target_reaction_family_idx
+                self.curriculum.track_val_batch(
+                    val_sample_cursor, per_sample, rxn_correct_ps, non_stop
+                )
+            val_sample_cursor += int(target.numel())
+
         self.model.train()
         return {
             "val_loss": total / max(1, len(self.val_loader)),
@@ -1218,6 +1384,11 @@ class ResilientTrainer:
                 final=True,
                 model_config=self.config.get("model"),
                 catalog_signature=self.catalog.embedding_signature,
+                extra_state=(
+                    {"curriculum": self.curriculum.state()}
+                    if self.curriculum is not None
+                    else None
+                ),
             )
 
         self.ckpt_manager.wait_for_uploads()

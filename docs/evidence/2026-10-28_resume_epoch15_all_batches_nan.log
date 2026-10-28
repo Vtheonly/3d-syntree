@@ -1,0 +1,74 @@
+[main] runtime profile: {
+  "device": "cuda:0",
+  "device_name": "Tesla T4",
+  "precision": "fp16",
+  "tf32_enabled": false,
+  "cuda_available": true,
+  "gpu_count": 1,
+  "gpu_memory_gb": 14.56,
+  "mixed_precision_dtype": "float16",
+  "num_threads": 1,
+  "torch_version": "2.11.0+cu130",
+  "compute_capability": "7.5",
+  "rtx6000_ada": false,
+  "requested_mixed_precision": "fp16",
+  "amp_dtype": "torch.float16",
+  "gpu_free_memory_gb": 14.46,
+  "num_workers": 2
+}
+2026-10-28 16:11:04,007 | INFO    | numexpr.utils | NumExpr defaulting to 2 threads.
+[main] restored model architecture from checkpoint (runtime flags preserved)
+2026-10-28 16:11:12,536 | INFO    | syntree.chemistry.catalog | Catalog filter (Fsp3 >= 0.40, MW <= 220.0): 2800 -> 2680 synthons
+[trainer] auto-scale: free VRAM 14.44 GB | target 12.27 GB
+[trainer] auto-scale: batch 32 -> 37 | accum 2 -> 2 | effective 64 -> 74 | lr scale 1.156 | probe peak 12.24 GB (85% of free)
+2026-10-28 16:12:11,080 | INFO    | syntree.utils.checkpoint | Restored verified checkpoint: epoch 15 (step 41). Training resumes at epoch 16.
+[trainer] starting run: budget=11.50h, epochs=40, synthons=2680, train=2194, val=286, resume_epoch=16
+[trainer] model: hidden_dim=256, layers=8, heads=8 | batch=37 x accum=2 | steps/epoch=60 | amp=True (torch.float16)
+[trainer] WARNING: non-finite loss at batch 0 (loss=nan); skipping batch. (total skips: 1)
+[trainer] WARNING: non-finite loss at batch 1 (loss=nan); skipping batch. (total skips: 2)
+[trainer] WARNING: non-finite loss at batch 2 (loss=nan); skipping batch. (total skips: 3)
+[trainer] WARNING: non-finite loss at batch 3 (loss=nan); skipping batch. (total skips: 4)
+[trainer] WARNING: non-finite loss at batch 4 (loss=nan); skipping batch. (total skips: 5)
+[trainer] WARNING: non-finite loss at batch 5 (loss=nan); skipping batch. (total skips: 6)
+[trainer] WARNING: non-finite loss at batch 6 (loss=nan); skipping batch. (total skips: 7)
+[trainer] WARNING: non-finite loss at batch 7 (loss=nan); skipping batch. (total skips: 8)
+[trainer] WARNING: non-finite loss at batch 8 (loss=nan); skipping batch. (total skips: 9)
+[trainer] WARNING: non-finite loss at batch 9 (loss=nan); skipping batch. (total skips: 10)
+[trainer] WARNING: non-finite loss at batch 10 (loss=nan); skipping batch. (total skips: 11)
+[trainer] WARNING: non-finite loss at batch 11 (loss=nan); skipping batch. (total skips: 12)
+[trainer] WARNING: non-finite loss at batch 12 (loss=nan); skipping batch. (total skips: 13)
+[trainer] WARNING: non-finite loss at batch 13 (loss=nan); skipping batch. (total skips: 14)
+[trainer] WARNING: non-finite loss at batch 14 (loss=nan); skipping batch. (total skips: 15)
+[trainer] WARNING: non-finite loss at batch 15 (loss=nan); skipping batch. (total skips: 16)
+[trainer] WARNING: non-finite loss at batch 16 (loss=nan); skipping batch. (total skips: 17)
+[trainer] WARNING: non-finite loss at batch 17 (loss=nan); skipping batch. (total skips: 18)
+[trainer] WARNING: non-finite loss at batch 18 (loss=nan); skipping batch. (total skips: 19)
+[trainer] WARNING: non-finite loss at batch 19 (loss=nan); skipping batch. (total skips: 20)
+[trainer] WARNING: non-finite loss at batch 20 (loss=nan); skipping batch. (total skips: 21)
+[trainer] WARNING: non-finite loss at batch 21 (loss=nan); skipping batch. (total skips: 22)
+[trainer] WARNING: non-finite loss at batch 22 (loss=nan); skipping batch. (total skips: 23)
+[trainer] WARNING: non-finite loss at batch 23 (loss=nan); skipping batch. (total skips: 24)
+[trainer] WARNING: non-finite loss at batch 24 (loss=nan); skipping batch. (total skips: 25)
+[trainer] WARNING: non-finite loss at batch 25 (loss=nan); skipping batch. (total skips: 26)
+[trainer] WARNING: non-finite loss at batch 26 (loss=nan); skipping batch. (total skips: 27)
+[trainer] WARNING: non-finite loss at batch 27 (loss=nan); skipping batch. (total skips: 28)
+[trainer] WARNING: non-finite loss at batch 28 (loss=nan); skipping batch. (total skips: 29)
+[trainer] WARNING: non-finite loss at batch 29 (loss=nan); skipping batch. (total skips: 30)
+[trainer] WARNING: non-finite loss at batch 30 (loss=nan); skipping batch. (total skips: 31)
+[trainer] WARNING: non-finite loss at batch 31 (loss=nan); skipping batch. (total skips: 32)
+[trainer] WARNING: non-finite loss at batch 32 (loss=nan); skipping batch. (total skips: 33)
+[trainer] WARNING: non-finite loss at batch 33 (loss=nan); skipping batch. (total skips: 34)
+[trainer] WARNING: non-finite loss at batch 34 (loss=nan); skipping batch. (total skips: 35)
+[trainer] WARNING: non-finite loss at batch 35 (loss=nan); skipping batch. (total skips: 36)
+[trainer] WARNING: non-finite loss at batch 36 (loss=nan); skipping batch. (total skips: 37)
+[trainer] WARNING: non-finite loss at batch 37 (loss=nan); skipping batch. (total skips: 38)
+[trainer] WARNING: non-finite loss at batch 38 (loss=nan); skipping batch. (total skips: 39)
+[trainer] WARNING: non-finite loss at batch 39 (loss=nan); skipping batch. (total skips: 40)
+[trainer] WARNING: non-finite loss at batch 40 (loss=nan); skipping batch. (total skips: 41)
+[trainer] WARNING: non-finite loss at batch 41 (loss=nan); skipping batch. (total skips: 42)
+[trainer] WARNING: non-finite loss at batch 42 (loss=nan); skipping batch. (total skips: 43)
+[trainer] WARNING: non-finite loss at batch 43 (loss=nan); skipping batch. (total skips: 44)
+[trainer] WARNING: non-finite loss at batch 44 (loss=nan); skipping batch. (total skips: 45)
+[trainer] WARNING: non-finite loss at batch 45 (loss=nan); skipping batch. (total skips: 46)
+[trainer] WARNING: non-finite loss at batch 46 (loss=nan); skipping batch. (total skips: 47)
+[trainer] WARNING: non-finite loss at batch 47 (loss=nan); skipping batch. (total skips: 47)

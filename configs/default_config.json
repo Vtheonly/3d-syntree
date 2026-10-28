@@ -58,7 +58,7 @@
     "max_epochs": 40,
     "time_budget_hours": 11.5,
     "learning_rate": 0.0003,
-    "weight_decay": 0.00001,
+    "weight_decay": 1e-05,
     "lr_scheduler": "cosine_warmup",
     "warmup_epochs": 2,
     "grad_clip_norm": 1,
@@ -76,7 +76,8 @@
       "max_batch_size": 8192,
       "scale_model": true,
       "lr_scale_rule": "linear"
-    }
+    },
+    "fresh_start": false
   },
   "reinforcement_learning": {
     "enabled": false,
@@ -86,7 +87,7 @@
     "gamma": 0.99,
     "value_coef": 0.5,
     "entropy_coef": 0.01,
-    "learning_rate": 0.00001,
+    "learning_rate": 1e-05,
     "max_grad_norm": 1,
     "temperature": 1,
     "checkpoint_every": 16,
@@ -109,5 +110,20 @@
   "catalog": {
     "min_fsp3": 0.4,
     "max_mw": 220
+  },
+  "curriculum": {
+    "enabled": false,
+    "n_levels": 9,
+    "n_stages": 6,
+    "min_weight": 0.03,
+    "sigma": 1.8,
+    "seed": 42,
+    "milestone_metric": "val_loss",
+    "lower_better": true,
+    "improve_thresh": 0.005,
+    "patience": 2,
+    "feature_sample_stride": 1,
+    "cache_path": "./experiments/curriculum_levels_v1.json",
+    "feature_weights": null
   }
 }

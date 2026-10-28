@@ -491,6 +491,15 @@ The synthon policy outputs K + 1 actions, where index K is the learned STOP acti
 * **Resilience** – the trainer checkpoints atomically and restores optimizer,
   scheduler, and RNG state. Legacy checkpoints can still be read after the
   reaction head expansion, with newly introduced parameters initialized fresh.
+* **Fresh-start safety (2026-10-29)** – non-resume runs archive prior local
+  checkpoints instead of purging them; restores refuse non-finite payloads;
+  `--fresh` + `--resume-auto` is a hard error; remote purging requires the
+  explicit `--purge-remote`.
+* **Curriculum learning (2026-10-29)** – optional 9-level difficulty-aware
+  sampling over the full train split (`curriculum.enabled` in the config);
+  budget-neutral (identical steps/epoch), leakage-safe (train-only level
+  edges), reproducible (cached level artifact + per-epoch seeded sampler);
+  see `docs/CURRICULUM.md`.
 * **Security** – the HF write token is read exclusively from HF_TOKEN and
   never from committed configuration.
 * **Testing** – run python -m pytest tests/ -q before treating a benchmark as
@@ -765,3 +774,57 @@ Every reported experiment should archive:
 
 A paper table should never be produced from an unversioned mixture of local
 datasets, checkpoints, and generated outputs.
+
+---
+
+## 13. Training Policy Update (2026-10-29): From-Scratch Restart + Curriculum
+
+**Stage 1 restarts from scratch.** The 2026-10-28 runs are retired as
+starting points: a resumed epoch-15 checkpoint produced `loss=nan` for
+every batch from batch 0 (preserved in `docs/evidence/`). The current policy:
+
+* `--fresh` (or `training.fresh_start: true`, set in
+  `configs/train_colab_12h.json`) starts at epoch 0 with newly initialized
+  weights and optimizer state, and **archives** — never deletes — previous
+  local checkpoints under `experiments/checkpoints/archive/<UTC-stamp>/`.
+* `--fresh` combined with `--resume-auto` is a hard error; nothing about
+  the start mode is silent. Fresh runs log
+  `[trainer] FRESH START CONFIRMED ... param health ...` so the log itself
+  proves the run began from scratch with finite weights.
+* `CheckpointManager.restore_latest` **refuses** checkpoints whose model /
+  optimizer / scaler tensors are non-finite (loud error, file preserved for
+  forensics) — structural consistency alone no longer qualifies as
+  "verified".
+* The remote HF repository is only wiped with the explicit `--purge-remote`
+  flag; without it a fresh run progressively overwrites remote checkpoint
+  files and older revisions remain recoverable via HF commit history.
+
+**Curriculum learning is enabled for Stage 1.** `configs/train_colab_12h.json`
+now activates a 9-level difficulty curriculum over the **entire** training
+split (`syntree/engine/curriculum.py`, design in `docs/CURRICULUM.md`):
+reproducible difficulty scores (ligand/pocket structure, target-synthon
+RDKit features, reaction-family rarity; train-only normalization) → 9
+balanced quantile levels → milestone-driven mixed sampling (easy-biased
+early, hard-biased late, every level always ≥ 3% weight). Steps/epoch,
+LR schedule, and the time budget are unchanged. Level counts, stage,
+weights, and per-level validation metrics are printed and written to
+`metrics.jsonl` / `history.json`.
+
+**Known-error status.** A persistent Stage-1 NaN failure (fp16, T4) is
+**documented but deliberately not fixed** this iteration:
+`docs/PERSISTENT_ERRORS_NAN.md` records the evidence, the confirmed facts
+vs. hypotheses, and the next investigation steps. Do not assume the fresh
+restart cures it — it only guarantees clean starting state.
+
+## 14. Documentation Index
+
+| Document | Content |
+|---|---|
+| `docs/HANDOFF_2026-10-29.md` | Current state, division of responsibilities, verification evidence, prioritized next steps, next test batch |
+| `docs/PERSISTENT_ERRORS_NAN.md` | The open NaN failure: facts, hypotheses, affected code, investigation plan |
+| `docs/CURRICULUM.md` | Curriculum design, config reference, verification protocol, A/B comparison plan |
+| `docs/DECISIONS.md` | Complete architectural decision record (chosen vs rejected alternatives, evidence levels, self-critique) |
+| `docs/ENGINEERING_AUDIT_REPORT.md` | 2026-10-28 audit: verified data sources, defect fixes, certification |
+| `docs/evidence/` | Verbatim incident logs and forensic snapshots |
+| `prototypes/train_observatory/` | Verified prototype observability/curriculum/NaN-shield/metrics modules (not yet integrated) |
+| `docs/tasklist.md` | Original mission brief and earlier task history |

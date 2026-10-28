@@ -97,6 +97,33 @@ def restore_arch_with_runtime_flags(saved: dict, current: dict) -> dict:
     return merged
 
 
+def resolve_start_mode(args, config: dict) -> dict:
+    """Decide FRESH vs RESUME for ``--mode train`` (fail-closed, explicit).
+
+    Fresh start can be requested two ways: the ``--fresh`` / ``--reset`` CLI
+    flag, or ``training.fresh_start: true`` in the config.  Fresh always wins
+    over resume, and combining fresh with ``--resume-auto`` is a hard error:
+    the 2026-10-28 incident (resuming from a NaN-poisoned epoch-15 checkpoint
+    produced loss=NaN for every batch) showed that an ambiguous start mode
+    must never be silently resolved in favour of restoring old state.
+
+    Returns {"fresh": bool, "resume": bool, "source": str}.
+    """
+    config_fresh = bool((config.get("training", {}) or {}).get("fresh_start", False))
+    cli_fresh = bool(getattr(args, "fresh", False))
+    resume = bool(getattr(args, "resume_auto", False))
+    fresh = cli_fresh or config_fresh
+    if fresh and resume:
+        raise SystemExit(
+            "error: --resume-auto conflicts with the fresh-start request "
+            "(--fresh or training.fresh_start=true). A fresh run must not "
+            "restore any previous model or optimizer state; drop one of the "
+            "two options and re-run."
+        )
+    source = "cli --fresh" if cli_fresh else ("config training.fresh_start" if config_fresh else "-")
+    return {"fresh": fresh, "resume": resume, "source": source}
+
+
 def load_config(config_path: str, runtime_config_path: Optional[str]) -> dict:
     with open(config_path) as f:
         config = json.load(f)
@@ -184,6 +211,47 @@ def validate_config(config: dict) -> list:
     ) < 1:
         errors.append("training.keep_last_n_checkpoints must be >= 1")
 
+    # Fresh-start flag (2026-10-29 restart-from-scratch mandate): must be a
+    # boolean when present; combined with --resume-auto it is a hard error
+    # (resolved in resolve_start_mode, but rejected here for config-file
+    # misuse too).
+    if "fresh_start" in training and not isinstance(training["fresh_start"], bool):
+        errors.append("training.fresh_start must be true or false")
+
+    # Curriculum learning (2026-10-29): structural checks so a malformed
+    # curriculum block fails closed before any dataset is touched.
+    curriculum = config.get("curriculum", {}) or {}
+    if isinstance(curriculum, dict) and bool(curriculum.get("enabled", False)):
+        levels = int(curriculum.get("n_levels", 9) or 9)
+        if levels < 2 or levels > 20:
+            errors.append(
+                f"curriculum.n_levels must be within [2, 20], got {levels}"
+            )
+        stages = int(curriculum.get("n_stages", 6) or 6)
+        if stages < 1:
+            errors.append(f"curriculum.n_stages must be >= 1, got {stages}")
+        min_weight = float(curriculum.get("min_weight", 0.03))
+        if not 0.0 < min_weight <= 0.5:
+            errors.append(
+                f"curriculum.min_weight must be within (0, 0.5], got {min_weight}"
+            )
+        patience = int(curriculum.get("patience", 2) or 2)
+        if patience < 1:
+            errors.append(f"curriculum.patience must be >= 1, got {patience}")
+        weights_cfg = curriculum.get("feature_weights", {})
+        if weights_cfg is not None:
+            if not isinstance(weights_cfg, dict):
+                errors.append("curriculum.feature_weights must be an object")
+            else:
+                for key, value in weights_cfg.items():
+                    if not isinstance(value, (int, float)) or isinstance(value, bool):
+                        errors.append(
+                            f"curriculum.feature_weights['{key}'] must be numeric"
+                        )
+        stride = int(curriculum.get("feature_sample_stride", 1) or 1)
+        if stride < 1:
+            errors.append(f"curriculum.feature_sample_stride must be >= 1, got {stride}")
+
     rl = config.get("reinforcement_learning", {}) or {}
     algorithm = str(rl.get("algorithm", "ppo")).strip().lower()
     if algorithm not in ("ppo", "gflownet", "dpo"):
@@ -220,7 +288,9 @@ def main(argv=None) -> int:
     parser.add_argument("--resume-auto", action="store_true",
                         help="auto-resume from the latest checkpoint (local or HF Hub)")
     parser.add_argument("--fresh", "--reset", action="store_true", dest="fresh",
-                        help="start a completely fresh training run from epoch 0, ignoring and clearing any existing checkpoints")
+                        help="start a completely fresh training run from epoch 0; existing LOCAL checkpoints are archived (not deleted) so no previous state can be restored")
+    parser.add_argument("--purge-remote", action="store_true", dest="purge_remote",
+                        help="with --fresh: also DELETE the remote HF Hub checkpoint state (destructive, explicit consent only; HF commit history still retains prior revisions)")
     parser.add_argument("--epochs", type=int, default=None,
                         help="override training.max_epochs (e.g. to continue training past restored epochs)")
     parser.add_argument("--pocket", type=str, default=None,
@@ -275,9 +345,10 @@ def main(argv=None) -> int:
     if args.preload_ram is not None:
         config.setdefault("data", {})["preload_to_ram"] = args.preload_ram
 
-    # Fresh mode overrides resume
-    if args.fresh:
-        args.resume_auto = False
+    # NOTE: the old "fresh overrides resume" silent precedence was removed
+    # (2026-10-29).  Fresh + resume is now a hard error resolved in
+    # resolve_start_mode(): silently defusing the contradiction is exactly
+    # how a poisoned checkpoint could sneak back into a "fresh" run.
 
     # Fail-closed config validation
     validation_errors = validate_config(config)
@@ -322,12 +393,42 @@ def main(argv=None) -> int:
 
         ckpt_dir = os.path.join(args.output_dir or "./experiments", "checkpoints")
 
-        if args.fresh:
-            print("[main] --fresh specified: resetting checkpoint state for a clean run from epoch 0")
-            cleaner = CheckpointManager(config, ckpt_dir=ckpt_dir)
-            cleaner.reset_all(purge_remote=bool(config.get("huggingface", {}).get("enabled", False)))
+        # Start-mode resolution (2026-10-29): FRESH vs RESUME is decided once,
+        # loudly, and contradiction is fatal.  See resolve_start_mode.
+        start_mode = resolve_start_mode(args, config)
 
-        if args.resume_auto and not args.fresh:
+        if start_mode["fresh"]:
+            print(
+                f"[main] FRESH START requested ({start_mode['source']}): training "
+                "begins from epoch 0 with newly initialized weights. No "
+                "previous model, optimizer, scheduler, or scaler state will "
+                "be restored."
+            )
+            print(
+                "[main] FRESH START policy: existing LOCAL checkpoints are "
+                "ARCHIVED (experiments/checkpoints/archive/<stamp>), never "
+                "deleted - previous runs remain available for debugging and "
+                "comparison."
+            )
+            if bool(config.get("huggingface", {}).get("enabled", False)):
+                if getattr(args, "purge_remote", False):
+                    print(
+                        "[main] FRESH START: --purge-remote given; deleting the "
+                        "remote HF Hub checkpoint state as explicitly "
+                        "requested."
+                    )
+                    cleaner = CheckpointManager(config, ckpt_dir=ckpt_dir)
+                    cleaner.reset_all(purge_remote=True)
+                else:
+                    print(
+                        "[main] FRESH START: remote HF Hub state is NOT purged. "
+                        "As this run syncs, it will progressively overwrite "
+                        "the remote checkpoints/ files; previous revisions "
+                        "remain recoverable from the HF commit history. Pass "
+                        "--purge-remote to wipe the remote state instead."
+                    )
+            args.resume_auto = False
+        elif start_mode["resume"]:
             reader = CheckpointManager(config, ckpt_dir=ckpt_dir)
             saved_model_cfg = reader.read_model_config()
             if saved_model_cfg:
