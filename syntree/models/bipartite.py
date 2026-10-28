@@ -26,6 +26,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 
 from syntree.models.equivariant import (
     BatchedPaiNNLayer,
@@ -45,6 +46,14 @@ class BipartitePaiNN(nn.Module):
         max_atomic_number: size of the element embedding table (shared
             between protein and ligand atoms).
         dropout: dropout applied to the final scalar features.
+        gradient_checkpointing: when True, each PaiNN layer is re-computed
+            during backward instead of storing its intermediate message
+            tensors. Cuts encoder activation memory roughly by the number
+            of layers (8x for the 8-layer T4 profile) for ~30% extra step
+            time - the difference between fitting and OOM-ing on a 15 GB
+            Colab T4. Autocast + GradScaler safe via ``use_reentrant=False``;
+            inactive outside ``model.train()`` / grad-enabled contexts, so
+            validation, rollouts, and inference never pay the recompute cost.
     """
 
     def __init__(
@@ -55,12 +64,14 @@ class BipartitePaiNN(nn.Module):
         cutoff: float = 5.0,
         max_atomic_number: int = 100,
         dropout: float = 0.1,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         if hidden_dim <= 0 or num_layers <= 0:
             raise ValueError("hidden_dim and num_layers must be positive")
         self.hidden_dim = int(hidden_dim)
         self.cutoff = float(cutoff)
+        self.gradient_checkpointing = bool(gradient_checkpointing)
 
         # Shared element table + separate node-type and handle-flag tables.
         # Charges use a bias-free projection so a neutral system reproduces
@@ -208,9 +219,22 @@ class BipartitePaiNN(nn.Module):
         )
 
         for layer in self.layers:
-            scalar, vector = layer(
-                scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
-            )
+            if (
+                self.gradient_checkpointing
+                and self.training
+                and torch.is_grad_enabled()
+            ):
+                # use_reentrant=False: plays correctly with autocast +
+                # GradScaler and tolerates non-tensor/constant inputs
+                # (edge_index, edge_vec, ... are grad-free buffers here).
+                scalar, vector = torch.utils.checkpoint.checkpoint(
+                    layer, scalar, vector, edge_index, edge_vec, edge_dist,
+                    edge_rbf, use_reentrant=False,
+                )
+            else:
+                scalar, vector = layer(
+                    scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
+                )
 
         scalar = self.layer_norm(self.dropout(scalar))
 

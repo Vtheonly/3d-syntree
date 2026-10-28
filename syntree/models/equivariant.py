@@ -16,6 +16,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Largest magnitude that is exactly representable in fp16 minus headroom
+# (max finite fp16 = 65,504). Used as the saturation bound for activations
+# so that unbounded residual growth under fp16 autocast saturates cleanly
+# instead of overflowing to +/-inf and poisoning gradients with NaN.
+FP16_ACT_CLAMP = 6.0e4
+
+
+def finite_act_clamp(x: torch.Tensor) -> torch.Tensor:
+    """Saturate non-finite / oversized activations to the fp16-safe range.
+
+    A no-op for healthy fp32 values, and a hard safety net under fp16
+    autocast: any +/-inf (from overflow) becomes +/-6e4 and NaN becomes 0,
+    so the loss can stay finite and the finite-loss guard is a last resort
+    rather than a routine.
+    """
+    if not x.is_floating_point():
+        return x
+    x = torch.nan_to_num(x, nan=0.0, posinf=FP16_ACT_CLAMP, neginf=-FP16_ACT_CLAMP)
+    return x.clamp(min=-FP16_ACT_CLAMP, max=FP16_ACT_CLAMP)
+
 
 class CosineCutoff(nn.Module):
     """Smooth cosine cutoff envelope ``0.5 * (cos(pi * d / r_cut) + 1)``."""
@@ -94,6 +114,11 @@ class PaiNNInteraction(nn.Module):
         filters = self.filter_mlp(edge_rbf)                     # [E, 3H]
         f_s, f_v, f_vv = torch.split(filters, self.hidden_dim, dim=-1)
 
+        # fp16 safety: distances are physical (>= 0) but degenerate data can
+        # produce coincident atoms (d == 0); clamp so the unit vector and RBF
+        # stay finite instead of dividing by ~0.
+        edge_dist = edge_dist.clamp(min=1e-6)
+
         # Directional unit vectors, [E, 3, 1].
         dir_vec = edge_vec / (edge_dist.unsqueeze(-1) + 1e-8)
 
@@ -105,9 +130,9 @@ class PaiNNInteraction(nn.Module):
 
         agg_s = torch.zeros_like(scalar)
         agg_v = torch.zeros_like(vector)
-        agg_s.index_add_(0, row, msg_s.to(agg_s.dtype))
-        agg_v.index_add_(0, row, msg_v.to(agg_v.dtype))
-        return agg_s, agg_v
+        agg_s.index_add_(0, row, finite_act_clamp(msg_s).to(agg_s.dtype))
+        agg_v.index_add_(0, row, finite_act_clamp(msg_v).to(agg_v.dtype))
+        return finite_act_clamp(agg_s), finite_act_clamp(agg_v)
 
 
 class PaiNNMixing(nn.Module):
@@ -177,8 +202,8 @@ class PaiNNLayer(nn.Module):
         agg_s, agg_v = self.interaction(
             scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
         )
-        scalar = scalar + agg_s
-        vector = vector + agg_v
+        scalar = finite_act_clamp(scalar + agg_s)
+        vector = finite_act_clamp(vector + agg_v)
         return self.mixing(scalar, vector)
 
 
@@ -209,9 +234,10 @@ class BatchedPaiNNLayer(nn.Module):
         agg_s, agg_v = self.interaction(
             scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
         )
-        scalar = scalar + agg_s
-        vector = vector + agg_v
-        return self.mixing(scalar, vector)
+        scalar = finite_act_clamp(scalar + agg_s)
+        vector = finite_act_clamp(vector + agg_v)
+        scalar, vector = self.mixing(scalar, vector)
+        return finite_act_clamp(scalar), finite_act_clamp(vector)
 
 
 
@@ -284,4 +310,6 @@ __all__ = [
     "PaiNNLayer",
     "BatchedPaiNNLayer",
     "build_radius_graph",
+    "finite_act_clamp",
+    "FP16_ACT_CLAMP",
 ]

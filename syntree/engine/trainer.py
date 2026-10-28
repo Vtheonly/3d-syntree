@@ -11,6 +11,7 @@ Features:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -268,6 +269,18 @@ class ResilientTrainer:
         )
         self.criterion = torch.nn.CrossEntropyLoss()
 
+        # Data-validation / memory-safety knobs (OOM fix, T4):
+        # pockets above the atom cap are trimmed to the binding core
+        # (nearest-to-centroid atoms) so one pathological 3k-atom pocket
+        # cannot blow the radius-graph edge count for the whole micro-batch.
+        self.pocket_atom_cap = max(
+            0, int(train_cfg.get("max_pocket_atoms", 1600))
+        )
+        self.collate_stats = {"trimmed": 0, "dropped_nonfinite": 0}
+        self._collate_fn = functools.partial(
+            self.collate_batch, pocket_atom_cap=self.pocket_atom_cap,
+            stats=self.collate_stats,
+        )
         # GPU auto-scaling.
         self.batch_size = max(1, int(data_cfg.get("batch_size", 16)))
         self.lr_scale_factor = 1.0
@@ -296,6 +309,10 @@ class ResilientTrainer:
         # Finite-loss guard bookkeeping: batches skipped because their loss
         # was inf/NaN (reported per epoch in the metric history).
         self.nan_skips = 0
+        # OOM-recovery bookkeeping: batches skipped because a single
+        # outlier-sized graph exhausted VRAM (never crash a 12 h run on
+        # one bad batch; the finite batches' accumulated grads survive).
+        self.oom_skips = 0
         if auto_resume:
             self.start_epoch, self.global_step, self.best_val_loss = (
                 self.ckpt_manager.restore_latest(
@@ -336,14 +353,93 @@ class ResilientTrainer:
                 "' to continue with the original embedding space."
             )
 
+    _NONFINITE_CHECK_ATTRS = (
+        "pocket_pos", "ligand_pos", "pos", "target_dihedral", "torsion_phi",
+    )
+
     @staticmethod
-    def _collate(items):
-        """Robust PyG batch collator that guards against 0-dim tensor errors."""
+    def _has_nonfinite(data) -> bool:
+        """True when any coordinate/target tensor is NaN/inf (poisonous row)."""
+        for key in ResilientTrainer._NONFINITE_CHECK_ATTRS:
+            v = getattr(data, key, None)
+            if (
+                isinstance(v, torch.Tensor)
+                and v.is_floating_point()
+                and not bool(torch.isfinite(v).all().item())
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _trim_pocket(data, cap: int):
+        """Trim an oversized pocket to the ``cap`` nearest-to-centroid atoms.
+
+        Only explicitly whitelisted pocket attributes sharing the pocket's
+        atom count are sliced (never ligand/target tensors of coincidental
+        equal length). Deterministic: kept indices preserve original order.
+        Returns (data, trimmed: bool).
+        """
+        pos_key = "pocket_pos" if getattr(data, "pocket_pos", None) is not None else (
+            "pos" if getattr(data, "pos", None) is not None else None
+        )
+        if pos_key is None or cap <= 0:
+            return data, False
+        n_atoms = getattr(data, pos_key).size(0)
+        if n_atoms <= cap:
+            return data, False
+
+        center = getattr(data, pos_key).mean(dim=0, keepdim=True)
+        dist = torch.cdist(getattr(data, pos_key).float(), center.float()).view(-1)
+        keep = torch.argsort(dist)[:cap]
+        keep, _ = torch.sort(keep)  # original order for determinism
+
+        if pos_key == "pocket_pos":
+            whitelist = ("pocket_pos", "pocket_z", "pocket_charge", "pocket_features")
+        else:
+            whitelist = ("pos", "z", "charge", "features")
+        for key in whitelist:
+            v = getattr(data, key, None)
+            if (
+                isinstance(v, torch.Tensor)
+                and v.dim() >= 1
+                and v.size(0) == n_atoms
+            ):
+                setattr(data, key, v[keep])
+        return data, True
+
+    @staticmethod
+    def collate_batch(items, pocket_atom_cap: int = 0, stats: Optional[dict] = None):
+        """Robust PyG batch collator that guards against 0-dim tensor errors.
+
+        Hardened for variable-size pocket graphs and dirty rows:
+        * items with non-finite coordinates/dihedral targets are dropped
+          (they are the root cause of residual fp16 NaN batches),
+        * pockets above ``pocket_atom_cap`` atoms are trimmed to the binding
+          core (nearest-to-centroid), bounding the radius-graph edge count,
+        * an empty survivor set raises loudly instead of failing obscurely.
+        """
         from torch_geometric.data import Batch
 
         clean_items = []
         for item in items:
+            if ResilientTrainer._has_nonfinite(item):
+                if stats is not None:
+                    stats["dropped_nonfinite"] = stats.get("dropped_nonfinite", 0) + 1
+                print(
+                    "[trainer] WARNING: dropping sample with non-finite "
+                    "coordinates/targets (poisonous for fp16)."
+                )
+                continue
             data = item.clone()
+            data, trimmed = ResilientTrainer._trim_pocket(data, pocket_atom_cap)
+            if trimmed and stats is not None:
+                trimmed_total = stats.get("trimmed", 0) + 1
+                stats["trimmed"] = trimmed_total
+                if trimmed_total <= 3 or trimmed_total % 100 == 0:
+                    print(
+                        f"[trainer] pocket trim: {trimmed_total} oversized pockets "
+                        f"capped at {pocket_atom_cap} atoms (binding core kept)."
+                    )
             if hasattr(data, "pocket_pos") and data.pocket_pos is not None:
                 data.num_nodes = data.pocket_pos.size(0)
             elif hasattr(data, "pos") and data.pos is not None:
@@ -359,6 +455,11 @@ class ResilientTrainer:
 
             clean_items.append(data)
 
+        if not clean_items:
+            raise RuntimeError(
+                "collate: every sample in this batch failed non-finite validation; "
+                "inspect the dataset shards for corrupted coordinates."
+            )
         batch = Batch.from_data_list(clean_items, follow_batch=["pocket_pos", "ligand_pos"])
         if not hasattr(batch, "pocket_batch") or batch.pocket_batch is None:
             batch.pocket_batch = getattr(batch, "pocket_pos_batch", None)
@@ -381,7 +482,7 @@ class ResilientTrainer:
             shuffle=(shuffle and sampler is None),
             sampler=sampler,
             num_workers=workers,
-            collate_fn=self._collate,
+            collate_fn=self._collate_fn,
             drop_last=False,
             pin_memory=self.device.type == "cuda",
         )
@@ -389,6 +490,32 @@ class ResilientTrainer:
     # ------------------------------------------------------------------
     # GPU auto-scaling
     # ------------------------------------------------------------------
+    def _heaviest_probe_pool(self, max_items: int = 64, sample_cap: int = 512):
+        """Indices of the heaviest-pocket items, ranked by atom count.
+
+        Deterministic strided sample (at most ``sample_cap`` __getitem__
+        calls, so full-data runs stay cheap), ranked by pocket atom count,
+        truncated to ``max_items``. Used by the auto-scale probe so memory
+        certification reflects the worst graph the loader can build.
+        """
+        n = len(self.dataset)
+        if n <= 0:
+            return []
+        stride = max(1, n // max(1, sample_cap))
+        sized = []
+        for idx in range(0, n, stride):
+            try:
+                item = self.dataset[idx]
+                pos = getattr(item, "pocket_pos", None)
+                if pos is None:
+                    pos = getattr(item, "pos", None)
+                n_atoms = int(pos.size(0)) if pos is not None else 0
+            except Exception:
+                continue
+            sized.append((n_atoms, idx))
+        sized.sort(key=lambda t: (-t[0], t[1]))
+        return [idx for _, idx in sized[: max(1, max_items)]]
+
     def _autoscale_batch(self, train_cfg: dict) -> None:
         """Grow batch size until target VRAM fraction is reached."""
         auto = dict(train_cfg.get("auto_scale", {}))
@@ -407,12 +534,20 @@ class ResilientTrainer:
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         )
 
+        # Worst-case-aware probing (T4 OOM fix): the previous probe measured
+        # one *random* batch, so a lucky light batch certified batch=8 while
+        # a later batch holding outlier-sized pockets (3-5k atoms each) spiked
+        # past 14 GB and killed the run. Instead, rank a deterministic sample
+        # of the dataset by pocket atom count and probe the HEAVIEST items, so
+        # every real training batch is guaranteed lighter than the probe.
+        pool = self._heaviest_probe_pool(
+            max_items=int(auto.get("probe_pool_size", 64)),
+            sample_cap=int(auto.get("probe_sample_cap", 512)),
+        )
+
         def probe(batch_size: int) -> None:
-            loader = DataLoader(
-                self.dataset, batch_size=batch_size, shuffle=True,
-                num_workers=0, collate_fn=self._collate,
-            )
-            batch = next(iter(loader)).to(self.device)
+            items = [self.dataset[i] for i in pool[:batch_size]]
+            batch = self._collate_fn(items).to(self.device)
             target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
             stop_index = len(self.catalog)
             target_stop = getattr(
@@ -447,9 +582,9 @@ class ResilientTrainer:
         try:
             result = autotune_batch_size(
                 probe,
-                dataset_size=len(self.dataset),
-                start_batch=min(self.batch_size, max(1, len(self.dataset))),
-                max_batch=max_batch,
+                dataset_size=min(len(self.dataset), max(1, len(pool))),
+                start_batch=min(self.batch_size, max(1, len(pool))),
+                max_batch=min(max_batch, max(1, len(pool))),
                 target_bytes=target_bytes,
                 device=self.device,
             )
@@ -584,51 +719,68 @@ class ResilientTrainer:
 
                 torsion_synthon_emb = self.catalog.embeddings.to(self.device)[target]
 
-                with torch.autocast(
-                    device_type=self.device.type,
-                    dtype=self.amp_dtype,
-                    enabled=self.use_amp,
-                ):
-                    preds = self.model(
-                        batch,
-                        self.catalog.embeddings.to(self.device),
-                        synthon_mask,
-                        reaction_mask,
-                        synthon_embedding_input=torsion_synthon_emb,
-                    )
-                    reaction_per_sample = F.cross_entropy(
-                        preds["reaction_logits"],
-                        batch.target_reaction_family_idx,
-                        reduction="none",
-                    )
-                    non_stop = ~target_stop.bool()
-                    l_reaction = (
-                        reaction_per_sample[non_stop].mean()
-                        if bool(non_stop.any().item())
-                        else reaction_per_sample.new_zeros(())
-                    )
-                    l_synthon = self.criterion(preds["synthon_logits"], target_action)
-
-                    torsion_loss_all = ContinuousTorsionHead.loss_fn(
-                        preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
-                    )
-                    if bool(non_stop.any().item()):
-                        torsion_log_probs = ContinuousTorsionHead.log_prob(
-                            preds["torsion_mu"][non_stop],
-                            preds["torsion_kappa"][non_stop],
-                            batch.target_dihedral[non_stop],
+                try:
+                    with torch.autocast(
+                        device_type=self.device.type,
+                        dtype=self.amp_dtype,
+                        enabled=self.use_amp,
+                    ):
+                        preds = self.model(
+                            batch,
+                            self.catalog.embeddings.to(self.device),
+                            synthon_mask,
+                            reaction_mask,
+                            synthon_embedding_input=torsion_synthon_emb,
                         )
-                        l_torsion = -torsion_log_probs.mean()
-                    else:
-                        l_torsion = torsion_loss_all.new_zeros(())
+                        reaction_per_sample = F.cross_entropy(
+                            preds["reaction_logits"],
+                            batch.target_reaction_family_idx,
+                            reduction="none",
+                        )
+                        non_stop = ~target_stop.bool()
+                        l_reaction = (
+                            reaction_per_sample[non_stop].mean()
+                            if bool(non_stop.any().item())
+                            else reaction_per_sample.new_zeros(())
+                        )
+                        l_synthon = self.criterion(preds["synthon_logits"], target_action)
 
-                    w_synthon = float(self.loss_weights.get("synthon_ce", 1.0))
-                    w_torsion = float(self.loss_weights.get("torsion_nll", 0.5))
-                    loss = (
-                        w_synthon * l_synthon
-                        + self.reaction_loss_weight * l_reaction
-                        + w_torsion * l_torsion
-                    ) / self.accum_steps
+                        torsion_loss_all = ContinuousTorsionHead.loss_fn(
+                            preds["torsion_mu"], preds["torsion_kappa"], batch.target_dihedral
+                        )
+                        if bool(non_stop.any().item()):
+                            torsion_log_probs = ContinuousTorsionHead.log_prob(
+                                preds["torsion_mu"][non_stop],
+                                preds["torsion_kappa"][non_stop],
+                                batch.target_dihedral[non_stop],
+                            )
+                            l_torsion = -torsion_log_probs.mean()
+                        else:
+                            l_torsion = torsion_loss_all.new_zeros(())
+
+                        w_synthon = float(self.loss_weights.get("synthon_ce", 1.0))
+                        w_torsion = float(self.loss_weights.get("torsion_nll", 0.5))
+                        loss = (
+                            w_synthon * l_synthon
+                            + self.reaction_loss_weight * l_reaction
+                            + w_torsion * l_torsion
+                        ) / self.accum_steps
+                except RuntimeError as exc:
+                    if "out of memory" not in str(exc).lower():
+                        raise
+                    # OOM recovery (T4): a single outlier-sized graph must
+                    # never kill a 12 h run. Free the failed batch's cache,
+                    # count it, and move on - accumulated grads from earlier
+                    # finite batches in this window are preserved.
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    self.oom_skips += 1
+                    print(
+                        f"[trainer] WARNING: CUDA OOM at batch {batch_idx}; "
+                        f"skipping batch (total oom skips: {self.oom_skips}). "
+                        "Consider lowering training.max_pocket_atoms."
+                    )
+                    continue
 
                 if not bool(torch.isfinite(loss).all().item()):
                     # Finite-loss guard (Stage-1 ``loss nan`` fix): never
@@ -643,7 +795,20 @@ class ResilientTrainer:
                     )
                     continue
 
-                self.scaler.scale(loss).backward()
+                try:
+                    self.scaler.scale(loss).backward()
+                except RuntimeError as exc:
+                    if "out of memory" not in str(exc).lower():
+                        raise
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    self.oom_skips += 1
+                    print(
+                        f"[trainer] WARNING: CUDA OOM during backward at batch "
+                        f"{batch_idx}; skipping batch (total oom skips: "
+                        f"{self.oom_skips})."
+                    )
+                    continue
 
                 if (batch_idx + 1) % self.accum_steps == 0 or (batch_idx + 1) == len(self.loader):
                     self.scaler.unscale_(self.optimizer)
@@ -677,6 +842,9 @@ class ResilientTrainer:
                 "train_torsion_nll": epoch_torsion / max(1, n_batches),
                 "lr": self.optimizer.param_groups[0]["lr"],
                 "nonfinite_batches_skipped": self.nan_skips,
+                "oom_batches_skipped": self.oom_skips,
+                "pockets_trimmed": self.collate_stats.get("trimmed", 0),
+                "samples_dropped_nonfinite": self.collate_stats.get("dropped_nonfinite", 0),
                 "elapsed_hours": (time.time() - self.start_time) / 3600.0,
             }
 

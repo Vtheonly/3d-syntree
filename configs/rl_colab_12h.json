@@ -49,13 +49,14 @@
     "synthon_embedding_dim": 128,
     "num_attention_heads": 4,
     "max_atomic_number": 100,
-    "dropout": 0.1
+    "dropout": 0.1,
+    "gradient_checkpointing": true
   },
   "training": {
     "max_epochs": 40,
     "time_budget_hours": 11.5,
     "learning_rate": 0.0003,
-    "weight_decay": 0.00001,
+    "weight_decay": 1e-05,
     "lr_scheduler": "cosine_warmup",
     "warmup_epochs": 2,
     "grad_clip_norm": 1,
@@ -86,7 +87,7 @@
     "gamma": 0.99,
     "value_coef": 0.5,
     "entropy_coef": 0.01,
-    "learning_rate": 0.00001,
+    "learning_rate": 1e-05,
     "max_grad_norm": 1,
     "temperature": 1,
     "checkpoint_every": 16,

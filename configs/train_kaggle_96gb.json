@@ -36,13 +36,14 @@
     "synthon_embedding_dim": 512,
     "num_attention_heads": 8,
     "max_atomic_number": 100,
-    "dropout": 0.1
+    "dropout": 0.1,
+    "gradient_checkpointing": true
   },
   "training": {
     "max_epochs": 100,
     "time_budget_hours": 11.2,
     "learning_rate": 0.0003,
-    "weight_decay": 0.00001,
+    "weight_decay": 1e-05,
     "lr_scheduler": "cosine_warmup",
     "warmup_epochs": 3,
     "grad_clip_norm": 1.0,
@@ -55,8 +56,10 @@
     },
     "eval_interval_epochs": 1,
     "auto_scale": {
-      "enabled": false
-    }
+      "enabled": false,
+      "max_batch_size": 64
+    },
+    "max_pocket_atoms": 1600
   },
   "reinforcement_learning": {
     "enabled": false,
@@ -70,7 +73,7 @@
     "gamma": 0.99,
     "value_coef": 0.5,
     "entropy_coef": 0.01,
-    "learning_rate": 0.00001,
+    "learning_rate": 1e-05,
     "lr_z": 0.01,
     "max_grad_norm": 1.0,
     "temperature": 1.0,

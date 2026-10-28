@@ -24,6 +24,19 @@ from typing import Dict, Optional
 # torch import below. An explicit user override always wins (setdefault).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# RDKit's C++ front-end spams "DEPRECATION WARNING: please use
+# GetValence(Chem.ValenceType.EXPLICIT) instead" once per atom per reaction
+# replays (thousands of lines per RL episode). Our code never calls the
+# deprecated API - the warnings come from RDKit-internal reaction machinery -
+# so silence the deprecation channel at the source. Guarded so a missing or
+# renamed logger level never breaks startup.
+try:
+    from rdkit import RDLogger
+
+    RDLogger.DisableLog("rdApp.deprecation")
+except Exception:  # pragma: no cover - rdkit optional for --mode info
+    pass
+
 import torch
 
 
@@ -34,6 +47,24 @@ def deep_update(base: dict, override: dict) -> dict:
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = deep_update(merged[key], value)
         else:
+            merged[key] = value
+    return merged
+
+
+def restore_arch_with_runtime_flags(saved: dict, current: dict) -> dict:
+    """Checkpoint architecture + new runtime-only flags from the config.
+
+    ``--resume-auto`` replaces ``config["model"]`` with the architecture
+    saved in the checkpoint so tensor shapes always match. A plain replace
+    also drops runtime-only keys that did not exist when the checkpoint was
+    written (e.g. ``gradient_checkpointing``), silently re-enabling the
+    memory-hungry path on exactly the runs that need it. Keys present in the
+    checkpoint always win; keys known only to the live config are carried
+    over.
+    """
+    merged = dict(saved)
+    for key, value in current.items():
+        if key not in merged:
             merged[key] = value
     return merged
 
@@ -272,8 +303,10 @@ def main(argv=None) -> int:
             reader = CheckpointManager(config, ckpt_dir=ckpt_dir)
             saved_model_cfg = reader.read_model_config()
             if saved_model_cfg:
-                config["model"] = saved_model_cfg
-                print("[main] restored model architecture from checkpoint")
+                config["model"] = restore_arch_with_runtime_flags(
+                    saved_model_cfg, config.get("model", {})
+                )
+                print("[main] restored model architecture from checkpoint (runtime flags preserved)")
 
         auto_cfg = config.get("training", {}).get("auto_scale", {})
         if (
@@ -322,8 +355,10 @@ def main(argv=None) -> int:
         stage1_manager = CheckpointManager(config, ckpt_dir=args.ckpt_dir)
         saved_model_cfg = stage1_manager.read_model_config()
         if saved_model_cfg:
-            config["model"] = saved_model_cfg
-            print("[main] restored model architecture from Stage 1 checkpoint")
+            config["model"] = restore_arch_with_runtime_flags(
+                saved_model_cfg, config.get("model", {})
+            )
+            print("[main] restored model architecture from Stage 1 checkpoint (runtime flags preserved)")
 
         model = build_model(config).to(device)
 

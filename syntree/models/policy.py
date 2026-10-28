@@ -87,6 +87,9 @@ class SynTreePolicy(nn.Module):
         num_heads = int(model_cfg.get("num_attention_heads", 4))
         max_z = int(model_cfg.get("max_atomic_number", 100))
         dropout = float(model_cfg.get("dropout", 0.1))
+        # OOM fix (T4): recompute PaiNN layers during backward instead of
+        # retaining all 8 layers' message tensors (see BipartitePaiNN).
+        grad_ckpt = bool(model_cfg.get("gradient_checkpointing", False))
 
         if hidden_dim % num_heads != 0:
             raise ValueError(
@@ -110,6 +113,7 @@ class SynTreePolicy(nn.Module):
             cutoff=cutoff,
             max_atomic_number=max_z,
             dropout=dropout,
+            gradient_checkpointing=grad_ckpt,
         )
 
         # 2. Ligand handle state -> query space. Chemical handle features
