@@ -31,6 +31,22 @@ RAW_SOURCES = {
         "expected_filename": "enamine_real_vendor_export.csv.gz",
         "expected_hash": None,
     },
+    # --- verified 2026-10-28 (see configs/download.yaml for full evidence) ---
+    "pdbbind_refined_2020": {
+        "url": "https://huggingface.co/datasets/photonmz/pdbbindpp-2020/resolve/main/pbpp-2020.zip",
+        "expected_filename": "pbpp-2020.zip",
+        "expected_hash": "56c61303cb29d08a2ad6b13f4ae2b6ef",
+    },
+    "bindingmoad_annotations": {
+        "url": "https://huggingface.co/datasets/jglaser/binding_affinity/resolve/main/data/moad.parquet",
+        "expected_filename": "moad.parquet",
+        "expected_hash": None,
+    },
+    "enamine_building_blocks": {
+        "url": "https://huggingface.co/datasets/Lin-Glory/Enamine_Rush-Delivery_Building_Blocks-US/resolve/main/Enamine_Rush-Delivery_Building_Blocks-US.zip",
+        "expected_filename": "enamine_rush_delivery_bb.zip",
+        "expected_hash": "4942df33647d1b5e832e34340d7e7fb3c236ee742d54411757058dce5374554a",
+    },
 }
 
 

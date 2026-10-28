@@ -293,6 +293,9 @@ class ResilientTrainer:
         self.start_epoch = 0
         self.global_step = 0
         self.best_val_loss = float("inf")
+        # Finite-loss guard bookkeeping: batches skipped because their loss
+        # was inf/NaN (reported per epoch in the metric history).
+        self.nan_skips = 0
         if auto_resume:
             self.start_epoch, self.global_step, self.best_val_loss = (
                 self.ckpt_manager.restore_latest(
@@ -627,6 +630,19 @@ class ResilientTrainer:
                         + w_torsion * l_torsion
                     ) / self.accum_steps
 
+                if not bool(torch.isfinite(loss).all().item()):
+                    # Finite-loss guard (Stage-1 ``loss nan`` fix): never
+                    # backprop a non-finite batch. Gradient accumulation from
+                    # earlier finite batches in this window is preserved (no
+                    # zero_grad), so only the poisonous batch is dropped.
+                    self.nan_skips += 1
+                    print(
+                        f"[trainer] WARNING: non-finite loss at batch {batch_idx} "
+                        f"(loss={float(loss.item()):.4g}); skipping batch. "
+                        f"(total skips: {self.nan_skips})"
+                    )
+                    continue
+
                 self.scaler.scale(loss).backward()
 
                 if (batch_idx + 1) % self.accum_steps == 0 or (batch_idx + 1) == len(self.loader):
@@ -660,6 +676,7 @@ class ResilientTrainer:
                 "train_synthon_ce": epoch_synthon / max(1, n_batches),
                 "train_torsion_nll": epoch_torsion / max(1, n_batches),
                 "lr": self.optimizer.param_groups[0]["lr"],
+                "nonfinite_batches_skipped": self.nan_skips,
                 "elapsed_hours": (time.time() - self.start_time) / 3600.0,
             }
 
@@ -711,7 +728,18 @@ class ResilientTrainer:
     # Validation
     # ------------------------------------------------------------------
     def _build_training_masks(self, batch):
-        """Build reaction-family and synthon masks from validated targets."""
+        """Build reaction-family and synthon masks from validated targets.
+
+        Target-unmasking invariant (Stage-1 ``loss nan`` / ``val_loss 98,958,339``
+        fix): the ground-truth action must NEVER be masked out. The grammar
+        masks below are built from the *dataset-recorded* family/handle; when
+        catalog handle detection disagrees with the recorded annotation (or a
+        synthon exposes several handles), the true target can land on a masked
+        entry. Cross-entropy on a masked target overflows to ``+inf`` and, under
+        fp16 autocast, saturates the GradScaler into NaN gradients - the exact
+        Colab T4 failure. Unmasking the target keeps the loss finite while the
+        grammar still constrains every *non-target* action.
+        """
         reaction_masks = []
         synthon_masks = []
         for family_idx, handle_idx in zip(
@@ -730,7 +758,21 @@ class ResilientTrainer:
                     family, device=self.device, core_handle=handle
                 )
             )
-        return torch.stack(synthon_masks), torch.stack(reaction_masks)
+        syn_mask = torch.stack(synthon_masks)
+        rxn_mask = torch.stack(reaction_masks)
+
+        # Unmask the ground truth for every sample in the batch (bounds-checked:
+        # STOP targets use index K and out-of-catalog sentinels are skipped).
+        for b in range(rxn_mask.size(0)):
+            target_fam = int(batch.target_reaction_family_idx[b].item())
+            if 0 <= target_fam < rxn_mask.size(1):
+                rxn_mask[b, target_fam] = 0.0
+
+            target_syn = int(batch.target_synthon[b].item())
+            if 0 <= target_syn < syn_mask.size(1):
+                syn_mask[b, target_syn] = 0.0
+
+        return syn_mask, rxn_mask
 
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
@@ -821,6 +863,14 @@ class ResilientTrainer:
                     )
                 )
             predicted_masks = torch.stack(predicted_masks)
+
+            # Unmask the ground-truth synthon in the joint-accuracy replay masks
+            # (mirrors the training invariant; otherwise a masked target could
+            # never be predicted and the metric under-reported forever).
+            for b in range(predicted_masks.size(0)):
+                target_idx = int(target_action[b].item())
+                if 0 <= target_idx < predicted_masks.size(1):
+                    predicted_masks[b, target_idx] = 0.0
 
             stop_mask = getattr(batch, "stop_mask", None)
             global_features = getattr(batch, "global_features", None)

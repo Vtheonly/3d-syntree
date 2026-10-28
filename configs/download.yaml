@@ -7,7 +7,44 @@ sources:
     url: "https://huggingface.co/datasets/Yukk1Zz/if3-crossdocked2020/resolve/main/crossdocked_pocket10.tar.gz"
     filename: "crossdocked_pocket10.tar.gz"
     expected_hash: "59416d06c2c366f6e05b91fdff8584f7"
+    # Verified 2026-10-28: HTTP 200, 1,616,333,272 bytes, full gzip CRC pass,
+    # MD5 matches the pinned Zenodo checksum, layout
+    # crossdocked_pocket10/<target>/<id>_pocket10.pdb + ligand .sdf.
+  pdbbind_refined_2020:
+    url: "https://huggingface.co/datasets/photonmz/pdbbindpp-2020/resolve/main/pbpp-2020.zip"
+    filename: "pbpp-2020.zip"
+    expected_hash: "56c61303cb29d08a2ad6b13f4ae2b6ef"
+    hash_algo: "md5"
+    # Verified 2026-10-28: HTTP 200, 625,493,784 bytes, 5,316 complex folders
+    # (PDBbind v2020 refined set) with <id>_protein.pdb + <id>_ligand.sdf/
+    # .mol2 + <id>_pocket.pdb - exactly the discover_pairs() layout. The
+    # official pdbbind.org.cn distribution remains registration-gated; this is
+    # the verified open mirror. Per-file alternative:
+    # https://huggingface.co/datasets/THU-ATOM/PDBbind (19,443 complexes,
+    # <id>/ directory layout incl. processed protein PDBs).
+  bindingmoad_annotations:
+    url: "https://huggingface.co/datasets/jglaser/binding_affinity/resolve/main/data/moad.parquet"
+    filename: "moad.parquet"
+    expected_hash: null
+    # Verified 2026-10-28: HTTP 200, 1,718,469 bytes, 25,425 BindingMOAD
+    # binding annotations (pdb id, ligand res:chain:resseq, smiles,
+    # affinity_uM). Structures are fetched per PDB id from
+    # https://files.rcsb.org/download/<ID>.pdb via
+    # scripts/fetch_moad_complexes.py (RCSB verified live; X-ray/resolution
+    # parsed from the structure headers, crystallization artifacts dropped).
+  enamine_building_blocks:
+    url: "https://huggingface.co/datasets/Lin-Glory/Enamine_Rush-Delivery_Building_Blocks-US/resolve/main/Enamine_Rush-Delivery_Building_Blocks-US.zip"
+    filename: "enamine_rush_delivery_bb.zip"
+    expected_hash: "4942df33647d1b5e832e34340d7e7fb3c236ee742d54411757058dce5374554a"
+    hash_algo: "sha256"
+    # Verified 2026-10-28: HTTP 200, 47,046,458 bytes zip containing
+    # Enamine_Rush-Delivery_Building_Blocks-US_290648cmpd_20260916.sdf
+    # (290,648 authentic Enamine building blocks with Catalog_ID EN300-*
+    # codes, purity/availability properties). Curated via
+    # scripts/build_synthon_catalog.py (34.4% pass rate on a 20k-record
+    # sample => ~100k certified synthons projected, target >= 50k).
   enamine_catalog:
     url: "https://huggingface.co/datasets/JJKK1212/3d-syntree-multidataset/resolve/main/enamine_real_vendor_export.csv.gz"
     fallback_url: "https://huggingface.co/datasets/JJKK1212/3d-syntree-multidataset/resolve/main/enamine_3d_subset.parquet"
     filename: "enamine_real_vendor_export.csv.gz"
+    expected_hash: null

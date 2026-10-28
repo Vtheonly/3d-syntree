@@ -30,6 +30,7 @@ from syntree.chemistry.reactions import (
     REACTION_FAMILY_NAMES,
     ReactionEngine,
 )
+from syntree.core.masking import LOGIT_MASK_LEGAL_ABOVE
 from syntree.chemistry.conformer import (
     ConformerEngine,
     is_conjugated_junction,
@@ -236,7 +237,7 @@ class TestEnvironmentAndCatalog(unittest.TestCase):
         
         self.assertEqual(masks.shape, (num_families, num_synthons))
         # Family 0 (amide_coupling) with amine core handle should allow carboxylic acids (SYN_001, index 0)
-        self.assertGreater(masks[0, 0].item(), -1e8, "SYN_001 (acid) should be legal for amide coupling with amine core!")
+        self.assertGreater(masks[0, 0].item(), LOGIT_MASK_LEGAL_ABOVE, "SYN_001 (acid) should be legal for amide coupling with amine core!")
         print(f"  -> PASS: Generated [{num_families}, {num_synthons}] compatibility mask with correct grammar filtering.")
 
 

@@ -48,3 +48,8 @@ data/crossdocked/
 *.h5
 *.hdf5
 
+
+# Secrets / credentials (never commit tokens)
+.secrets/
+*.env
+runtime_config.json

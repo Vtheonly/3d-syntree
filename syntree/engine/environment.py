@@ -36,6 +36,7 @@ from torch_geometric.data import Data
 from syntree.chemistry.conformer import vdw_radius
 from syntree.chemistry.hotspots import PocketHotspotFeaturizer
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
+from syntree.core.masking import LOGIT_MASK_FILL, LOGIT_MASK_LEGAL_ABOVE
 from syntree.data.featurizer import MolecularFeaturizer
 
 logger = logging.getLogger(__name__)
@@ -301,7 +302,7 @@ class MolecularAssemblyEnv:
             ),
             global_features=global_feats,
             stop_mask=torch.tensor(
-                0.0 if allow_stop else -1e9,
+                0.0 if allow_stop else LOGIT_MASK_FILL,
                 dtype=torch.float32,
                 device=self.device,
             ),
@@ -330,10 +331,11 @@ class MolecularAssemblyEnv:
         handles = self.rxn_engine.rank_handles(self.current_mol)
         if not handles or self.done:
             empty_r = torch.full(
-                (1, len(REACTION_FAMILY_NAMES)), -1e9, device=self.device
+                (1, len(REACTION_FAMILY_NAMES)), LOGIT_MASK_FILL, device=self.device
             )
             empty_s = torch.full(
-                (1, len(REACTION_FAMILY_NAMES), len(self.catalog)), -1e9,
+                (1, len(REACTION_FAMILY_NAMES), len(self.catalog)),
+                LOGIT_MASK_FILL,
                 device=self.device,
             )
             return empty_r, empty_s, False
@@ -341,10 +343,11 @@ class MolecularAssemblyEnv:
         target_handle = handles[0]
         if not target_handle.allowed_reactions:
             empty_r = torch.full(
-                (1, len(REACTION_FAMILY_NAMES)), -1e9, device=self.device
+                (1, len(REACTION_FAMILY_NAMES)), LOGIT_MASK_FILL, device=self.device
             )
             empty_s = torch.full(
-                (1, len(REACTION_FAMILY_NAMES), len(self.catalog)), -1e9,
+                (1, len(REACTION_FAMILY_NAMES), len(self.catalog)),
+                LOGIT_MASK_FILL,
                 device=self.device,
             )
             return empty_r, empty_s, False
@@ -481,7 +484,7 @@ class MolecularAssemblyEnv:
             require_remaining_handle=require_remaining_handle,
             allow_terminal=allow_stop,
         )
-        if selected_mask[synthon_idx].item() < -1e8:
+        if selected_mask[synthon_idx].item() < LOGIT_MASK_LEGAL_ABOVE:
             logger.warning(
                 "Action violates the deterministic chemistry mask; ending rollout."
             )
@@ -618,7 +621,7 @@ class MolecularAssemblyEnv:
                 info.terminated_by = "no_handles"
             else:
                 r_mask, s_masks, has_handle = self.legal_action_masks()
-                if not bool((r_mask > -1e8).any().item()):
+                if not bool((r_mask > LOGIT_MASK_LEGAL_ABOVE).any().item()):
                     self.done = True
                     info.stop_reason = "no_legal_reactions"
                     info.terminated_by = "no_legal_reactions"

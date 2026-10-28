@@ -138,8 +138,9 @@ class TestSynthonHead:
     def test_make_compatibility_mask(self):
         allowed = torch.tensor([[True, False, True], [False, False, True]])
         mask = make_compatibility_mask(allowed, num_synthons=3)
-        assert mask[0, 0] == 0.0 and mask[0, 1] == -1e9
-        assert mask[1, 2] == 0.0 and mask[1, 0] == -1e9
+        from syntree.core.masking import LOGIT_MASK_FILL
+        assert mask[0, 0] == 0.0 and mask[0, 1] == LOGIT_MASK_FILL
+        assert mask[1, 2] == 0.0 and mask[1, 0] == LOGIT_MASK_FILL
 
     def test_make_mask_wrong_cols_raise(self):
         with pytest.raises(ValueError):

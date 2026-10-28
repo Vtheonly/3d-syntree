@@ -33,6 +33,7 @@ from syntree.chemistry.reactions import (
     HANDLE_SMARTS,
     ReactionEngine,
 )
+from syntree.core.masking import LOGIT_MASK_FILL, has_any_legal
 from syntree.chemistry.synthon_encoder import (
     ENCODER_VERSION,
     SUPPORTED_ENCODERS,
@@ -338,8 +339,8 @@ class SynthonCatalog:
         if require_remaining_handle or not allow_terminal:
             has_remaining = torch.from_numpy(self._handle_counts >= 2)
             grown = mask.clone()
-            grown[~has_remaining] = -1e9
-            if bool((grown > -1e8).any().item()):
+            grown[~has_remaining] = LOGIT_MASK_FILL
+            if has_any_legal(grown):
                 mask = grown
             else:
                 # No multifunctional partner exists for this family: fall
@@ -374,8 +375,8 @@ class SynthonCatalog:
                     require_remaining_handle=True,
                     allow_terminal=allow_terminal,
                 )
-                legal = bool(torch.any(family_mask > -1e8).item())
-            values.append(0.0 if legal else -1e9)
+                legal = has_any_legal(family_mask)
+            values.append(0.0 if legal else LOGIT_MASK_FILL)
         mask = torch.tensor(values, dtype=torch.float32)
         return mask.to(device) if device is not None else mask
 
@@ -433,7 +434,8 @@ class SynthonCatalog:
 
         Returns:
             Float tensor of shape ``[num_synthons]`` with ``0.0`` for legal
-            synthons and ``-1e9`` for incompatible ones.
+            synthons and :data:`LOGIT_MASK_FILL <syntree.core.masking.LOGIT_MASK_FILL>`
+            (FP16-safe ``-1e4``) for incompatible ones.
         """
         if target_reaction not in REACTION_SIDES:
             raise ValueError(
@@ -454,7 +456,7 @@ class SynthonCatalog:
                 valid_indices |= self.handle_masks[handle]
 
         mask = torch.zeros(self.num_synthons, dtype=torch.float32)
-        mask[~valid_indices] = -1e9
+        mask[~valid_indices] = LOGIT_MASK_FILL
         if device is not None:
             mask = mask.to(device)
         return mask

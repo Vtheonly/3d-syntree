@@ -20,6 +20,7 @@ from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.conformer import ConformerEngine
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES, ReactionEngine
 from syntree.chemistry.validator import ChemicalValidator
+from syntree.core.masking import LOGIT_MASK_FILL
 from syntree.engine.environment import AssemblyAction, MolecularAssemblyEnv
 from syntree.models.policy import SynTreePolicy
 
@@ -104,7 +105,7 @@ class TestLegalActions:
         env.reset(pocket_path, seed_synthon_idx=0)
         assert env._below_cap()
         obs = env.observe()
-        assert obs.stop_mask.item() < -1e8
+        assert obs.stop_mask.item() == LOGIT_MASK_FILL
 
     def test_no_handle_state_masks_everything(self, env, pocket_path):
         """A terminal (done) state exposes the all-masked grammar."""
@@ -112,8 +113,8 @@ class TestLegalActions:
         assert env.done  # born terminal (seed-only episode)
         r_mask, s_masks, has_handle = env.legal_action_masks()
         assert has_handle is False
-        assert bool((r_mask < -1e8).all().item())
-        assert bool((s_masks < -1e8).all().item())
+        assert bool((r_mask == LOGIT_MASK_FILL).all().item())
+        assert bool((s_masks == LOGIT_MASK_FILL).all().item())
 
 
 class TestStep:

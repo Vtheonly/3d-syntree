@@ -22,6 +22,10 @@ import pandas as pd
 import torch
 from rdkit import Chem
 
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.data.multidataset import iter_jsonl
 from syntree.data.trajectory import RetrosyntheticTrajectoryBuilder
@@ -63,9 +67,17 @@ def build_unified(args) -> int:
             status_counts["invalid_pair"] += 1
             continue
 
-        generated, metadata = builder.build(
-            ligand, pocket, trajectory_id=str(row["sample_id"])
-        )
+        try:
+            generated, metadata = builder.build(
+                ligand, pocket, trajectory_id=str(row["sample_id"])
+            )
+        except Exception as exc:
+            # Chemically unsalvageable ligand (e.g. a proximity-bonded crystal
+            # residue that cannot be kekulized anywhere outside _split_bond):
+            # reject the single complex and keep the run alive, mirroring the
+            # forward-replay rejection policy.
+            status_counts[f"fragmentation_error:{type(exc).__name__}"] += 1
+            continue
         if len(generated) < args.min_states:
             status_counts[metadata.get("status", "rejected")] += 1
             continue

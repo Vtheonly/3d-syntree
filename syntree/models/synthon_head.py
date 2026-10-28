@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from syntree.core.masking import LOGIT_MASK_FILL
+
 
 class SynthonHead(nn.Module):
     """Reaction-masked synthon scoring head.
@@ -64,7 +66,10 @@ class SynthonHead(nn.Module):
             query: context vector for each graph in the batch.
             synthon_embeddings: catalog embedding table.
             rxn_compatibility_mask: additive logit mask; ``0`` keeps a
-                synthon legal, ``-1e9`` (or any large negative) removes it.
+                synthon legal, :data:`LOGIT_MASK_FILL <syntree.core.masking.LOGIT_MASK_FILL>`
+                (FP16-safe ``-1e4``) removes it. Values beyond the fp16
+                range (e.g. the legacy ``-1e9``) overflow to ``-inf`` under
+                fp16 autocast and must not be used.
             stop_logit_bias: additive per-graph bias fed directly into the
                 STOP logit (bug report 2 / Flaw 3 fix: the termination
                 decision must see global ligand-size features such as
@@ -140,13 +145,16 @@ class SynthonHead(nn.Module):
 
 
 def make_compatibility_mask(
-    allowed: torch.Tensor, num_synthons: int, device=None, mask_value: float = -1e9
+    allowed: torch.Tensor, num_synthons: int, device=None,
+    mask_value: float = LOGIT_MASK_FILL,
 ) -> torch.Tensor:
     """Build an additive ``[B, K]`` mask from boolean allowed-flags.
 
     Args:
         allowed: ``[B, K]`` boolean tensor (True = legal synthon).
         num_synthons: catalog size ``K`` (checked against ``allowed``).
+        mask_value: additive fill for illegal entries (default:
+            :data:`LOGIT_MASK_FILL <syntree.core.masking.LOGIT_MASK_FILL>`).
     """
     if allowed.shape[-1] != num_synthons:
         raise ValueError(

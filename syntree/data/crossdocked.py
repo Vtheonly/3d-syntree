@@ -173,6 +173,21 @@ class CrossDockedDataset(InMemoryDataset):
 
     def process(self):
         data_list = self._build_samples()
+        if not data_list and not self.use_synthetic and self.synthetic_fallback:
+            # synthetic_fallback semantics fix: real pairs that ALL fail
+            # curation (e.g. a smoke-test slice whose every ligand trips the
+            # descriptor filters) must not crash the loader with PyG's cryptic
+            # "IndexError: list index out of range" from collate([]) - they
+            # fall back to the learnable synthetic supervision, exactly as an
+            # empty directory does. The trainer's strict real-data guard
+            # still fails closed on this (use_synthetic is now True).
+            logger.warning(
+                "All %d discovered real pairs were rejected by curation; "
+                "falling back to synthetic supervision.",
+                len(self.all_pairs),
+            )
+            self.use_synthetic = True
+            data_list = self._build_samples()
         self.save(data_list, self.processed_paths[0])
 
     def _load_or_process(self):

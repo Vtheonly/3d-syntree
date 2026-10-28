@@ -17,6 +17,13 @@ import os
 import sys
 from typing import Dict, Optional
 
+# Stage-2 CUDA OOM fix: expandable segments stop the caching allocator from
+# fragmenting when PPO interleaves many small PaiNN forward graphs with
+# the rollout/replay cycle. The variable must be set BEFORE torch initializes
+# its caching allocator (first CUDA tensor allocation), hence before the
+# torch import below. An explicit user override always wins (setdefault).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 
 

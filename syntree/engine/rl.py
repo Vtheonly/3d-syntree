@@ -37,6 +37,7 @@ import torch.nn.functional as F
 from rdkit import Chem
 from rdkit.Chem import DataStructs, QED, rdFingerprintGenerator
 
+from syntree.core.masking import LOGIT_MASK_LEGAL_ABOVE
 from syntree.engine.evaluator import EvaluationPipeline
 
 logger = logging.getLogger(__name__)
@@ -385,9 +386,53 @@ class ThreeDReward:
         }
 
 
+def _isolate_tensor(tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    """Detach a rollout tensor and move it to CPU (CUDA OOM fix, Stage 2).
+
+    Every tensor stored inside a :class:`PPOTransition` / :class:`RolloutTransition`
+    must be isolated so that (a) no reference to the forward autograd graph
+    survives between rollout steps - the accumulated graph was the memory leak
+    that OOM-ed the T4 during PPO minibatch replay - and (b) GPU memory is
+    released as soon as the rollout moves on to the next observation.
+    """
+    if tensor is None:
+        return None
+    if not torch.is_tensor(tensor):
+        return tensor
+    return tensor.detach().cpu()
+
+
+def _isolate_state(state):
+    """Detach + CPU every tensor field of a PyG observation (``state``).
+
+    A torch_geometric ``Data`` observation is a store of tensors; the whole
+    store is cloned and each tensor attribute is detached and moved to CPU
+    so the stored snapshot owns no autograd graph and no CUDA allocation.
+    """
+    if state is None or not torch.is_tensor(state) and not hasattr(state, "keys"):
+        return state
+    if torch.is_tensor(state):
+        return state.detach().cpu()
+    clone = state.clone()
+    try:
+        for key in list(clone.keys()):
+            value = clone[key]
+            if torch.is_tensor(value):
+                clone[key] = value.detach().cpu()
+    except Exception:  # non-PyG state object: keep as-is
+        return state
+    return clone
+
+
 @dataclass
 class PPOTransition:
-    """Single policy transition captured by SBDDGenerator."""
+    """Single policy transition captured by SBDDGenerator.
+
+    Invariant (Stage-2 CUDA OOM fix): every tensor field is explicitly
+    ``.detach().cpu()``-ed in ``__post_init__`` so transitions stored in a
+    rollout buffer never pin the forward autograd graph or VRAM between
+    rollout steps, regardless of how the transition was constructed.
+    """
 
     state: object
     reaction_mask: torch.Tensor
@@ -396,6 +441,13 @@ class PPOTransition:
     action_idx: int
     old_log_prob: torch.Tensor
     old_value: torch.Tensor
+
+    def __post_init__(self) -> None:
+        self.state = _isolate_state(self.state)
+        self.reaction_mask = _isolate_tensor(self.reaction_mask)
+        self.synthon_masks = _isolate_tensor(self.synthon_masks)
+        self.old_log_prob = _isolate_tensor(self.old_log_prob)
+        self.old_value = _isolate_tensor(self.old_value)
 
 
 @dataclass
@@ -820,7 +872,9 @@ def collect_episode(
     with torch.no_grad():  # Auditing F-11: Prevent autograd graph retention during RL rollouts
         while not env.done:
             reaction_mask, synthon_masks, has_handle = env.legal_action_masks()
-            if not has_handle or not bool((reaction_mask > -1e8).any().item()):
+            if not has_handle or not bool(
+                (reaction_mask > LOGIT_MASK_LEGAL_ABOVE).any().item()
+            ):
                 break
             decision = model.act(
                 observation.to(device),

@@ -29,6 +29,7 @@ from torch_geometric.data import Data
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.hotspots import PocketHotspotFeaturizer
 from syntree.chemistry.conformer import ConformerEngine, vdw_radius
+from syntree.core.masking import LOGIT_MASK_LEGAL_ABOVE
 from syntree.chemistry.reactions import (
     REACTION_FAMILY_MEMBERS,
     REACTION_FAMILY_NAMES,
@@ -130,7 +131,7 @@ class SBDDGenerator:
             reaction_mask, synthon_masks, has_handle = env.legal_action_masks()
             if not has_handle:
                 break
-            if not bool((reaction_mask > -1e8).any().item()):
+            if not bool((reaction_mask > LOGIT_MASK_LEGAL_ABOVE).any().item()):
                 # No legal chemistry remains (e.g. every compatible partner
                 # was filtered out): stop instead of feeding an all-masked
                 # distribution to the policy.

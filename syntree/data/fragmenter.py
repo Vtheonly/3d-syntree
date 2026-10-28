@@ -222,7 +222,15 @@ class ReactionConstrainedFragmenter:
         cut = rw.GetMol()
         cut.UpdatePropertyCache(False)
 
-        fragments = Chem.GetMolFrags(cut, asMols=True, sanitizeFrags=True)
+        try:
+            # sanitizeFrags raises Kekulize/valence errors on chemically
+            # inconsistent fragments (e.g. proximity-bonded crystal ligands):
+            # a bond that cannot be split into two sanitizable halves is
+            # simply not a valid retrosynthetic cut, not a pipeline crash.
+            fragments = Chem.GetMolFrags(cut, asMols=True, sanitizeFrags=True)
+        except (Chem.rdchem.KekulizeException, Chem.rdchem.AtomValenceException,
+                ValueError):
+            return ()
         result = []
         for fragment in fragments:
             orig_to_idx = {
