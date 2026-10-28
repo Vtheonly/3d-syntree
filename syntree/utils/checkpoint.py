@@ -362,6 +362,7 @@ class CheckpointManager:
     # ------------------------------------------------------------------
     # Restoration with remote authoritative verification
     # ------------------------------------------------------------------
+
     def restore_latest(
         self,
         model: torch.nn.Module,
@@ -369,7 +370,7 @@ class CheckpointManager:
         scheduler: Optional[object] = None,
         scaler: Optional[torch.amp.GradScaler] = None,
     ) -> Tuple[int, int, float]:
-        """Restore the freshest verified checkpoint."""
+        """Restore the freshest verified checkpoint with shape-adaptive parameter loading."""
         manifest_path = self.ckpt_dir / self.MANIFEST_NAME
 
         if self.enabled and self.api is not None:
@@ -544,9 +545,38 @@ class CheckpointManager:
         self.last_catalog_signature = checkpoint.get("catalog_signature") or None
         self.last_extra_state = checkpoint.get("extra_state") or None
 
-        missing, unexpected = model.load_state_dict(
-            checkpoint["model_state_dict"], strict=False
-        )
+        # Robust, shape-adaptive parameter loading: slice overlapping weights
+        # to prevent size-mismatch crashes when reaction or handle counts expand.
+        model_state = model.state_dict()
+        ckpt_state = checkpoint.get("model_state_dict", {})
+        compatible_state = {}
+        mismatched = []
+
+        for name, param in ckpt_state.items():
+            if name not in model_state:
+                continue
+            target_param = model_state[name]
+            if param.shape == target_param.shape:
+                compatible_state[name] = param
+            else:
+                mismatched.append((name, tuple(param.shape), tuple(target_param.shape)))
+                adapted = target_param.clone()
+                try:
+                    slices = tuple(
+                        slice(0, min(s_old, s_new))
+                        for s_old, s_new in zip(param.shape, target_param.shape)
+                    )
+                    adapted[slices] = param[slices]
+                    compatible_state[name] = adapted
+                except Exception:
+                    compatible_state[name] = target_param
+
+        missing, unexpected = model.load_state_dict(compatible_state, strict=False)
+        if mismatched:
+            logger.warning(
+                "Checkpoint shape mismatch adapted via sub-tensor slicing (%d tensors): %s",
+                len(mismatched), mismatched
+            )
         if missing or unexpected:
             logger.warning(
                 "Checkpoint architecture mismatch: missing=%s unexpected=%s. "
@@ -573,8 +603,7 @@ class CheckpointManager:
 
         self._restore_rng(checkpoint.get("rng_states"))
 
-
-            # After restoring scheduler:
+        # Restore FP16 loss scaler state if present
         if scaler is not None and checkpoint.get("scaler_state_dict"):
             try:
                 scaler.load_state_dict(checkpoint["scaler_state_dict"])
