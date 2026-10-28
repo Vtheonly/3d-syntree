@@ -384,13 +384,20 @@ class SynTreePolicy(nn.Module):
             [chemical_handle_features.to(joint_s.dtype), global_features.to(joint_s.dtype)],
             dim=-1,
         )
-        query = self.handle_norm(self.handle_proj(query_input))
+        query = self.handle_norm(self.handle_proj(query_input))  # [B, d]
+
+        # FIX F-02/F-06: Add projected handle node BEFORE unsqueezing to [B, 1, d]
         if handle_union_index is not None and has_ligand:
             handle_node_scalar = joint_s[
                 (handle_union_index + num_pocket).to(joint_s.device)
-            ]
-            query = query + self.handle_node_proj(handle_node_scalar)
-        query = query.unsqueeze(1)  # [B, 1, d]
+            ]  # [B, d]
+            valid_mask = valid.unsqueeze(-1) if 'valid' in locals() else torch.ones_like(query)
+            query = query + torch.where(
+                valid_mask,
+                self.handle_node_proj(handle_node_scalar),
+                torch.zeros_like(query),
+            )
+        query = query.unsqueeze(1)  # Strict shape: [B, 1, d]
 
         # Add handle-to-graph geometry to every joint atom before attention.
         # Distances are invariant under global translation/rotation, and the

@@ -268,13 +268,14 @@ class CheckpointManager:
         step: int,
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler=None,
-        metrics: Optional[Dict] = None,
+        scheduler: Optional[object] = None,
+        scaler: Optional[torch.amp.GradScaler] = None,  # Added
+        metrics: Optional[Dict[str, float]] = None,
         is_best: bool = False,
+        model_config: Optional[Dict] = None,
+        catalog_signature: Optional[Dict] = None,
+        extra_state: Optional[Dict] = None,
         final: bool = False,
-        model_config: Optional[dict] = None,
-        catalog_signature: Optional[dict] = None,
-        extra_state: Optional[dict] = None,
     ) -> Optional[Path]:
         """Persist a fully completed epoch and optionally sync it to the Hub.
 
@@ -293,24 +294,30 @@ class CheckpointManager:
             raise ValueError("checkpoint epoch must be >= 0")
 
         ckpt_path = self.ckpt_dir / f"checkpoint_epoch_{epoch}.pt"
+
+
+
         state = {
-            "epoch": epoch,
-            "step": int(step),
-            "model_state_dict": _to_cpu_state(model.state_dict()),
-            "model_config": model_config,
-            "catalog_signature": catalog_signature,
-            "extra_state": extra_state,
-            "optimizer_state_dict": (
-                optimizer.state_dict() if optimizer is not None else None
-            ),
-            "scheduler_state_dict": (
-                scheduler.state_dict() if scheduler is not None else None
-            ),
-            "rng_states": self._capture_rng(),
-            "metrics": metrics or {},
-            "is_best": bool(is_best),
-            "timestamp": time.time(),
-        }
+                "epoch": epoch,
+                "step": int(step),
+                "model_state_dict": _to_cpu_state(model.state_dict()),
+                "model_config": model_config,
+                "catalog_signature": catalog_signature,
+                "extra_state": extra_state,
+                "optimizer_state_dict": (
+                    optimizer.state_dict() if optimizer is not None else None
+                ),
+                "scheduler_state_dict": (
+                    scheduler.state_dict() if scheduler is not None else None
+                ),
+                "scaler_state_dict": (
+                    scaler.state_dict() if scaler is not None else None
+                ),
+                "rng_states": self._capture_rng(),
+                "metrics": metrics or {},
+                "is_best": bool(is_best),
+                "timestamp": time.time(),
+            }
 
         tmp_path = ckpt_path.with_suffix(".pt.tmp")
         torch.save(state, tmp_path)
@@ -359,7 +366,8 @@ class CheckpointManager:
         self,
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler=None,
+        scheduler: Optional[object] = None,
+        scaler: Optional[torch.amp.GradScaler] = None,
     ) -> Tuple[int, int, float]:
         """Restore the freshest verified checkpoint."""
         manifest_path = self.ckpt_dir / self.MANIFEST_NAME
@@ -564,6 +572,14 @@ class CheckpointManager:
                 )
 
         self._restore_rng(checkpoint.get("rng_states"))
+
+
+            # After restoring scheduler:
+        if scaler is not None and checkpoint.get("scaler_state_dict"):
+            try:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            except Exception as exc:
+                logger.warning("Skipping incompatible scaler state from checkpoint: %s", exc)
 
         best = float("inf")
         if checkpoint.get("metrics"):
@@ -858,7 +874,8 @@ class CheckpointManager:
 
     @staticmethod
     def _atomic_json_write(path: Path, payload: Dict) -> None:
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        path = Path(path)
+        tmp_path = path.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
             f.flush()

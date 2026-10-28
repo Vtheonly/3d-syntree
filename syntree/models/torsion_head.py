@@ -84,8 +84,8 @@ def log_bessel_i0(x: torch.Tensor) -> torch.Tensor:
         inv * (1.0 + inv * (4.5 + inv * 37.5))
     )
 
-    return torch.where(small, series, asym)
-
+# At the return statement of log_bessel_i0:
+    return torch.where(small, series, asym).to(torch.float32)
 
 class ContinuousTorsionHead(nn.Module):
     """Predicts von Mises parameters ``(mu, kappa)`` for one dihedral.
@@ -260,60 +260,84 @@ class ContinuousTorsionHead(nn.Module):
         kappa: torch.Tensor,
         target_dihedral: torch.Tensor,
     ) -> torch.Tensor:
-        """Circular negative log-likelihood (mean over batch).
+        # Flatten to 1D to accept both [B] and [B, 1] collations
+        mu = mu.view(-1).float()
+        kappa = kappa.view(-1).float()
+        target_dihedral = target_dihedral.view(-1).float()
 
-        The exact loss is
-        ``-kappa * cos(phi - mu) + log(2 pi I_0(kappa))``
-        which is fully differentiable thanks to the stable Bessel
-        implementation.
-        """
         if not (mu.shape == kappa.shape == target_dihedral.shape):
             raise ValueError(
                 f"Shape mismatch: mu {tuple(mu.shape)}, kappa {tuple(kappa.shape)}, "
                 f"target {tuple(target_dihedral.shape)}"
             )
-        # fp32: the kappa * cos() and Bessel terms are precision-sensitive
-        # and this is the loss that NaN-ed under fp16 autocast (Colab T4).
-        mu = mu.float()
-        kappa = kappa.float()
-        target_dihedral = target_dihedral.float()
         return (-cls.log_prob(mu, kappa, target_dihedral)).mean()
+
 
     @staticmethod
     def sample(mu: torch.Tensor, kappa: torch.Tensor) -> torch.Tensor:
         """Draw one dihedral per graph via rejection sampling.
 
-        Best–Fisher-style rejection sampling on the cosine density; falls
-        back to the mean ``mu`` when it fails to accept within 100 draws
-        (vanishingly rare for ``kappa <= 50``).
+        Best-Fisher circular von Mises sampling algorithm.
+        Supports near-zero concentration (kappa < 1e-4) with uniform fallback on [-pi, pi).
+        Falls back to mean `mu` when draws fail to accept within 100 iterations.
         """
-        n = mu.numel()
+        mu = mu.view(-1).float()
+        kappa = kappa.view(-1).float().clamp(min=0.0)
         device = mu.device
-        mu = mu.float()
-        kappa = kappa.float()
-        phi = mu.clone()
-        pending = torch.ones(n, dtype=torch.bool, device=device)
-        r = 1.0 + torch.sqrt(1.0 + 4.0 * kappa ** 2)
-        rho = (r - torch.sqrt(2.0 * r)) / (2.0 * kappa)
-        rho = torch.clamp(rho, 1e-6, 1.0 - 1e-6)
-        accepted = mu.new_zeros(n, dtype=torch.bool)
+        b = mu.size(0)
+
+        result = mu.clone()
+        if b == 0:
+            return result
+
+        # For near-zero kappa, distribution is uniform on [-pi, pi)
+        uniform_mask = kappa < 1e-4
+        if uniform_mask.any():
+            u_rand = torch.rand(uniform_mask.sum(), device=device)
+            theta_uniform = (2.0 * math.pi * u_rand) - math.pi
+            phi_uniform = theta_uniform + mu[uniform_mask]
+            result[uniform_mask] = (phi_uniform + math.pi) % (2.0 * math.pi) - math.pi
+
+        active_indices = torch.nonzero(~uniform_mask, as_tuple=True)[0]
+        if active_indices.numel() == 0:
+            return result
+
+        k = kappa[active_indices]
+        tau = 1.0 + torch.sqrt(1.0 + 4.0 * (k ** 2))
+        rho = (tau - torch.sqrt(2.0 * tau)) / (2.0 * k)
+        r = (1.0 + rho ** 2) / (2.0 * rho)
+
+        pending = torch.ones(active_indices.numel(), dtype=torch.bool, device=device)
+        sample_result = torch.zeros(active_indices.numel(), device=device)
+
         for _ in range(100):
-            idx = torch.nonzero(~accepted, as_tuple=True)[0]
-            if idx.numel() == 0:
+            if not pending.any():
                 break
-            u = torch.rand(idx.numel(), device=device)
-            v = torch.rand(idx.numel(), device=device)
-            k_idx = kappa[idx]
-            mu_idx = mu[idx]
-            candidate = mu_idx + torch.atan2(
-                rho[idx] * torch.sin(v), 1.0 - rho[idx] * torch.cos(v)
-            ) / k_idx.clamp(min=1e-6)
-            accept = u < torch.exp(k_idx * (torch.cos(candidate - mu_idx) - 1.0))
-            acc_idx = idx[accept]
-            phi[acc_idx] = candidate[accept]
-            accepted[acc_idx] = True
-        # Wrap into [-pi, pi).
-        return (phi + math.pi) % (2.0 * math.pi) - math.pi
+            idx = torch.nonzero(pending, as_tuple=True)[0]
+            k_sub = k[idx]
+            r_sub = r[idx]
+
+            u1 = torch.rand(idx.numel(), device=device)
+            z = torch.cos(math.pi * u1)
+            f = (1.0 + r_sub * z) / (r_sub + z)
+            c = k_sub * (r_sub - f)
+
+            u2 = torch.rand(idx.numel(), device=device)
+            accept = (u2 * (2.0 - c) <= 1.0) | ((torch.log(u2 / c.clamp(min=1e-8)) + 1.0 - c) >= 0.0)
+
+            if accept.any():
+                accepted_local = idx[accept]
+                f_acc = f[accept].clamp(-1.0, 1.0)
+                u3 = torch.rand(f_acc.numel(), device=device)
+                sign = torch.where(u3 > 0.5, 1.0, -1.0)
+                theta = sign * torch.acos(f_acc)
+                sample_result[accepted_local] = theta
+                pending[accepted_local] = False
+
+        phi = sample_result + mu[active_indices]
+        result[active_indices] = (phi + math.pi) % (2.0 * math.pi) - math.pi
+        return result
+
 
 
 __all__ = ["ContinuousTorsionHead", "log_bessel_i0"]

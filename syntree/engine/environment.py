@@ -423,12 +423,10 @@ class MolecularAssemblyEnv:
         target_handle = handles[0]
 
         if action.is_stop:
-            # STOP is only legal above the molecular-weight cap; the
-            # observation's stop_mask already encodes this for the policy.
             if self._below_cap():
-                logger.debug(
-                    "STOP requested below the MW cap; continuing growth instead."
-                )
+                logger.debug("STOP requested below the MW cap; rejecting invalid STOP.")
+                info.stop_reason = "stop_below_cap_rejected"
+                return self.observe(), 0.0, False, info
             else:
                 self.done = True
                 info.stop_reason = "policy_stop"
@@ -437,6 +435,8 @@ class MolecularAssemblyEnv:
                     {"step": step, "action": "stop", "reason": "policy_stop"}
                 )
                 return self.observe(), 0.0, True, info
+
+
 
         if not target_handle.allowed_reactions:
             self.done = True
@@ -665,14 +665,14 @@ class MolecularAssemblyEnv:
     # Internals
     # ------------------------------------------------------------------
     def _pick_seed_synthon(self) -> int:
-        valid = [
-            i
-            for i in range(len(self.catalog))
-            if self.rxn_engine.handle_types(self.catalog.get_mol(i, explicit_hs=False))
-        ]
-        if not valid:
-            raise RuntimeError("Catalog contains no handle-bearing synthons")
-        return int(self.seed_rng.integers(0, len(valid)))
+            valid = [
+                i
+                for i in range(len(self.catalog))
+                if self.rxn_engine.handle_types(self.catalog.get_mol(i, explicit_hs=False))
+            ]
+            if not valid:
+                raise RuntimeError("Catalog contains no handle-bearing synthons")
+            return int(valid[int(self.seed_rng.integers(0, len(valid)))])
 
     def _place_seed_in_pocket(
         self,

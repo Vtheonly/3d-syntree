@@ -50,7 +50,7 @@ def validate_config(config: dict) -> list:
     unsupported mixed precision, impossible budgets, negative sizes)
     without duplicating every default.
     """
-    from syntree.engine.trainer import SUPPORTED_DATA_BACKENDS
+    from syntree.core.registry import SUPPORTED_DATA_BACKENDS
 
     errors = []
 
@@ -646,6 +646,34 @@ def main(argv=None) -> int:
 
     return 1
 
-
 def _load_generated(sdf_dir: str):
-    """Load generate
+    """Load generated ligand SDF files and corresponding recipe JSON files."""
+    mols, recipes = [], []
+    if not os.path.isdir(sdf_dir):
+        return mols, recipes
+    for name in sorted(os.listdir(sdf_dir)):
+        if name.startswith("ligand_") and name.endswith(".sdf"):
+            sdf_path = os.path.join(sdf_dir, name)
+            try:
+                from rdkit import Chem
+                supplier = Chem.SDMolSupplier(sdf_path, removeHs=False)
+                mol = supplier[0] if len(supplier) else None
+            except Exception:
+                mol = None
+            mols.append(mol)
+            recipe_path = os.path.join(
+                sdf_dir, name.replace("ligand_", "recipe_").replace(".sdf", ".json")
+            )
+            recipe = None
+            if os.path.exists(recipe_path):
+                try:
+                    with open(recipe_path, "r", encoding="utf-8") as rf:
+                        recipe = json.load(rf)
+                except Exception:
+                    recipe = None
+            recipes.append(recipe)
+    return mols, recipes
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

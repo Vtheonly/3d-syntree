@@ -74,7 +74,7 @@ REACTION_TEMPLATES: Dict[str, str] = {
 HANDLE_SMARTS: Dict[str, str] = {
     "carboxylic_acid": "[C](=O)[OH]",
     "primary_secondary_amine": "[N;!H0;!H3;!$(NC=O)]",
-    "aryl_halide": "[c][Br,I,Cl]",
+    "aryl_halide": "[c][F,Cl,Br,I]",
     "boronic_acid": "[c][B]([OH,O])[OH,O]",
     "aldehyde": "[CH]=O",
     "alcohol": "[O;!H0;!$(O[B]);!$(OC=O)]",
@@ -341,21 +341,14 @@ class ReactionEngine:
     def order_reactants(
         self, core_mol: Chem.Mol, synthon_mol: Chem.Mol, reaction_name: str
     ) -> Optional[Tuple[Chem.Mol, Chem.Mol]]:
-        """Place ``core_mol`` / ``synthon_mol`` into the correct reactant
-        slots demanded by ``reaction_name``.
-
-        Returns ``(reactant1, reactant2)`` or ``None`` when neither ordering
-        is chemically plausible (i.e. the core exposes none of the reaction's
-        handles).
-        """
         side_a, side_b = REACTION_SIDES[reaction_name]
         core_types = self.handle_types(core_mol)
-        if side_a in core_types:
+        synthon_types = self.handle_types(synthon_mol)
+        if side_a in core_types and side_b in synthon_types:
             return core_mol, synthon_mol
-        if side_b in core_types:
+        if side_b in core_types and side_a in synthon_types:
             return synthon_mol, core_mol
         return None
-
     # ------------------------------------------------------------------
     # Reaction execution
     # ------------------------------------------------------------------
