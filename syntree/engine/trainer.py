@@ -313,6 +313,21 @@ class ResilientTrainer:
         # outlier-sized graph exhausted VRAM (never crash a 12 h run on
         # one bad batch; the finite batches' accumulated grads survive).
         self.oom_skips = 0
+        # Live progress heartbeat: print every N micro-batches so a Colab
+        # cell never looks frozen during the ~3 min between epoch logs.
+        self.log_every_steps = max(0, int(train_cfg.get("log_every_steps", 40)))
+        # Adaptive OOM rescale: when this many batches in ONE epoch die of
+        # CUDA OOM, permanently halve the micro-batch at the epoch boundary
+        # (accumulation doubled so the effective batch stays constant). This
+        # is what makes the realistic-pool auto-scale certification safe:
+        # rare monster pockets are skipped instantly, and the run self-tunes
+        # instead of dying or stalling in a skip-loop.
+        try:
+            self.oom_rescale_threshold = max(
+                1, int(os.environ.get("SYNTREE_OOM_RESCALE_THRESHOLD", "2") or 2)
+            )
+        except ValueError:
+            self.oom_rescale_threshold = 2
         if auto_resume:
             self.start_epoch, self.global_step, self.best_val_loss = (
                 self.ckpt_manager.restore_latest(
@@ -490,13 +505,22 @@ class ResilientTrainer:
     # ------------------------------------------------------------------
     # GPU auto-scaling
     # ------------------------------------------------------------------
-    def _heaviest_probe_pool(self, max_items: int = 64, sample_cap: int = 512):
+    def _heaviest_probe_pool(
+        self, max_items: int = 64, sample_cap: int = 512, trim_top: float = 0.0
+    ):
         """Indices of the heaviest-pocket items, ranked by atom count.
-
         Deterministic strided sample (at most ``sample_cap`` __getitem__
         calls, so full-data runs stay cheap), ranked by pocket atom count,
         truncated to ``max_items``. Used by the auto-scale probe so memory
-        certification reflects the worst graph the loader can build.
+        certification reflects heavy-but-plausible training batches.
+
+        ``trim_top`` drops the top fraction of the ranked sample before
+        truncation (default 0.10 via config). Rationale: certifying against
+        the literal top-k monster pockets sized the micro-batch for the 1%
+        worst case, which left ~10 GB idle on a T4 for the whole run (real
+        batches only needed ~4 GB). The trimmed monster tail is instead
+        absorbed at runtime by the OOM skip guard + the adaptive epoch-end
+        rescale, which together make an aggressive batch safe.
         """
         n = len(self.dataset)
         if n <= 0:
@@ -514,12 +538,35 @@ class ResilientTrainer:
                 continue
             sized.append((n_atoms, idx))
         sized.sort(key=lambda t: (-t[0], t[1]))
+        if trim_top > 0.0 and len(sized) > 4:
+            sized = sized[max(1, int(len(sized) * float(trim_top))):]
         return [idx for _, idx in sized[: max(1, max_items)]]
 
     def _autoscale_batch(self, train_cfg: dict) -> None:
         """Grow batch size until target VRAM fraction is reached."""
         auto = dict(train_cfg.get("auto_scale", {}))
         if not auto.get("enabled", False) or self.device.type != "cuda":
+            return
+
+        # Explicit micro-batch override (e.g. in the Colab env cell:
+        # os.environ["SYNTREE_FORCE_MICRO_BATCH"] = "16"). Skips probing
+        # entirely; the runtime OOM skip + adaptive rescale guard keeps an
+        # aggressive choice safe.
+        try:
+            force = int(os.environ.get("SYNTREE_FORCE_MICRO_BATCH", "0") or 0)
+        except ValueError:
+            force = 0
+        if force >= 1:
+            effective = self.batch_size * self.accum_steps
+            tuned = max(1, force)
+            new_accum = max(1, int(round(effective / tuned)))
+            print(
+                f"[trainer] auto-scale: SYNTREE_FORCE_MICRO_BATCH={tuned} "
+                f"override | accum {self.accum_steps} -> {new_accum} | "
+                f"effective {effective} -> {tuned * new_accum} "
+                f"(runtime OOM guard active)"
+            )
+            self.batch_size, self.accum_steps = tuned, new_accum
             return
 
         target_fraction = float(auto.get("target_vram_fraction", 0.85))
@@ -534,15 +581,18 @@ class ResilientTrainer:
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         )
 
-        # Worst-case-aware probing (T4 OOM fix): the previous probe measured
-        # one *random* batch, so a lucky light batch certified batch=8 while
-        # a later batch holding outlier-sized pockets (3-5k atoms each) spiked
-        # past 14 GB and killed the run. Instead, rank a deterministic sample
-        # of the dataset by pocket atom count and probe the HEAVIEST items, so
-        # every real training batch is guaranteed lighter than the probe.
+        # Realistic-pool probing (T4 under-utilisation fix): the previous
+        # probe certified the literal top-k HEAVIEST items, so a batch of 8
+        # was sized for eight 1600-atom monsters (8.5 GB peak reserved)
+        # while real random batches at batch=8 only needed ~4 GB - leaving
+        # ~10 GB of the T4 idle for the entire run. The pool now drops the
+        # top ``probe_trim_top_fraction`` of the atom-count ranking (heavy
+        # but plausible batches) and the runtime OOM skip + adaptive rescale
+        # guard absorbs the rare monster batches that slip through.
         pool = self._heaviest_probe_pool(
             max_items=int(auto.get("probe_pool_size", 64)),
             sample_cap=int(auto.get("probe_sample_cap", 512)),
+            trim_top=float(auto.get("probe_trim_top_fraction", 0.10)),
         )
 
         def probe(batch_size: int) -> None:
@@ -690,6 +740,12 @@ class ResilientTrainer:
             self.model.train()
             epoch_loss, epoch_reaction, epoch_synthon, epoch_torsion = 0.0, 0.0, 0.0, 0.0
             n_batches = 0
+            epoch_oom_at_start = self.oom_skips
+            if self.device.type == "cuda":
+                # Per-epoch peak telemetry: catches slow activation-memory
+                # growth across epochs (the pathology that previously filled
+                # a T4 and crashed fresh runs mid-epoch).
+                torch.cuda.reset_peak_memory_stats()
 
             for batch_idx, batch in enumerate(self.loader):
                 elapsed = time.time() - self.start_time
@@ -833,6 +889,57 @@ class ResilientTrainer:
                 epoch_torsion += float(l_torsion.item())
                 n_batches += 1
 
+                # Live heartbeat (Colab "looks stuck" fix): one line every
+                # N micro-batches with running loss, LR and VRAM so the
+                # cell shows continuous progress between epoch summaries.
+                if self.log_every_steps and (n_batches % self.log_every_steps == 0):
+                    mem_txt = ""
+                    if self.device.type == "cuda":
+                        mem_txt = (
+                            f" | vram {torch.cuda.memory_allocated() / 1024**3:.1f}"
+                            f"/{torch.cuda.memory_reserved() / 1024**3:.1f} GB"
+                        )
+                    print(
+                        f"[trainer] e{epoch:03d} step {batch_idx + 1}/{len(self.loader)}"
+                        f" | loss {epoch_loss / max(1, n_batches):.4f}"
+                        f" | lr {self.optimizer.param_groups[0]['lr']:.2e}"
+                        f"{mem_txt} | oom_skip {self.oom_skips} | nan_skip {self.nan_skips}",
+                        flush=True,
+                    )
+
+            # Adaptive epoch-end rescale (T4 OOM guard): repeated OOM skips
+            # in one epoch mean the certified batch is too aggressive for
+            # this data's tail. Halve the micro-batch, keep the effective
+            # batch constant, rebuild the loader for the next epoch.
+            epoch_oom = self.oom_skips - epoch_oom_at_start
+            if epoch_oom >= self.oom_rescale_threshold:
+                new_batch = max(4, self.batch_size // 2)
+                if new_batch < self.batch_size:
+                    effective = self.batch_size * self.accum_steps
+                    self.accum_steps = max(1, int(round(effective / new_batch)))
+                    print(
+                        f"[trainer] adaptive rescale: {epoch_oom} OOM batches this "
+                        f"epoch; batch {self.batch_size} -> {new_batch} | accum -> "
+                        f"{self.accum_steps} (effective {new_batch * self.accum_steps}); "
+                        "rebuilding loader for next epoch.",
+                        flush=True,
+                    )
+                    self.batch_size = new_batch
+                    self.loader = self._make_loader(self.dataset, shuffle=True)
+                else:
+                    print(
+                        f"[trainer] WARNING: {epoch_oom} OOM batches this epoch even "
+                        f"at batch {self.batch_size}; keeping size (floor reached).",
+                        flush=True,
+                    )
+
+            vram_peak_gb = 0.0
+            if self.device.type == "cuda":
+                vram_peak_gb = round(
+                    torch.cuda.max_memory_allocated() / 1024 ** 3, 2
+                )
+                torch.cuda.reset_peak_memory_stats()
+
             avg_loss = epoch_loss / max(1, n_batches)
             entry = {
                 "epoch": epoch,
@@ -845,6 +952,8 @@ class ResilientTrainer:
                 "oom_batches_skipped": self.oom_skips,
                 "pockets_trimmed": self.collate_stats.get("trimmed", 0),
                 "samples_dropped_nonfinite": self.collate_stats.get("dropped_nonfinite", 0),
+                "vram_peak_gb": vram_peak_gb,
+                "epoch_oom_skips": epoch_oom,
                 "elapsed_hours": (time.time() - self.start_time) / 3600.0,
             }
 
@@ -858,7 +967,9 @@ class ResilientTrainer:
                 f"reaction_ce {entry['train_reaction_ce']:.4f} | "
                 f"synthon_ce {entry['train_synthon_ce']:.4f} | "
                 f"torsion_nll {entry['train_torsion_nll']:.4f} | "
-                f"val_loss {entry.get('val_loss', float('nan')):.4f}"
+                f"val_loss {entry.get('val_loss', float('nan')):.4f} | "
+                f"vram peak {vram_peak_gb:.1f} GB",
+                flush=True,
             )
 
             is_best = entry.get("val_loss", float("inf")) < self.best_val_loss

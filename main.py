@@ -17,12 +17,40 @@ import os
 import sys
 from typing import Dict, Optional
 
+import logging as _logging
+
+# httpx logs one INFO line per HTTP round-trip (HF Hub manifest checks,
+# preupload, commit, xet token fetches...), ~10 noisy lines per epoch sync.
+# Warnings and errors only.
+_logging.getLogger("httpx").setLevel(_logging.WARNING)
+_logging.getLogger("httpcore").setLevel(_logging.WARNING)
+
 # Stage-2 CUDA OOM fix: expandable segments stop the caching allocator from
 # fragmenting when PPO interleaves many small PaiNN forward graphs with
 # the rollout/replay cycle. The variable must be set BEFORE torch initializes
 # its caching allocator (first CUDA tensor allocation), hence before the
 # torch import below. An explicit user override always wins (setdefault).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+# hf_hub / hf_xet progress bars render one line per refresh; inside a
+# Colab cell (no \r clearing) a single 70 MB checkpoint sync floods
+# hundreds of "Processing Files / New Data Upload / Validating" lines and
+# makes a 10-second upload look like a frozen cell. Our own log lines
+# already report sync start/finish, so disable Hub progress bars
+# process-wide. Must be set before the first `import huggingface_hub`
+# anywhere in the process (constants are read at import time).
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+# Colab pipes subprocess stdout/stderr, and Python block-buffers pipes
+# (8 KB): plain print() progress can sit invisible for minutes while
+# logging-module lines (which flush per record) stream past - making the
+# cell look frozen. Force line buffering so every trainer print lands
+# immediately.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:  # pragma: no cover - exotic stream objects
+    pass
 
 # RDKit's C++ front-end spams "DEPRECATION WARNING: please use
 # GetValence(Chem.ValenceType.EXPLICIT) instead" once per atom per reaction

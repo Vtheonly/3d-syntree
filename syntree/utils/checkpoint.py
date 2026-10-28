@@ -21,7 +21,6 @@ Guarantees:
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -60,7 +59,16 @@ class CheckpointManager:
         self.repo_id = hf_cfg.get("repo_id", "")
         self.enabled = bool(hf_cfg.get("enabled", False))
         self.private = bool(hf_cfg.get("private", False))
-        self.push_freq = max(1, int(hf_cfg.get("push_every_n_epochs", 2)))
+        # Upload cadence (epochs between Hub pushes). The SYNTREE_PUSH_EVERY
+        # env override lets a live session slow the sync rate without editing
+        # configs - each sync is one ~70 MB commit.
+        try:
+            push_every = int(os.environ.get("SYNTREE_PUSH_EVERY", "0") or 0)
+        except ValueError:
+            push_every = 0
+        if push_every <= 0:
+            push_every = int(hf_cfg.get("push_every_n_epochs", 2))
+        self.push_freq = max(1, push_every)
         self.keep_last_n = max(1, int(keep_last_n))
         self.progress_mode = str(progress_mode)
         if self.progress_mode not in self.PROGRESS_MODES:
@@ -341,15 +349,23 @@ class CheckpointManager:
             torch.save(state, best_tmp)
             os.replace(best_tmp, best_dst)
 
+        # Cadence-gated sync (Colab "upload spam" fix): 'is_best' no longer
+        # triggers a Hub push. On a fresh run val_loss improves nearly every
+        # epoch, so 'is_best' would upload a ~70 MB checkpoint after EVERY
+        # epoch - each one a triple commit round-trip whose nested hf_xet
+        # progress bars flooded the Colab cell and made a healthy run look
+        # frozen. Best checkpoints stay local (checkpoint_best.pt) and ride
+        # along with the final sync.
         should_push = self.enabled and self.api is not None and (
-            final or is_best or (epoch % self.push_freq == 0)
+            final or (epoch % self.push_freq == 0)
         )
         if should_push:
             manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
             progress_bytes = json.dumps(progress, indent=2).encode("utf-8")
             if final:
                 self._sync_to_hub_sync(
-                    ckpt_path, epoch, manifest_bytes, progress_bytes
+                    ckpt_path, epoch, manifest_bytes, progress_bytes,
+                    include_best=True,
                 )
             else:
                 self._sync_to_hub_async(
@@ -726,11 +742,13 @@ class CheckpointManager:
         epoch: int,
         manifest_bytes: bytes,
         progress_bytes: bytes,
+        include_best: bool = False,
     ) -> None:
         """Flush previous uploads, then synchronously upload the final state."""
         self.wait_for_uploads()
         self._upload_snapshot(
-            ckpt_path, epoch, manifest_bytes, progress_bytes
+            ckpt_path, epoch, manifest_bytes, progress_bytes,
+            include_best=include_best,
         )
 
     def _upload_snapshot(
@@ -739,27 +757,47 @@ class CheckpointManager:
         epoch: int,
         manifest_bytes: bytes,
         progress_bytes: bytes,
+        include_best: bool = False,
     ) -> None:
         with self._upload_lock:
             try:
-                logger.info("Uploading epoch %d checkpoint to HF Hub...", epoch)
-                self.api.upload_file(
-                    path_or_fileobj=str(ckpt_path),
-                    path_in_repo=f"checkpoints/checkpoint_epoch_{epoch}.pt",
-                    repo_id=self.repo_id,
-                    repo_type="model",
+                logger.info(
+                    "Uploading epoch %d checkpoint to HF Hub (single commit)...", epoch
                 )
-                self.api.upload_file(
-                    path_or_fileobj=io.BytesIO(progress_bytes),
-                    path_in_repo=self.PROGRESS_NAME,
+                from huggingface_hub import CommitOperationAdd
+
+                operations = [
+                    CommitOperationAdd(
+                        path_in_repo=f"checkpoints/checkpoint_epoch_{epoch}.pt",
+                        path_or_fileobj=str(ckpt_path),
+                    ),
+                    CommitOperationAdd(
+                        path_in_repo=self.PROGRESS_NAME,
+                        path_or_fileobj=bytes(progress_bytes),
+                    ),
+                    CommitOperationAdd(
+                        path_in_repo=self.MANIFEST_NAME,
+                        path_or_fileobj=bytes(manifest_bytes),
+                    ),
+                ]
+                if include_best:
+                    best_path = self.ckpt_dir / "checkpoint_best.pt"
+                    if best_path.exists():
+                        operations.append(
+                            CommitOperationAdd(
+                                path_in_repo="checkpoints/checkpoint_best.pt",
+                                path_or_fileobj=str(best_path),
+                            )
+                        )
+                # One preupload + one commit for the whole snapshot: the three
+                # separate upload_file() calls tripled the commit round-trips
+                # and (via hf_xet's nested progress bars) flooded Colab cells
+                # with hundreds of progress lines per sync.
+                self.api.create_commit(
                     repo_id=self.repo_id,
                     repo_type="model",
-                )
-                self.api.upload_file(
-                    path_or_fileobj=io.BytesIO(manifest_bytes),
-                    path_in_repo=self.MANIFEST_NAME,
-                    repo_id=self.repo_id,
-                    repo_type="model",
+                    operations=operations,
+                    commit_message=f"checkpoint epoch {epoch}",
                 )
                 logger.info("HF Hub sync complete (epoch %d).", epoch)
             except Exception as exc:

@@ -15,13 +15,22 @@ class FakeHub:
     def __init__(self, files):
         self.files = set(files)
         self.uploads = []
+        self.commits = []
 
     def list_repo_files(self, repo_id, repo_type="model"):
         return sorted(self.files)
 
     def upload_file(self, path_or_fileobj, path_in_repo, repo_id, repo_type="model"):
+        # Retained for callers that still push single files; the snapshot
+        # sync itself now uses create_commit (one commit per snapshot).
         self.uploads.append(path_in_repo)
         self.files.add(path_in_repo)
+
+    def create_commit(self, repo_id, repo_type, operations, commit_message=None):
+        paths = [op.path_in_repo for op in operations]
+        self.commits.append(paths)
+        self.uploads.extend(paths)
+        self.files.update(paths)
 
 
 def _manager(tmp_path, hub):
@@ -243,12 +252,15 @@ def test_final_sync_flushes_earlier_async_uploads(tmp_path):
 
     manager.wait_for_uploads()
 
-    assert hub.uploads[:3] == [
+    # Each snapshot sync is a SINGLE commit carrying the checkpoint,
+    # progress.json and manifest.json together (the old behaviour made
+    # three separate upload_file() commit round-trips per epoch).
+    assert hub.commits[0] == [
         "checkpoints/checkpoint_epoch_0.pt",
         "progress.json",
         "manifest.json",
     ]
-    assert hub.uploads[-3:] == [
+    assert hub.commits[-1] == [
         "checkpoints/checkpoint_epoch_1.pt",
         "progress.json",
         "manifest.json",
