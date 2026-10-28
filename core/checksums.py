@@ -41,3 +41,29 @@ def verify_file(file_path: Path | str, expected_hash: str) -> bool:
     elif len(expected) == 64:
         return compute_sha256(p).lower() == expected
     return False
+
+
+def compute_digest(file_path: Path | str, algorithm: str = "sha256", chunk_size: int = 4 * 1024 * 1024) -> str:
+    """Stream a file through a hash function (sha256 or md5)."""
+    if str(algorithm).lower() == "md5":
+        return compute_md5(file_path, chunk_size)
+    return compute_sha256(file_path, chunk_size)
+
+
+def pinned_hash_algo(pinned_hash: str) -> str:
+    """Detect whether a pinned hash string is MD5 (32 chars) or SHA-256 (64 chars).
+
+    Raises ValueError for unrecognized lengths.
+    """
+    h = pinned_hash.strip().lower()
+    if len(h) == 32:
+        return "md5"
+    elif len(h) == 64:
+        return "sha256"
+    raise ValueError(f"Unrecognized hash length {len(h)} for pin '{h}'")
+
+
+def verify_pinned(file_path: Path | str, pinned_hash: str, chunk_size: int = 4 * 1024 * 1024) -> bool:
+    """Verify a file against a pinned hash string, auto-detecting the algorithm."""
+    algo = pinned_hash_algo(pinned_hash)
+    return compute_digest(file_path, algo, chunk_size) == pinned_hash.strip().lower()

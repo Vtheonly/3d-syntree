@@ -803,17 +803,7 @@ def collect_episode(
     seed_synthon_idx: Optional[int] = None,
     max_steps: Optional[int] = None,
 ) -> Tuple[List[RolloutTransition], Dict]:
-    """Roll out one episode of the assembly MDP under the current policy.
-
-    Drives :class:`~syntree.engine.environment.MolecularAssemblyEnv` with
-    ``model.act`` and records PPO transitions enriched with the per-step
-    dense physics reward. The terminal reward (docking/QED/contact
-    components) is computed by ``terminal_reward_fn(env) -> dict`` and added
-    to the final transition, exactly as required by GAE bootstrapping.
-
-    Returns:
-        ``(transitions, reward_details)``.
-    """
+    """Roll out one episode of the assembly MDP under the current policy."""
     from syntree.engine.environment import AssemblyAction
 
     observation = env.reset(
@@ -826,42 +816,44 @@ def collect_episode(
 
     transitions: List[RolloutTransition] = []
     reward_details: Dict = {}
-    while not env.done:
-        reaction_mask, synthon_masks, has_handle = env.legal_action_masks()
-        if not has_handle or not bool((reaction_mask > -1e8).any().item()):
-            break
-        decision = model.act(
-            observation.to(device),
-            synthon_embeddings,
-            reaction_compatibility_mask=reaction_mask.to(device),
-            synthon_masks_by_reaction=synthon_masks.to(device),
-            sample=sample,
-            temperature=temperature,
-        )
-        transition = RolloutTransition(
-            state=observation.clone(),
-            reaction_mask=reaction_mask.detach().clone(),
-            synthon_masks=synthon_masks.detach().clone(),
-            family_idx=int(decision["reaction_family_idx"][0].item()),
-            action_idx=int(decision["action_idx"][0].item()),
-            old_log_prob=decision["joint_log_prob"][0].detach(),
-            old_value=decision["state_value"][0].detach(),
-        )
-        action = AssemblyAction(
-            reaction_family_idx=int(decision["reaction_family_idx"][0].item()),
-            synthon_idx=int(decision["synthon_idx"][0].item()),
-            dihedral_rad=float(decision["dihedral"][0].item()),
-            action_idx=int(decision["action_idx"][0].item()),
-        )
-        observation, step_reward, done, info = env.step(action)
-        transition.reward = float(step_reward)
-        transition.done = bool(done)
-        transitions.append(transition)
+
+    with torch.no_grad():  # Auditing F-11: Prevent autograd graph retention during RL rollouts
+        while not env.done:
+            reaction_mask, synthon_masks, has_handle = env.legal_action_masks()
+            if not has_handle or not bool((reaction_mask > -1e8).any().item()):
+                break
+            decision = model.act(
+                observation.to(device),
+                synthon_embeddings,
+                reaction_compatibility_mask=reaction_mask.to(device),
+                synthon_masks_by_reaction=synthon_masks.to(device),
+                sample=sample,
+                temperature=temperature,
+            )
+            transition = RolloutTransition(
+                state=observation.clone().cpu(),
+                reaction_mask=reaction_mask.detach().cpu(),
+                synthon_masks=synthon_masks.detach().cpu(),
+                family_idx=int(decision["reaction_family_idx"][0].item()),
+                action_idx=int(decision["action_idx"][0].item()),
+                old_log_prob=decision["joint_log_prob"][0].detach().cpu(),
+                old_value=decision["state_value"][0].detach().cpu(),
+            )
+            action = AssemblyAction(
+                reaction_family_idx=int(decision["reaction_family_idx"][0].item()),
+                synthon_idx=int(decision["synthon_idx"][0].item()),
+                dihedral_rad=float(decision["dihedral"][0].item()),
+                action_idx=int(decision["action_idx"][0].item()),
+            )
+            observation, step_reward, done, info = env.step(action)
+            transition.reward = float(step_reward)
+            transition.done = bool(done)
+            transitions.append(transition)
 
     if terminal_reward_fn is not None:
         try:
             reward_details = terminal_reward_fn(env)
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.warning("terminal reward failed (%s); using zero.", exc)
             reward_details = {"reward": 0.0}
         terminal = float(reward_details.get("reward", 0.0))

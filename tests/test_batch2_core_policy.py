@@ -22,22 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import torch
 torch.set_num_threads(2)
 
-# Prevent chemistry/RDKit cascade while testing pure neural policy and infrastructure
-mock_rxn = MagicMock()
-mock_rxn.REACTION_FAMILY_NAMES = (
-    "amide_coupling", "reductive_amination", "suzuki_coupling", "aryl_amination",
-    "urea_formation", "esterification", "click_triazole", "sulfonamide_coupling", "sp3_alkylation"
-)
-mock_chem = MagicMock(reactions=mock_rxn, catalog=MagicMock())
-mock_chem.__path__ = []  # Tells Python this mock behaves as a package
-
-sys.modules["syntree.chemistry"] = mock_chem
-sys.modules["syntree.chemistry.reactions"] = mock_rxn
-sys.modules["syntree.chemistry.catalog"] = mock_chem.catalog
-
-import syntree
-syntree.chemistry = mock_chem
-
+from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
 from syntree.core.registry import CANONICAL_MODELS, run_preflight_audit
 from syntree.utils.hardware import resolve_amp_dtype, autotune_batch_size
 from syntree.utils.checkpoint import CheckpointManager
@@ -173,7 +158,7 @@ class TestPolicyIntegration(unittest.TestCase):
 
         num_synthons = 20
         synthon_embeddings = torch.randn(num_synthons, self.hidden_dim)
-        rxn_mask = torch.zeros(b, len(mock_rxn.REACTION_FAMILY_NAMES))
+        rxn_mask = torch.zeros(b, len(REACTION_FAMILY_NAMES))
         syn_mask = torch.zeros(b, num_synthons)
 
         out = self.policy(batch_data, synthon_embeddings, syn_mask, reaction_compatibility_mask=rxn_mask)
@@ -182,7 +167,7 @@ class TestPolicyIntegration(unittest.TestCase):
         print(f"  -> Context shape: {list(context_shape)} | Reaction logits shape: {list(rxn_logits_shape)}")
 
         self.assertEqual(context_shape, (b, self.hidden_dim))
-        self.assertEqual(rxn_logits_shape, (b, len(mock_rxn.REACTION_FAMILY_NAMES)))
+        self.assertEqual(rxn_logits_shape, (b, len(REACTION_FAMILY_NAMES)))
         print("  -> PASS: Query tensor dimensions strictly aligned to [B, d]; no B*B broadcast.")
 
 

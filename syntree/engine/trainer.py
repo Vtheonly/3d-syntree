@@ -254,13 +254,15 @@ class ResilientTrainer:
         # float16 on CUDA, which would silently run a "bf16" config under
         # fp16 semantics (the exact bug the tasklist's H100 section warns
         # about - fp16's tiny dynamic range overflows vector norms).
-        mp_setting = str(
-            config.get("system", {}).get("mixed_precision", "fp32")
-        ).lower()
-        self.use_amp = mp_setting in ("fp16", "bf16") and self.device.type == "cuda"
-        self.amp_dtype = (
-            torch.bfloat16 if mp_setting == "bf16" else torch.float16
-        )
+
+
+        # Mixed-precision configuration routed through hardware utility (Auditing C5/F-11)
+        from syntree.utils.hardware import resolve_amp_dtype
+
+        mp_setting = str(config.get("system", {}).get("mixed_precision", "fp32")).lower()
+        resolved_dtype = resolve_amp_dtype(mp_setting, self.device)
+        self.use_amp = resolved_dtype is not None and self.device.type == "cuda"
+        self.amp_dtype = resolved_dtype if resolved_dtype is not None else torch.float32
         self.scaler = torch.amp.GradScaler(
             "cuda", enabled=self.use_amp and self.amp_dtype == torch.float16
         )
@@ -280,7 +282,7 @@ class ResilientTrainer:
             lr=float(train_cfg.get("learning_rate", 3e-4)) * self.lr_scale_factor,
             weight_decay=float(train_cfg.get("weight_decay", 1e-5)),
         )
-        self.total_steps = max(1, len(self.loader) // self.accum_steps * self.max_epochs)
+        self.total_steps = max(1, math.ceil(len(self.loader) / self.accum_steps) * self.max_epochs)
         self.scheduler = self._make_scheduler()
 
         # Checkpointing.
@@ -294,9 +296,11 @@ class ResilientTrainer:
         if auto_resume:
             self.start_epoch, self.global_step, self.best_val_loss = (
                 self.ckpt_manager.restore_latest(
-                    self.model, self.optimizer, self.scheduler
+                    self.model, self.optimizer, self.scheduler, scaler=self.scaler
                 )
             )
+            self._warn_on_catalog_signature_mismatch()
+            # Note: scheduler state is already restored by load_state_dict; no redundant step loop (Auditing B.1)
             self._warn_on_catalog_signature_mismatch()
             for _ in range(self.global_step):
                 self.scheduler.step()
@@ -341,6 +345,9 @@ class ResilientTrainer:
                 data.num_nodes = data.pocket_pos.size(0)
             elif hasattr(data, "pos") and data.pos is not None:
                 data.num_nodes = data.pos.size(0)
+            if hasattr(data, "handle_features") and data.handle_features is not None:
+                if data.handle_features.dim() == 1:
+                    data.handle_features = data.handle_features.unsqueeze(0)
 
             for k in list(data.keys()):
                 v = data[k]
@@ -560,11 +567,13 @@ class ResilientTrainer:
                 batch = batch.to(self.device)
                 target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
                 stop_index = len(self.catalog)
+
+                # Safe attribute extraction with fallback (Auditing F-05/F-09)
                 target_stop = getattr(
                     batch, "target_stop", torch.zeros_like(target, dtype=torch.bool)
                 )
                 target_action = torch.where(
-                    batch.target_stop.bool(),
+                    target_stop.bool(),
                     torch.full_like(target, stop_index),
                     target,
                 )
@@ -623,11 +632,19 @@ class ResilientTrainer:
                 if (batch_idx + 1) % self.accum_steps == 0 or (batch_idx + 1) == len(self.loader):
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+
+                    # Track scale to detect if step was skipped due to Inf/NaN (Auditing F-18)
+                    scale_before = self.scaler.get_scale() if self.scaler.is_enabled() else 1.0
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
+                    scale_after = self.scaler.get_scale() if self.scaler.is_enabled() else 1.0
+
                     self.optimizer.zero_grad(set_to_none=True)
-                    self.scheduler.step()
-                    self.global_step += 1
+
+                    # Only advance scheduler and global step if optimizer step actually occurred
+                    if scale_after >= scale_before:
+                        self.scheduler.step()
+                        self.global_step += 1
 
                 epoch_loss += float(loss.item()) * self.accum_steps
                 epoch_reaction += float(l_reaction.item())
@@ -662,12 +679,15 @@ class ResilientTrainer:
             is_best = entry.get("val_loss", float("inf")) < self.best_val_loss
             if is_best:
                 self.best_val_loss = entry.get("val_loss", float("inf"))
+
+            # Save checkpoint with scaler state persistence (Auditing Issues 4)
             self.ckpt_manager.save_checkpoint(
                 epoch=epoch,
                 step=self.global_step,
                 model=self.model,
                 optimizer=self.optimizer,
                 scheduler=self.scheduler,
+                scaler=self.scaler,
                 metrics=entry,
                 is_best=is_best,
                 model_config=self.config.get("model"),
@@ -682,6 +702,10 @@ class ResilientTrainer:
         last_epoch = history[-1]["epoch"] if history else None
         self._finalize(last_epoch, history)
         return self._summary(history, floor=self.start_epoch)
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
 
     # ------------------------------------------------------------------
     # Validation
@@ -797,10 +821,21 @@ class ResilientTrainer:
                     )
                 )
             predicted_masks = torch.stack(predicted_masks)
+
+            stop_mask = getattr(batch, "stop_mask", None)
+            global_features = getattr(batch, "global_features", None)
+            stop_logit_bias = None
+            if global_features is not None:
+                stop_logit_bias = self.model.global_stop_proj(
+                    global_features.view(batch.target_synthon.size(0), -1).to(preds["pocket_context"].dtype)
+                ).squeeze(-1)
+
             predicted_synthon_logits, _ = self.model.synthon_head(
                 preds["pocket_context"],
                 self.catalog.embeddings.to(self.device),
                 predicted_masks,
+                stop_mask=stop_mask,
+                stop_logit_bias=stop_logit_bias,
             )
             joint_synthon = predicted_synthon_logits.argmax(-1)
             joint_synthon_correct = joint_synthon == target_action
@@ -826,6 +861,8 @@ class ResilientTrainer:
             "val_joint_action_acc": joint_action_correct / max(1, n),
         }
 
+
+
     # ------------------------------------------------------------------
     # Artifacts
     # ------------------------------------------------------------------
@@ -846,6 +883,7 @@ class ResilientTrainer:
                 model=self.model,
                 optimizer=self.optimizer,
                 scheduler=self.scheduler,
+                scaler=self.scaler,
                 metrics=history[-1],
                 is_best=True,
                 final=True,
@@ -857,6 +895,9 @@ class ResilientTrainer:
 
         with open(os.path.join(self.output_dir, "history.json"), "w") as f:
             json.dump(history, f, indent=2)
+
+
+
 
     @staticmethod
     def _summary(history, floor: int = 0) -> Dict[str, float]:

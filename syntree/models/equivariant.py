@@ -214,32 +214,67 @@ class BatchedPaiNNLayer(nn.Module):
         return self.mixing(scalar, vector)
 
 
+
 def build_radius_graph(
     pos: torch.Tensor, batch: torch.Tensor, cutoff: float, loop: bool = False
 ) -> torch.Tensor:
-    """Radius graph via brute-force distance computation.
+    """Radius graph constructed per sub-graph to prevent O(N_total^2) memory explosion.
 
-    A pure-torch implementation (no torch-cluster dependency) that stays
-    correct on CPU and GPU alike. ``pos`` is ``[N, 3]`` and ``batch`` maps
-    each node to its graph; edges never cross graphs.
-
-    Set ``loop=True`` to include self-loops (PaiNN typically omits them).
+    A pure-torch implementation that stays correct on CPU and GPU alike.
+    Edges never cross different graphs in a batch.
     """
     if pos.dim() != 2 or pos.size(1) != 3:
         raise ValueError(f"pos must be [N, 3], got {tuple(pos.shape)}")
     if batch is None:
         batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
 
-    dist_mat = torch.cdist(pos, pos)                            # [N, N]
-    adj = dist_mat <= cutoff
-    if not loop:
-        adj.fill_diagonal_(False)
-    same_graph = batch.unsqueeze(0) == batch.unsqueeze(1)
-    adj = adj & same_graph
-    row, col = torch.nonzero(adj, as_tuple=True)
-    edge_index = torch.stack([row, col], dim=0)
-    return edge_index
+    num_graphs = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
+    if num_graphs == 1:
+        dist_mat = torch.cdist(pos, pos)
+        adj = dist_mat <= cutoff
+        if not loop:
+            adj.fill_diagonal_(False)
+        row, col = torch.nonzero(adj, as_tuple=True)
+        return torch.stack([row, col], dim=0)
 
+    # If batch is not monotonic (e.g. pocket nodes concatenated with ligand nodes), sort by graph
+    is_monotonic = bool((batch[1:] >= batch[:-1]).all().item()) if batch.numel() > 1 else True
+    if not is_monotonic:
+        perm = torch.argsort(batch, stable=True)
+        pos_sorted = pos[perm]
+        batch_sorted = batch[perm]
+    else:
+        perm = None
+        pos_sorted = pos
+        batch_sorted = batch
+
+    # Compute radius edges per sub-graph using slice offsets (reduces peak memory from O(N_total^2) to sum O(N_b^2))
+    rows, cols = [], []
+    counts = torch.bincount(batch_sorted, minlength=num_graphs)
+    starts = torch.cumsum(counts, dim=0) - counts
+
+    for g in range(num_graphs):
+        n_g = int(counts[g].item())
+        if n_g <= 1:
+            continue
+        start_g = int(starts[g].item())
+        pos_g = pos_sorted[start_g : start_g + n_g]
+        dist_g = torch.cdist(pos_g, pos_g)
+        adj_g = dist_g <= cutoff
+        if not loop:
+            adj_g.fill_diagonal_(False)
+        row_g, col_g = torch.nonzero(adj_g, as_tuple=True)
+        rows.append(row_g + start_g)
+        cols.append(col_g + start_g)
+
+    if not rows:
+        return torch.zeros((2, 0), dtype=torch.long, device=pos.device)
+
+    edge_index = torch.stack([torch.cat(rows), torch.cat(cols)], dim=0)
+    # Map back to original input indices if sorted
+    if perm is not None:
+        edge_index = perm[edge_index]
+    return edge_index
 
 __all__ = [
     "CosineCutoff",

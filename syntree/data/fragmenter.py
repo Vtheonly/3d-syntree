@@ -20,6 +20,12 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem
 
+try:
+    from rdkit.Chem import rdFingerprintGenerator
+    _MORGAN_GEN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+except Exception:
+    _MORGAN_GEN = None
+
 from syntree.chemistry.conformer import ConformerEngine
 from syntree.chemistry.reactions import (
     REACTION_FAMILY_FOR,
@@ -30,17 +36,6 @@ from syntree.chemistry.reactions import (
 )
 
 
-# Product-only retrosynthesis is currently exact for these transformations.
-# Urea formation and click chemistry are intentionally excluded because the
-# simple product graph does not preserve enough information to reconstruct
-# the actual two catalog precursors without extra reaction provenance.
-#
-# APPEND-ONLY family ordering: amide/sulfonamide/reductive_amination/
-# sp3_alkylation precede the cross-coupling families so ordinary C-N and
-# S-N disconnections are tried before metal-catalysed ones. Existing
-# accepted targets keep their family assignment because the new families
-# only *add* candidate disconnects (sulfonamide S-N bonds had no matching
-# family before; C-N bonds still try reductive_amination first).
 SUPPORTED_RETRO_FAMILIES = (
     "amide_coupling",
     "sulfonamide_coupling",
@@ -89,6 +84,18 @@ class ReactionConstrainedFragmenter:
             )
             for family in SUPPORTED_RETRO_FAMILIES
         }
+        # Precompute catalog fingerprints for fast C++ bulk similarity search (Auditing H8/F-16)
+        self._catalog_fps = []
+        self._catalog_fp_indices = []
+        for idx, smiles in enumerate(self.catalog.df["smiles"]):
+            mol = Chem.MolFromSmiles(str(smiles))
+            if mol is not None:
+                if _MORGAN_GEN is not None:
+                    fp = _MORGAN_GEN.GetFingerprint(mol)
+                else:
+                    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+                self._catalog_fps.append(fp)
+                self._catalog_fp_indices.append(idx)
 
     def find_target(self, ligand: Chem.Mol) -> Optional[RetrosyntheticTarget]:
         """Find the best validated catalog synthon decomposition.
@@ -234,21 +241,13 @@ class ReactionConstrainedFragmenter:
                     atom.ClearProp("_syntree_orig_idx")
             result.append((fragment, endpoint))
 
-        return tuple(result)  # type: ignore[return-value]
+        return tuple(result)
 
     @staticmethod
     def _fold_explicit_hydrogens(
         fragment: Chem.Mol, endpoint: int
     ) -> Tuple[Chem.Mol, int]:
-        """Fold explicit hydrogen neighbours into implicit H counts.
-
-        Ligands loaded from SDF/MOL2 sometimes carry explicit hydrogens. The
-        handle decorations below add atoms/bonds assuming implicit-H valence
-        bookkeeping: decorating an explicit-H CH2 endpoint as an aldehyde
-        (=O) would create a pentavalent carbon and silently fail. Folding Hs
-        first is index-preserving for heavy atoms (``Chem.RemoveHs`` keeps
-        heavy-atom order), so the returned endpoint stays valid.
-        """
+        """Fold explicit hydrogen neighbours into implicit H counts."""
         if not any(atom.GetAtomicNum() == 1 for atom in fragment.GetAtoms()):
             return fragment, endpoint
         heavy_before = sum(
@@ -263,16 +262,7 @@ class ReactionConstrainedFragmenter:
     def _decorate_fragment(
         fragment: Chem.Mol, endpoint: int, handle_type: str
     ) -> Tuple[Chem.Mol, ...]:
-        """Restore one or more possible reactant handles after a bond cut.
-
-        The product graph does not preserve which aryl halide leaving group was
-        used experimentally, so aryl_halide returns Br/Cl/I variants and the
-        caller matches them against the actual catalog. The same applies to the
-        sp3 alkyl halide (tasklist Priority 4). Other handles have a unique
-        graph reconstruction.
-        """
-        # Explicit-H ligands break implicit-valence decorations (e.g. the
-        # aldehyde =O would over-valence a CH2 endpoint): fold Hs first.
+        """Restore one or more possible reactant handles after a bond cut."""
         fragment, endpoint = ReactionConstrainedFragmenter._fold_explicit_hydrogens(
             fragment, endpoint
         )
@@ -281,7 +271,7 @@ class ReactionConstrainedFragmenter:
             if not endpoint_atom.GetIsAromatic():
                 return ()
             variants: List[Chem.Mol] = []
-            for atomic_num in (35, 17, 53):
+            for atomic_num in (35, 17, 53, 9):  # Added Fluorine (9) for SNAr (F-22)
                 rw = Chem.RWMol(fragment)
                 xi = rw.AddAtom(Chem.Atom(atomic_num))
                 rw.AddBond(endpoint, xi, Chem.BondType.SINGLE)
@@ -295,10 +285,6 @@ class ReactionConstrainedFragmenter:
             return tuple(variants)
 
         if handle_type == "alkyl_halide":
-            # The cut C-N bond's carbon endpoint must be an aliphatic sp3
-            # carbon (the alkyl_halide SMARTS [CX4][Br,I,Cl] is re-verified
-            # implicitly because only decorated molecules that re-detect the
-            # handle can appear in the catalog).
             if endpoint_atom.GetIsAromatic() or endpoint_atom.GetAtomicNum() != 6:
                 return ()
             variants: List[Chem.Mol] = []
@@ -312,11 +298,6 @@ class ReactionConstrainedFragmenter:
                     Chem.SanitizeMol(mol)
                 except Exception:
                     continue
-                # Guard: the decorated carbon must actually satisfy the
-                # alkyl-halide handle (sp3, CX4). Vinyl/benzyl edge cases
-                # are handled by the SMARTS itself.
-                from syntree.chemistry.reactions import HANDLE_SMARTS
-
                 pattern = Chem.MolFromSmarts(HANDLE_SMARTS["alkyl_halide"])
                 if not mol.HasSubstructMatch(pattern):
                     continue
@@ -345,11 +326,6 @@ class ReactionConstrainedFragmenter:
                 oi = rw.AddAtom(Chem.Atom(8))
                 rw.AddBond(bi, oi, Chem.BondType.SINGLE)
         elif handle_type == "sulfonyl_chloride":
-            # Cut S-N bond: re-attach Cl onto the sulfur endpoint to rebuild
-            # the sulfonyl chloride precursor. Only a genuine sulfonamide S
-            # (already bearing two double-bonded oxygens) can re-detect as
-            # the sulfonyl_chloride handle, which the exact-replay check
-            # enforces anyway.
             if endpoint_atom.GetAtomicNum() != 16:
                 return ()
             ci = rw.AddAtom(Chem.Atom(17))
@@ -372,26 +348,25 @@ class ReactionConstrainedFragmenter:
         synthon_mol: Chem.Mol,
         min_tanimoto: float = 0.85,
     ) -> Tuple[int, ...]:
-        """Return exact catalog matches plus high-similarity candidates.
-
-        Similarity is a candidate-discovery mechanism only. The caller still
-        requires exact forward reaction replay against the observed product,
-        so a Tanimoto-near miss can never become fabricated supervision.
-        """
+        """Return exact catalog matches plus high-similarity candidates."""
         exact = self._catalog_lookup.get(canonical_smiles(synthon_mol), ())
         if exact:
             return tuple(sorted(exact))
 
-        fp = AllChem.GetMorganFingerprintAsBitVect(synthon_mol, radius=2, nBits=2048)
-        scored = []
-        for idx, smiles in enumerate(self.catalog.df["smiles"]):
-            mol = Chem.MolFromSmiles(str(smiles))
-            if mol is None:
-                continue
-            candidate_fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-            similarity = DataStructs.TanimotoSimilarity(fp, candidate_fp)
-            if similarity >= min_tanimoto:
-                scored.append((float(similarity), int(idx)))
+        if not self._catalog_fps:
+            return ()
+
+        if _MORGAN_GEN is not None:
+            fp = _MORGAN_GEN.GetFingerprint(synthon_mol)
+        else:
+            fp = AllChem.GetMorganFingerprintAsBitVect(synthon_mol, radius=2, nBits=2048)
+
+        sims = DataStructs.BulkTanimotoSimilarity(fp, self._catalog_fps)
+        scored = [
+            (sim, self._catalog_fp_indices[i])
+            for i, sim in enumerate(sims)
+            if sim >= min_tanimoto
+        ]
         scored.sort(key=lambda item: (-item[0], item[1]))
         return tuple(idx for _, idx in scored)
 

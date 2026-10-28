@@ -193,27 +193,28 @@ class DPOTrainer:
 def build_preference_pairs(
     episodes: Sequence[Dict],
 ) -> List[Tuple[Sequence, Sequence]]:
-    """Pair up consecutive episodes of a rollout batch by reward.
+    """Pair up episodes of a rollout batch by reward within the SAME pocket."""
+    from collections import defaultdict
 
-    Each pair holds two same-batch episodes ordered
-    ``(win, lose)`` by terminal reward; exact ties are dropped (a preference
-    between equal outcomes is undefined). Pairing within one batch keeps
-    both candidates on comparable pockets.
-    """
+    by_pocket = defaultdict(list)
+    for ep in episodes:
+        if not ep.get("transitions"):
+            continue
+        pocket_key = ep.get("pocket", "default")
+        by_pocket[pocket_key].append(ep)
+
     pairs: List[Tuple[Sequence, Sequence]] = []
-    for i in range(0, len(episodes) - 1, 2):
-        a, b = episodes[i], episodes[i + 1]
-        if not a.get("transitions") or not b.get("transitions"):
-            continue
-        reward_a = float(a.get("reward", 0.0))
-        reward_b = float(b.get("reward", 0.0))
-        if reward_a == reward_b:
-            continue
-        if reward_a > reward_b:
-            pairs.append((a["transitions"], b["transitions"]))
-        else:
-            pairs.append((b["transitions"], a["transitions"]))
+    for pocket_key, ep_list in by_pocket.items():
+        for i in range(0, len(ep_list) - 1, 2):
+            a, b = ep_list[i], ep_list[i + 1]
+            reward_a = float(a.get("reward", 0.0))
+            reward_b = float(b.get("reward", 0.0))
+            if reward_a == reward_b:
+                continue
+            if reward_a > reward_b:
+                pairs.append((a["transitions"], b["transitions"]))
+            else:
+                pairs.append((b["transitions"], a["transitions"]))
     return pairs
-
 
 __all__ = ["DPOTrainer", "build_preference_pairs"]

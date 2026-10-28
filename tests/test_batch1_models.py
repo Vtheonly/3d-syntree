@@ -21,9 +21,6 @@ if str(PROJECT_ROOT) not in sys.path:
 import torch
 torch.set_num_threads(2)
 
-# Prevent syntree/models/__init__.py from eagerly pulling in policy.py and the entire chemistry/RDKit cascade
-sys.modules["syntree.models.policy"] = MagicMock()
-
 from syntree.models.equivariant import (
     CosineCutoff,
     RadialBasis,

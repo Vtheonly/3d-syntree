@@ -18,12 +18,13 @@ import logging
 import math
 import os
 import zlib
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from rdkit import Chem
-from torch_geometric.data import Data, InMemoryDataset
+from torch_geometric.data import Batch, Data, InMemoryDataset
 
 from syntree.data.featurizer import GLOBAL_FEATURE_DIM, MolecularFeaturizer
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
@@ -49,7 +50,7 @@ def _synthetic_pocket(
 class CrossDockedDataset(InMemoryDataset):
     """Pocket-ligand dataset with real and synthetic operating modes."""
 
-    _POCKET_GLOB = "*_pocket.pdb"
+    _POCKET_GLOB = "*_pocket*.pdb"
 
     def __init__(
         self,
@@ -80,18 +81,14 @@ class CrossDockedDataset(InMemoryDataset):
         self._split_assignments = self._load_split_assignments()
 
         os.makedirs(self.root_dir, exist_ok=True)
-        self.pocket_files = sorted(
-            glob.glob(os.path.join(self.root_dir, self._POCKET_GLOB))
-        )
-        self.all_pair_files = [
-            p
-            for p in self.pocket_files
-            if os.path.exists(p.replace("_pocket.pdb", "_ligand.sdf"))
-        ]
-        self.has_real_pairs = bool(self.all_pair_files)
+        # Robust recursive discovery for flat and nested Zenodo archives (Auditing F-08/F-15)
+        self.all_pairs = self._discover_pairs(self.root_dir)
+        self.all_pair_files = [p for p, _, _ in self.all_pairs]
+        self.has_real_pairs = bool(self.all_pairs)
         self.pair_files = [
-            p for p in self.all_pair_files if self._belongs_to_split(p)
+            (p, l) for p, l, cid in self.all_pairs if self._belongs_to_split(cid)
         ]
+        self.pocket_files = [p for p, _ in self.pair_files]
 
         self.use_synthetic = (
             bool(synthetic)
@@ -101,6 +98,46 @@ class CrossDockedDataset(InMemoryDataset):
 
         super().__init__(self.root_dir, transform, pre_transform, pre_filter)
         self._load_or_process()
+
+    @staticmethod
+    def _discover_pairs(data_dir: str) -> List[Tuple[str, str, str]]:
+        """Discover pocket-ligand pairs across flat and nested directory trees."""
+        pairs = []
+        root = Path(data_dir)
+        for pocket_path in sorted(root.rglob("*.pdb")):
+            stem = pocket_path.stem
+            if "pocket" not in stem.lower():
+                continue
+            parent = pocket_path.parent
+            # Look for matching ligand in same folder
+            ligands = sorted(
+                p for p in parent.iterdir()
+                if p.suffix.lower() in (".sdf", ".mol2")
+            )
+            if not ligands:
+                continue
+
+            # Pick best ligand match
+            norm_stem = stem
+            for suffix in ("_pocket10", "_pocket"):
+                if norm_stem.endswith(suffix):
+                    norm_stem = norm_stem[:-len(suffix)]
+                    break
+
+            best_ligand = ligands[0]
+            for lig in ligands:
+                lig_stem = lig.stem
+                for suffix in ("_ligand", "_lig", "_dock"):
+                    if lig_stem.endswith(suffix):
+                        lig_stem = lig_stem[:-len(suffix)]
+                        break
+                if lig_stem == norm_stem:
+                    best_ligand = lig
+                    break
+
+            cid = f"{parent.name}_{norm_stem}" if parent != root else norm_stem
+            pairs.append((str(pocket_path), str(best_ligand), cid))
+        return pairs
 
     @property
     def raw_dir(self) -> str:
@@ -123,10 +160,7 @@ class CrossDockedDataset(InMemoryDataset):
             import hashlib
             with open(self.split_manifest_path, "rb") as handle:
                 manifest_key = hashlib.sha1(handle.read()).hexdigest()[:10]
-        # Grammar fingerprint: any change to the reaction templates or the
-        # retro-family tuple invalidates processed caches built under the old
-        # grammar (e.g. before sulfonamide/alkylation retro support existed),
-        # so stale caches can never be silently reused (data integrity).
+
         from syntree.chemistry.reactions import grammar_fingerprint
 
         grammar_key = grammar_fingerprint()
@@ -176,12 +210,12 @@ class CrossDockedDataset(InMemoryDataset):
             )
         return {str(k): str(v) for k, v in assignments.items()}
 
-    def _belongs_to_split(self, pocket_path: str) -> bool:
-        complex_id = os.path.basename(pocket_path)
-        if complex_id.endswith("_pocket.pdb"):
-            complex_id = complex_id[:-len("_pocket.pdb")]
+    def _belongs_to_split(self, complex_id: str) -> bool:
         if self._split_assignments is not None:
             assigned = self._split_assignments.get(complex_id)
+            if assigned is None:
+                bare_id = complex_id.split("_")[-1]
+                assigned = self._split_assignments.get(bare_id)
             if assigned is None:
                 raise ValueError(
                     f"Complex {complex_id} is absent from split manifest "
@@ -210,11 +244,6 @@ class CrossDockedDataset(InMemoryDataset):
         w_rxn = torch.randn(n_feat, generator=g)
         scale = float(math.sqrt(n_feat))
 
-        # Derive the family -> core-handle mapping directly from the reaction
-        # grammar so it can never drift when new families (e.g.
-        # sulfonamide_coupling, sp3_alkylation) are appended. The tuple keeps
-        # the union of both reaction sides, matching the previous hardcoded
-        # table for the seven legacy families.
         from syntree.chemistry.reactions import (
             REACTION_FAMILY_MEMBERS,
             REACTION_FAMILY_NAMES as _FAMILY_NAMES,
@@ -304,7 +333,7 @@ class CrossDockedDataset(InMemoryDataset):
                     global_features=torch.zeros(
                         1, GLOBAL_FEATURE_DIM, dtype=torch.float32
                     ),
-                    handle_features=handle_chem,
+                    handle_features=handle_chem.view(1, -1),
                     handle_pos=handle_position.view(1, 3),
                     target_synthon=torch.tensor([target_synthon], dtype=torch.long),
                     target_dihedral=torch.tensor([target_dihedral], dtype=torch.float32),
@@ -333,8 +362,7 @@ class CrossDockedDataset(InMemoryDataset):
         skipped_invalid = 0
         skipped_unmatched = 0
 
-        for pocket_path in self.pair_files:
-            ligand_path = pocket_path.replace("_pocket.pdb", "_ligand.sdf")
+        for pocket_path, ligand_path in self.pair_files:
             try:
                 pocket_mol = Chem.MolFromPDBFile(pocket_path, removeHs=False)
             except Exception:
@@ -344,12 +372,15 @@ class CrossDockedDataset(InMemoryDataset):
                 continue
 
             try:
-                ligand_supplier = Chem.SDMolSupplier(
-                    ligand_path, removeHs=False, sanitize=True
-                )
-                ligand_mol = next(
-                    (m for m in ligand_supplier if m is not None), None
-                )
+                if str(ligand_path).lower().endswith(".mol2"):
+                    ligand_mol = Chem.MolFromMol2File(str(ligand_path), removeHs=False, sanitize=True)
+                else:
+                    ligand_supplier = Chem.SDMolSupplier(
+                        str(ligand_path), removeHs=False, sanitize=True
+                    )
+                    ligand_mol = next(
+                        (m for m in ligand_supplier if m is not None), None
+                    )
             except Exception:
                 ligand_mol = None
 
@@ -435,7 +466,7 @@ class CrossDockedDataset(InMemoryDataset):
                         handle_info.atom_indices,
                         target.core_handle_type,
                         reference_center=center,
-                    ),
+                    ).view(1, -1),
                     target_synthon=torch.tensor(
                         [target.synthon_index], dtype=torch.long
                     ),
@@ -496,9 +527,36 @@ class CrossDockedDataset(InMemoryDataset):
             "mode": "synthetic" if self.use_synthetic else "real",
             "num_samples": len(self),
             "num_pocket_files": len(self.pocket_files),
-            "num_pair_files": len(self.all_pair_files),
+            "num_pair_files": len(self.all_pairs),
             "num_split_pairs": len(self.pair_files),
         }
 
+    @staticmethod
+    def _collate(items):
+        clean_items = []
+        for item in items:
+            data = item.clone()
+            if hasattr(data, "pocket_pos") and data.pocket_pos is not None:
+                data.num_nodes = data.pocket_pos.size(0)
+            elif hasattr(data, "pos") and data.pos is not None:
+                data.num_nodes = data.pos.size(0)
 
+            for k in list(data.keys()):
+                v = data[k]
+                if isinstance(v, torch.Tensor) and v.dim() == 0:
+                    data[k] = v.unsqueeze(0)
+
+            # Ensure handle_features is 2D [1, 64] so PyG collates along batch dimension [B, 64]
+            if hasattr(data, "handle_features") and data.handle_features is not None:
+                if data.handle_features.dim() == 1:
+                    data.handle_features = data.handle_features.unsqueeze(0)
+
+            clean_items.append(data)
+
+        batch = Batch.from_data_list(clean_items, follow_batch=["pocket_pos", "ligand_pos"])
+        if not hasattr(batch, "pocket_batch") or batch.pocket_batch is None:
+            batch.pocket_batch = getattr(batch, "pocket_pos_batch", None)
+        if not hasattr(batch, "ligand_batch") or batch.ligand_batch is None:
+            batch.ligand_batch = getattr(batch, "ligand_pos_batch", None)
+        return batch
 __all__ = ["CrossDockedDataset"]

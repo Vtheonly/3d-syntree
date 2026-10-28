@@ -287,8 +287,18 @@ class EvaluationPipeline:
 
     @staticmethod
     def _parse_docking_score(stdout: str) -> Optional[float]:
+        """Extract best mode affinity (kcal/mol) from Vina, GNINA, or legacy outputs."""
+        import re
+
         for line in stdout.splitlines():
             line = line.strip()
+            # Match standard Vina / GNINA mode 1 row: "1    -7.4    0.000    0.000"
+            match = re.match(r"^1\s+([-\d\.]+)", line)
+            if match:
+                try:
+                    return float(match.group(1))
+                except ValueError:
+                    continue
             if line.startswith("Estimated free energy of binding"):
                 try:
                     return float(line.split(":")[1].split()[0])
@@ -300,6 +310,5 @@ class EvaluationPipeline:
                 except (IndexError, ValueError):
                     continue
         return None
-
 
 __all__ = ["EvaluationPipeline"]
