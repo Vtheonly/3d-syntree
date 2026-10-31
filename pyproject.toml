@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "syntree"
+dynamic = ["version"]
+description = "3D-SynTree V2 — structure-based molecular design via reaction-constrained, pocket-aware synthon assembly"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "3D-SynTree Contributors" }]
+keywords = [
+    "structure-based-drug-design",
+    "equivariant-neural-networks",
+    "gflownet",
+    "retrosynthesis",
+    "computational-chemistry",
+]
+dependencies = [
+    "torch>=2.1.0",
+    "torch-geometric>=2.4.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4.0"]
+
+[project.urls]
+Repository = "https://github.com/Vtheonly/3d-syntree"
+Issues = "https://github.com/Vtheonly/3d-syntree/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "syntree.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["syntree*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
