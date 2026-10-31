@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 import torch
-from torch_geometric.data import Batch
 
 # Ensure codebase root is on sys.path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -19,28 +18,15 @@ if str(_PROJECT_ROOT) not in sys.path:
 from torch_geometric.data import Data
 
 from syntree.chemistry.catalog import SynthonCatalog
+from syntree.core.schema import collate_state_batch
 from syntree.models.policy import SynTreePolicy
 
 
 def collate_pyg(items):
-    clean_items = []
-    for item in items:
-        data = item.clone()
-        if hasattr(data, "pocket_pos") and data.pocket_pos is not None:
-            data.num_nodes = data.pocket_pos.size(0)
-        elif hasattr(data, "pos") and data.pos is not None:
-            data.num_nodes = data.pos.size(0)
-        for k in list(data.keys()):
-            v = data[k]
-            if isinstance(v, torch.Tensor) and v.dim() == 0:
-                data[k] = v.unsqueeze(0)
-        clean_items.append(data)
-    batch = Batch.from_data_list(clean_items, follow_batch=["pocket_pos", "ligand_pos"])
-    if not hasattr(batch, "pocket_batch") or batch.pocket_batch is None:
-        batch.pocket_batch = getattr(batch, "pocket_pos_batch", None)
-    if not hasattr(batch, "ligand_batch") or batch.ligand_batch is None:
-        batch.ligand_batch = getattr(batch, "ligand_pos_batch", None)
-    return batch
+    """Canonical V2 batch collation (#6 ARCH-02): single path via
+    syntree.core.schema.collate_state_batch (validated, versioned,
+    fail-closed - rejects legacy 67-dim Franken tensors)."""
+    return collate_state_batch(items)
 
 
 def main() -> int:

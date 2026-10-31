@@ -12,6 +12,7 @@ from rdkit import Chem
 from torch_geometric.data import Data
 
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES, ReactionEngine
+from syntree.core.schema import HANDLE_FEATURE_DIM, stamp_schema_version
 from syntree.data.featurizer import MolecularFeaturizer, GLOBAL_FEATURE_DIM
 from syntree.data.decomposer import RetrosyntheticTrajectoryExtractor
 
@@ -172,7 +173,7 @@ class RetrosyntheticTrajectoryBuilder:
                 global_feats = torch.zeros(GLOBAL_FEATURE_DIM)
 
             samples.append(
-                Data(
+                stamp_schema_version(Data(
                     num_nodes=pocket_features["pocket_pos"].size(0),
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
@@ -180,7 +181,8 @@ class RetrosyntheticTrajectoryBuilder:
                     ligand_pos=lig_feats["ligand_pos"],
                     ligand_z=lig_feats["ligand_z"],
                     ligand_charge=lig_feats["ligand_charge"],
-                    handle_features=handle_features,
+                    # [1, 64] canonical rank (featurizer returns 1-D [64]).
+                    handle_features=handle_features.view(1, HANDLE_FEATURE_DIM),
                     handle_pos=handle_pos.view(1, 3) if handle_pos.dim() == 1 else handle_pos,
                     handle_nodes=torch.tensor([handle_node_idx], dtype=torch.long),
                     global_features=global_feats.view(1, GLOBAL_FEATURE_DIM),
@@ -206,7 +208,7 @@ class RetrosyntheticTrajectoryBuilder:
                         dtype=torch.long,
                     ),
                     is_real_sample=torch.tensor([True], dtype=torch.bool),
-                )
+                ))
             )
 
         terminal_handles = self.engine.detect_handles(current)
@@ -243,7 +245,7 @@ class RetrosyntheticTrajectoryBuilder:
                 term_handle_pos = torch.zeros(3)
                 term_global = torch.zeros(GLOBAL_FEATURE_DIM)
             samples.append(
-                Data(
+                stamp_schema_version(Data(
                     num_nodes=pocket_features["pocket_pos"].size(0),
                     pocket_pos=pocket_features["pocket_pos"],
                     pocket_z=pocket_features["pocket_z"],
@@ -251,7 +253,8 @@ class RetrosyntheticTrajectoryBuilder:
                     ligand_pos=term_lig_feats["ligand_pos"],
                     ligand_z=term_lig_feats["ligand_z"],
                     ligand_charge=term_lig_feats["ligand_charge"],
-                    handle_features=terminal_features,
+                    # [1, 64] canonical rank (featurizer returns 1-D [64]).
+                    handle_features=terminal_features.view(1, HANDLE_FEATURE_DIM),
                     handle_pos=term_handle_pos.view(1, 3) if term_handle_pos.dim() == 1 else term_handle_pos,
                     handle_nodes=torch.tensor(
                         [term_handle_node], dtype=torch.long
@@ -277,7 +280,7 @@ class RetrosyntheticTrajectoryBuilder:
                         dtype=torch.long,
                     ),
                     is_real_sample=torch.tensor([True], dtype=torch.bool),
-                )
+                ))
             )
 
         status = "ok" if samples else "no_valid_states"

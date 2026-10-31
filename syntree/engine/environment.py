@@ -37,6 +37,7 @@ from syntree.chemistry.conformer import vdw_radius
 from syntree.chemistry.hotspots import PocketHotspotFeaturizer
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
 from syntree.core.masking import LOGIT_MASK_FILL, LOGIT_MASK_LEGAL_ABOVE
+from syntree.core.schema import stamp_schema_version
 from syntree.data.featurizer import MolecularFeaturizer
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,7 @@ class MolecularAssemblyEnv:
             self.current_mol, pocket_volume=self._pocket_volume
         ).unsqueeze(0).to(self.device)
 
-        return Data(
+        state = Data(
             pocket_pos=pocket["pocket_pos"],
             pocket_z=pocket["pocket_z"],
             pocket_charge=pocket["pocket_charge"],
@@ -302,11 +303,12 @@ class MolecularAssemblyEnv:
             ),
             global_features=global_feats,
             stop_mask=torch.tensor(
-                0.0 if allow_stop else LOGIT_MASK_FILL,
+                [0.0 if allow_stop else LOGIT_MASK_FILL],
                 dtype=torch.float32,
                 device=self.device,
             ),
         )
+        return stamp_schema_version(state)
 
     # ------------------------------------------------------------------
     # Action space

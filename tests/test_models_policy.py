@@ -10,6 +10,7 @@ from torch_geometric.data import Batch
 
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
+from syntree.core.schema import collate_state_batch, stamp_schema_version
 from torch_geometric.data import Data
 
 from syntree.models.policy import SynTreePolicy
@@ -23,24 +24,27 @@ def catalog(assets_dir):
 
 
 def _synthetic_sample(seed: int) -> Data:
-    """Minimal synthetic pocket/handle state (V2 #5 ARCH-01: the synthetic
-    CrossDockedDataset smoke loader was purged; policy tests build the
-    PyG state directly)."""
+    """Minimal synthetic state conforming to the frozen V2 tensor schema
+    (#6 ARCH-02): all 13 canonical fields, pocket-centred coordinates,
+    empty ligand (the t=0 pre-growth state)."""
     g = torch.Generator().manual_seed(seed)
     n_pocket = 18 + seed % 5
-    return Data(
+    return stamp_schema_version(Data(
         pocket_pos=torch.randn(n_pocket, 3, generator=g) * 8.0,
         pocket_z=torch.randint(1, 30, (n_pocket,), generator=g),
-        # Empty ligand: the pre-growth state (no ligand atoms yet), matching
-        # the original synthetic samples.
+        pocket_charge=torch.zeros(n_pocket),
+        pocket_batch=torch.zeros(n_pocket, dtype=torch.long),
+        # Empty ligand: the pre-growth state (no ligand atoms yet).
         ligand_pos=torch.zeros(0, 3, dtype=torch.float32),
         ligand_z=torch.zeros(0, dtype=torch.long),
+        ligand_charge=torch.zeros(0, dtype=torch.float32),
+        ligand_batch=torch.zeros(0, dtype=torch.long),
         handle_features=torch.randn(1, 64, generator=g),
         handle_pos=torch.randn(1, 3, generator=g),
         handle_nodes=torch.tensor([-1], dtype=torch.long),
         global_features=torch.randn(1, 4, generator=g),
         stop_mask=torch.tensor([0.0], dtype=torch.float32),
-    )
+    ))
 
 
 class _FreshSamples:
@@ -70,9 +74,9 @@ def model(tiny_config):
 
 @pytest.fixture()
 def batch(dataset):
-    return Batch.from_data_list(
-        [dataset[i] for i in range(4)], follow_batch=["pocket_pos"]
-    )
+    # Canonical V2 batching path (#6): validated, versioned, with
+    # materialised pocket_batch/ligand_batch - no follow_batch aliases.
+    return collate_state_batch([dataset[i] for i in range(4)])
 
 
 class TestConstruction:
@@ -154,8 +158,8 @@ class TestSE3Properties:
     def test_rotation_invariance(self, model, dataset, catalog):
         model.eval()
         data = dataset[1]
-        d1 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
-        d2 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
+        d1 = collate_state_batch([data])
+        d2 = collate_state_batch([data])
         d2.pocket_pos = d2.pocket_pos @ self._rotation(1.1).T
         with torch.no_grad():
             o1 = model(d1, catalog.embeddings)
@@ -169,21 +173,17 @@ class TestSE3Properties:
         geometry."""
         model.eval()
         data = dataset[1]
-        d1 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
-        d2 = Batch.from_data_list([data], follow_batch=["pocket_pos"])
+        d1 = collate_state_batch([data])
+        d2 = collate_state_batch([data])
         shift = torch.tensor([7.0, -4.0, 2.0])
         d2.pocket_pos = d2.pocket_pos + shift
         # The intermediate ligand lives in the same frame; translate it too
         # (the ghost-ligand fix made it part of the state).
         if getattr(d2, "ligand_pos", None) is not None and d2.ligand_pos.numel() > 0:
             d2.ligand_pos = d2.ligand_pos + shift
-        # The handle position: dedicated field (new schema) or the tail of
-        # the legacy 67-dim vector.
-        if getattr(d2, "handle_pos", None) is not None:
-            d2.handle_pos = d2.handle_pos.view(1, 3) + shift
-        if d2.handle_features.size(-1) == 67:
-            d2.handle_features = d2.handle_features.clone()
-            d2.handle_features[..., 64:67] = d2.handle_features[..., 64:67] + shift
+        # The handle position: dedicated field in the V2 schema (#6); the
+        # legacy 67-dim tail is rejected by the contract, never split.
+        d2.handle_pos = d2.handle_pos.view(1, 3) + shift
         with torch.no_grad():
             o1 = model(d1, catalog.embeddings)
             o2 = model(d2, catalog.embeddings)
@@ -209,7 +209,7 @@ class TestAct:
         """When STOP is masked out the argmax must select a real synthon."""
         model.eval()
         data = dataset[0]
-        data.stop_mask = torch.tensor(-1e9)
+        data.stop_mask = torch.tensor([-1e9])
         decision = model.act(data, catalog.embeddings)
         assert 0 <= decision["synthon_idx"][0].item() < len(catalog)
 

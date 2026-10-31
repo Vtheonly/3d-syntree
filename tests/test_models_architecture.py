@@ -66,7 +66,7 @@ def state():
         handle_pos=torch.randn(1, 3),
         handle_nodes=torch.tensor([2]),
         global_features=torch.tensor([[0.4, 0.12, 0.05, 1.0]]),
-        stop_mask=torch.tensor(0.0),
+        stop_mask=torch.tensor([0.0]),
     )
 
 
@@ -102,35 +102,51 @@ class TestGhostLigand:
         assert diff > 1e-5, "The policy ignores the ligand's element types"
 
     def test_empty_ligand_fallback(self, model, synthon_embeddings):
-        """States without an intermediate ligand (seed step) still work."""
+        """States with an empty intermediate ligand (seed step) still work.
+        The V2 schema requires the ligand sub-graph fields to exist as
+        explicitly empty tensors (#6 ARCH-02)."""
         torch.manual_seed(3)
         empty = Data(
             pocket_pos=torch.randn(8, 3),
             pocket_z=torch.tensor([6, 7, 8, 6, 7, 8, 6, 7]),
+            pocket_charge=torch.zeros(8),
             pocket_batch=torch.zeros(8, dtype=torch.long),
             ligand_pos=torch.zeros(0, 3),
             ligand_z=torch.zeros(0, dtype=torch.long),
+            ligand_charge=torch.zeros(0),
+            ligand_batch=torch.zeros(0, dtype=torch.long),
             handle_features=torch.randn(1, 64),
             handle_pos=torch.randn(1, 3),
             global_features=torch.zeros(1, GLOBAL_FEATURE_DIM),
-            stop_mask=torch.tensor(0.0),
+            stop_mask=torch.tensor([0.0]),
         )
         out = model(empty, synthon_embeddings)
         assert out["synthon_logits"].shape == (1, 8)
 
-    def test_legacy_67_dim_features_split_transparently(
+    def test_legacy_67_dim_features_rejected(
         self, model, synthon_embeddings
     ):
+        """#6 ARCH-02: the V1 67-dim Franken tensor (64 chemical features
+        + 3 raw coordinates) breaks SE(3) equivariance and must raise a
+        hard ValueError with the exact deprecation message - the policy no
+        longer splits it transparently."""
         torch.manual_seed(3)
         legacy = Data(
             pocket_pos=torch.randn(8, 3),
             pocket_z=torch.tensor([6, 7, 8, 6, 7, 8, 6, 7]),
+            pocket_charge=torch.zeros(8),
             pocket_batch=torch.zeros(8, dtype=torch.long),
+            ligand_pos=torch.zeros(0, 3),
+            ligand_z=torch.zeros(0, dtype=torch.long),
+            ligand_charge=torch.zeros(0),
+            ligand_batch=torch.zeros(0, dtype=torch.long),
             handle_features=torch.randn(1, 67),
-            stop_mask=torch.tensor(0.0),
+            handle_pos=torch.randn(1, 3),
+            global_features=torch.zeros(1, GLOBAL_FEATURE_DIM),
+            stop_mask=torch.tensor([0.0]),
         )
-        out = model(legacy, synthon_embeddings)
-        assert out["synthon_logits"].shape == (1, 8)
+        with pytest.raises(ValueError, match="Legacy 67D Franken-tensors are deprecated"):
+            model(legacy, synthon_embeddings)
 
     def test_bipartite_encoder_ligand_edges(self):
         """Ligand atoms must actually exchange messages with pocket atoms."""

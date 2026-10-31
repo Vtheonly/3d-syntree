@@ -250,11 +250,21 @@ def test_collate_batch_drops_poisonous_samples():
     from torch_geometric.data import Data
 
     def to_data(item):
+        # Full V2 13-field state (#6): the canonical collator validates.
+        n_lig = item.ligand_pos.size(0)
         return Data(
             pocket_pos=item.pocket_pos,
             pocket_z=item.pocket_z,
             pocket_charge=item.pocket_charge,
             ligand_pos=item.ligand_pos,
+            ligand_z=torch.randint(6, 9, (n_lig,)),
+            ligand_charge=torch.zeros(n_lig),
+            handle_features=torch.randn(1, 64),
+            handle_pos=torch.randn(1, 3),
+            global_features=torch.zeros(1, 4),
+            stop_mask=torch.zeros(1),
+            target_dihedral=item.target_dihedral,
+            num_nodes=item.pocket_pos.size(0),
         )
 
     batch = ResilientTrainer.collate_batch(
@@ -279,11 +289,20 @@ def test_collate_batch_trims_oversized_pockets():
     stats = {"trimmed": 0, "dropped_nonfinite": 0}
     from torch_geometric.data import Data
 
+    n_lig = item.ligand_pos.size(0)
     data = Data(
         pocket_pos=item.pocket_pos,
         pocket_z=item.pocket_z,
         pocket_charge=item.pocket_charge,
         ligand_pos=item.ligand_pos,
+        ligand_z=torch.randint(6, 9, (n_lig,)),
+        ligand_charge=torch.zeros(n_lig),
+        handle_features=torch.randn(1, 64),
+        handle_pos=torch.randn(1, 3),
+        global_features=torch.zeros(1, 4),
+        stop_mask=torch.zeros(1),
+        target_dihedral=item.target_dihedral,
+        num_nodes=item.pocket_pos.size(0),
     )
     batch = ResilientTrainer.collate_batch([data], pocket_atom_cap=1600, stats=stats)
     assert stats["trimmed"] == 1

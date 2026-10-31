@@ -271,7 +271,7 @@ see `docs/agent/STATUS.md` for the per-issue detail):
 | Capability | Status |
 |---|---|
 | Legacy purge & V2 foundation (repo layout, agent docs, architecture spec) | **Implemented + locally verified** (#5) |
-| Tensor schema freeze / PyG batch contract | Planned (#6) — V1 featurizer provides an interim basis |
+| Tensor schema freeze / PyG batch contract | **Implemented + locally verified** (#6: `syntree/core/schema.py`, fail-closed, legacy 67-D rejected) |
 | Non-singular norms, von Mises stability, cosine cutoffs, FP32 engine | Planned (#7–#10); known V1 von Mises numerical test failures open |
 | Certified reaction registry (32 reactions) | Partially implemented (V1 registry exists; V2 certification pending #11) |
 | Enamine REAL 50k catalog + pharm3d + chemoselectivity + index | Planned (#12, #40, #41); V1 subset catalog exists (2.6k entries, V1 pipeline) |
@@ -280,7 +280,7 @@ see `docs/agent/STATUS.md` for the per-issue detail):
 | BipartitePaiNN backbone, heads, policy assembly | Partially implemented (V1 models exist; V2 contracts #21–#25, #39 pending) |
 | Trainer (FP32/T4), curriculum, transfer pretraining | Partially implemented (V1 trainer/curriculum exist; #26–#28 pending; AMP machinery still present) |
 | GFlowNet Trajectory Balance engine | Partially implemented (V1 TB engine exists; #38 semantics + #30 stationary reward pending) |
-| Test Suites A/B | Partially implemented (V1 suite: 837 passing / 12 pre-existing failures) |
+| Test Suites A/B | Partially implemented (suite: 880 passing / 12 pre-existing failures; #32/#33 pending) |
 | Independent retrosynthesis evaluation, SBDD benchmark | Planned (#34, #35, #44) |
 | Colab SSH remote workflow, HF artifact sync, T4 profiling/resume | Planned (#36, #37, #43); no GPU execution has occurred for V2 |
 | Production training, benchmark results, wet-lab validation | **Not performed — no claims made** |

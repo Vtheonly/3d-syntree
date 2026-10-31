@@ -5,57 +5,56 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-01, session S-2026-11-01-A (commit `b4ba696`).
+**Last updated:** 2026-11-01, session S-2026-11-01-B (issue #6 ARCH-02).
 
 ## 1. Continuation instruction (unambiguous)
 
 ```
-Next session: implement #6 ARCH-02 (Establish Frozen State Tensor Schemas &
-PyG Batch Contracts). Last verified commit: `b4ba69635e129c68e1f8b21d922c1faefd7fe48e` (pushed to origin/3d-synV2, verified).
-#5 ARCH-01 is implemented, verified locally, and closed. Do NOT redo the
-purge. #7 MATH-01 is the independent parallel-safe second task. Before
-coding #6, re-read issue #6 in full and re-check the branch HEAD matches
-the commit above (someone may have advanced it).
+Next session: implement #7 MATH-01 (Non-Singular PaiNN Equivariant Norms &
+Bounded Unit Vectors) in syntree/models/equivariant.py. Last verified
+commit: <see WORK_LOG S-2026-11-01-B §4 / issue #6 comment>. #5 and #6 are
+implemented, locally verified, and CLOSED — do NOT redo the purge or the
+schema. #7 is the only remaining blocker of #21 MODEL-01. Before coding,
+re-read issue #7 in full and confirm branch HEAD matches the recorded
+commit (someone may have advanced it). Parallel-safe alternatives if #7 is
+taken: #8 MATH-02, #9 MATH-03, #10 MATH-04, #11 CHEM-01, #14 CHEM-04,
+#16 DATA-01, #32 TEST-01.
 ```
 
 ## 2. Current project status
 
-- Branch `3d-synV2`; #5 ARCH-01 delivered this session (purge + V2 docs
-  foundation + README rewrite). All remaining backlog issues #6–#44 are
-  OPEN; none started.
-- Test suite state (local CPU): **837 passed / 12 failed**, all 12
-  pre-existing before V2 work (failure IDs listed in STATUS.md; expected to
-  be resolved by #8 MATH-02 and #32 TEST-01 — do not "fix" them inside
-  unrelated issues without recording the decision).
-- No GPU/T4 execution has happened for V2. No HF artifacts were synced.
-  No training has been run on V2. Any claim otherwise would be false.
+- Branch `3d-synV2`. Closed issues: **#5 ARCH-01**, **#6 ARCH-02**.
+  All remaining backlog issues #7–#44 OPEN.
+- Test baseline (local CPU): **880 passed / 12 failed**; the 12 are the
+  documented pre-existing failures (7 `test_core_discovery_checkpoint`,
+  1 `test_core_manifest_checksums`, 4 von Mises/torsion) owned by
+  **#8 MATH-02** and **#32 TEST-01** — do not "fix" them inside unrelated
+  issues. Any NEW failure is yours to fix before proceeding.
+- No GPU/T4 execution for V2 has happened. No training. No HF sync.
+  Any claim otherwise would be false.
 
 ## 3. What the next agent must NOT redo
 
-- The purge (23 files) and all dangling-reference fixes — complete and
-  verified (grep evidence in WORK_LOG §4).
-- `docs/agent/*`, `docs/architecture/ARCHITECTURE.md`, `docs/legacy/`
-  archive, `docs/data/RAW_SOURCE_PROVENANCE.yaml` — established.
-- README.md — rewritten as V2-first; extend it, don't restart it.
-- `tests/conftest.py::smoke_trajectory_path` fixture and the
-  `trajectory_pt`-backend test wiring — working; reuse it.
+- The legacy purge (#5) and the frozen tensor schema (#6):
+  `syntree/core/schema.py` is the single state contract — extend it, do
+  not fork it. The 13-field validation, canonical collator and 67-D
+  Franken rejection are done and tested (43 tests in
+  `tests/test_tensor_contracts.py`).
+- README/architecture/agent-docs structure — update in place.
 
-## 4. #6 ARCH-02 starting notes (from this session's reading of the code)
+## 4. #7 MATH-01 starting notes (from this session's reading of the code)
 
-- Issue #6 demands the frozen tensor schema contract; the V1 "Franken-tensor"
-  67-dim legacy path still exists as a tolerated branch in
-  `syntree/models/policy.py` (`handle_features` 64 vs legacy 67) and in
-  `syntree/data/featurizer.py` (`HANDLE_FEATURE_DIM`). #6 should freeze the
-  64-dim contract, make schema/version checks fail closed, and delete the
-  legacy tolerance.
-- PyG batch contract today: `Batch.from_data_list(..., follow_batch=
-  ["pocket_pos", "ligand_pos"])` with `pocket_batch`/`ligand_batch`
-  fallbacks resolved inside `SynTreePolicy.forward` — that resolution logic
-  is exactly the implicit guessing #45 §7.1 forbids; move it into an
-  explicit, validated collate contract.
-- Relevant existing tests to evolve: `tests/test_models_policy.py`
-  (synthetic PyG fixture), `tests/test_data_featurizer.py`,
-  `tests/conftest.py`.
+- Target module `syntree/models/equivariant.py` (shared by
+  `BipartitePaiNN`): implement the ε-smoothed norm
+  `|x|_ε = sqrt(Σ x_k² + ε²) − ε` with gradient
+  `x / sqrt(Σ x_k² + ε²)` (well-defined, zero at the zero vector; no
+  division-by-norm of zero vectors anywhere directional vectors are
+  built — check `build_radius_graph` edge vectors and PaiNN message
+  paths). Test forward values, derivatives, coincident coordinates, tiny
+  distances, finite behaviour (#45 §8.1).
+- Existing relevant tests: `tests/test_math_verification.py`,
+  `tests/test_models_equivariant.py`, `tests/test_batch1_models.py`.
+- The 4 pre-existing von Mises/torsion failures belong to #8, not #7.
 
 ## 5. Known debts carried forward (with owners)
 
@@ -68,24 +67,30 @@ the commit above (someone may have advanced it).
 | Zero-backward-term TB assumption + heuristic seed in `GFlowNetTrainer` | #38 FLOW-04 / #39 MODEL-06 |
 | V1 curriculum engine present but not re-verified against V2 contracts | #27 TRAIN-02 |
 | `SUPPORTED_DATA_BACKENDS` interim set `{huggingface, trajectory_pt}` | #16 DATA-01 / #19 DATA-04 |
+| Unstamped legacy shards: validator accepts absent `schema_version` (interim) until #19 re-stamps | #19 DATA-04 |
 
 ## 6. Remote runtime / checkpoint state
 
 None — no Colab/Kaggle session was opened (user authorization not
-requested this session; #36 workflow will prepare instructions when
-reached). No checkpoints exist for V2. The Hugging Face datasets
-referenced by configs (`JJKK1212/3d-syntree-multidataset`) are V1-era
-artifacts; their reuse must be checksum/schema-verified before any V2
-training consumes them (#45 §15).
+requested; #36 workflow will prepare instructions when reached). No V2
+checkpoints exist. The V1-era HF datasets
+(`JJKK1212/3d-syntree-multidataset`) remain unverified for V2: **any V2
+training consumption must first pass the #6 schema contract** — legacy
+67-D shards will now fail closed at collation (intended; #19 re-stamps
+or reprocesses).
 
 ## 7. Session mechanics for the next agent
 
-1. `git clone --branch 3d-synV2` (or fetch), confirm HEAD == the SHA in §1.
+1. `git clone --branch 3d-synV2` (or fetch); confirm HEAD == the commit in
+   §1/WORK_LOG. **Watch for a push race** (this session cloned 2 minutes
+   before the previous agent's push landed; `git fetch` + compare with
+   issue comments before assuming you are current).
 2. Install deps: `pip install torch --index-url
-   https://download.pytorch.org/whl/cpu`, then `rdkit`, `torch_geometric`,
-   `pyarrow`, `numpy`, `scipy`, `pandas` (or the vendored `wheels/`).
-3. Baseline the suite: `python -m pytest tests/ -q` — expect 837 passed /
-   12 failed (the exact failure list is in STATUS.md; any NEW failure is
-   yours to fix before proceeding).
+   https://download.pytorch.org/whl/cpu`, then vendored
+   `wheels/torch_geometric-*.whl`, `wheels/rdkit-*.whl`, then
+   `pyarrow pandas scipy huggingface-hub tqdm h5py pyyaml pytest`.
+3. Baseline the suite: `python -m pytest tests/ -q --tb=no` — expect
+   **880 passed / 12 failed** (list in STATUS.md; any NEW failure is
+   yours).
 4. Work the issue per the #45 §18 protocol; end with the mandatory git
    diff review, commit+push, issue update, and refreshed handoff.

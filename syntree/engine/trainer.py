@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from syntree.chemistry.catalog import SynthonCatalog
+from syntree.core.schema import collate_state_batch
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
 from syntree.data.hf_loader import (
     ShardedHuggingFaceDataset,
@@ -464,17 +465,22 @@ class ResilientTrainer:
 
     @staticmethod
     def collate_batch(items, pocket_atom_cap: int = 0, stats: Optional[dict] = None):
-        """Robust PyG batch collator that guards against 0-dim tensor errors.
+        """Trainer batch collator: data hygiene + the canonical V2 schema.
 
-        Hardened for variable-size pocket graphs and dirty rows:
+        Hygiene (trainer-specific policy):
         * items with non-finite coordinates/dihedral targets are dropped
           (they are the root cause of residual fp16 NaN batches),
         * pockets above ``pocket_atom_cap`` atoms are trimmed to the binding
           core (nearest-to-centroid), bounding the radius-graph edge count,
         * an empty survivor set raises loudly instead of failing obscurely.
-        """
-        from torch_geometric.data import Batch
 
+        Batching itself is delegated to the single authoritative V2
+        collator :func:`syntree.core.schema.collate_state_batch` (#6
+        ARCH-02): 0-dim/1-D normalisation, canonical ``pocket_batch``/
+        ``ligand_batch`` materialisation, schema-version stamping and
+        fail-closed validation of the assembled batch (legacy 67-dim
+        Franken tensors are rejected there with the deprecation error).
+        """
         clean_items = []
         for item in items:
             if ResilientTrainer._has_nonfinite(item):
@@ -495,19 +501,6 @@ class ResilientTrainer:
                         f"[trainer] pocket trim: {trimmed_total} oversized pockets "
                         f"capped at {pocket_atom_cap} atoms (binding core kept)."
                     )
-            if hasattr(data, "pocket_pos") and data.pocket_pos is not None:
-                data.num_nodes = data.pocket_pos.size(0)
-            elif hasattr(data, "pos") and data.pos is not None:
-                data.num_nodes = data.pos.size(0)
-            if hasattr(data, "handle_features") and data.handle_features is not None:
-                if data.handle_features.dim() == 1:
-                    data.handle_features = data.handle_features.unsqueeze(0)
-
-            for k in list(data.keys()):
-                v = data[k]
-                if isinstance(v, torch.Tensor) and v.dim() == 0:
-                    data[k] = v.unsqueeze(0)
-
             clean_items.append(data)
 
         if not clean_items:
@@ -515,12 +508,7 @@ class ResilientTrainer:
                 "collate: every sample in this batch failed non-finite validation; "
                 "inspect the dataset shards for corrupted coordinates."
             )
-        batch = Batch.from_data_list(clean_items, follow_batch=["pocket_pos", "ligand_pos"])
-        if not hasattr(batch, "pocket_batch") or batch.pocket_batch is None:
-            batch.pocket_batch = getattr(batch, "pocket_pos_batch", None)
-        if not hasattr(batch, "ligand_batch") or batch.ligand_batch is None:
-            batch.ligand_batch = getattr(batch, "ligand_pos_batch", None)
-        return batch
+        return collate_state_batch(clean_items)
 
     def _make_loader(self, dataset, shuffle: bool, curriculum_sampler=None) -> DataLoader:
         """DataLoader over PyG dataset with shard-aware sampling.

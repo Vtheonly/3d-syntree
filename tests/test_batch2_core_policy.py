@@ -132,17 +132,22 @@ class TestPolicyIntegration(unittest.TestCase):
         print("\n[TEST] Policy: Forward Query Broadcasting Check (Auditing F-02/F-06)")
         b = 2
         n_p, n_l = 8, 4
+        # Complete V2 13-field state (#6 ARCH-02): the policy validates
+        # every canonical field and rejects partial legacy states.
         batch_data = SimpleNamespace(
             pocket_pos=torch.randn(n_p * b, 3),
             pocket_z=torch.randint(1, 10, (n_p * b,)),
+            pocket_charge=torch.zeros(n_p * b),
             pocket_batch=torch.tensor([0] * n_p + [1] * n_p, dtype=torch.long),
             ligand_pos=torch.randn(n_l * b, 3),
             ligand_z=torch.randint(1, 10, (n_l * b,)),
+            ligand_charge=torch.zeros(n_l * b),
             ligand_batch=torch.tensor([0] * n_l + [1] * n_l, dtype=torch.long),
             handle_features=torch.randn(b, 64),
             handle_pos=torch.randn(b, 3),
             handle_nodes=torch.tensor([0, 1], dtype=torch.long),
             global_features=torch.randn(b, 4),
+            stop_mask=torch.zeros(b),
         )
 
         num_synthons = 20

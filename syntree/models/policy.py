@@ -18,19 +18,24 @@ Bug-report 2/3 fixes baked into this module:
 * **STOP sees global ligand features** (Flaw 3) - molecular weight,
   heavy-atom count and cavity-occupation ratio feed both the query and a
   dedicated termination bias.
-* **No Franken-tensors** (Tell 1) - handle chemical features (64-dim) and
-  the handle position (3-dim) travel as separate fields
-  (``handle_features`` + ``handle_pos``); legacy 67-dim shards are split
-  transparently on load.
+* **No Franken-tensors** (Tell 1 / #6 ARCH-02) - handle chemical features
+  (64-dim) and the handle position (3-dim) travel as separate fields
+  (``handle_features`` + ``handle_pos``). The legacy 67-dim
+  chemical+coordinate concatenation is a *hard error*: the policy rejects
+  it via the frozen V2 state contract instead of splitting it.
 
-The forward pass consumes a (batched) PyG ``Data``/``Batch`` object with
-``pocket_pos``, ``pocket_z``, ``pocket_batch``, optional ``pocket_charge``,
-optional ``ligand_pos``/``ligand_z``/``ligand_batch``/``ligand_charge``,
-``handle_features`` (``[B, 64]`` or legacy ``[B, 67]``), optional
-``handle_pos`` ``[B, 3]``, optional ``handle_nodes`` ``[B]`` (index of the
-reacting handle within its graph's ligand nodes, ``-1`` when absent) and
-optional ``global_features`` ``[B, 4]``, plus the synthon embedding table
-and reaction compatibility mask.
+The forward pass consumes a PyG ``Data``/``Batch`` object validated
+against the frozen V2 state schema
+(:mod:`syntree.core.schema`, issue #6): all 13 canonical tensors
+(``pocket_pos``/``pocket_z``/``pocket_charge``/``pocket_batch``,
+``ligand_pos``/``ligand_z``/``ligand_charge``/``ligand_batch``,
+``handle_features`` ``[B, 64]``, ``handle_pos`` ``[B, 3]``,
+``global_features`` ``[B, 4]``, ``stop_mask`` ``[B]``) must be present
+with exact dtypes and shapes - there are no implicit batch-vector
+fallbacks, no silent zeros defaults and no legacy shape tolerance.
+Optional non-contract context: ``handle_nodes`` ``[B]`` (index of the
+reacting handle within its graph's ligand nodes, ``-1`` when absent).
+Plus the synthon embedding table and reaction compatibility mask.
 """
 
 from __future__ import annotations
@@ -42,18 +47,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
+from syntree.core.schema import (
+    GLOBAL_FEATURE_DIM,
+    HANDLE_FEATURE_DIM,
+    StateTensorContract,
+    validate_state_batch,
+)
 from syntree.models.bipartite import BipartitePaiNN
 from syntree.models.reaction_head import ReactionHead
 from syntree.models.synthon_head import SynthonHead
 from syntree.models.torsion_head import ContinuousTorsionHead
 
-_HANDLE_CHEMICAL_FEATURE_DIM = 64
-# Legacy shards carried xyz glued to the chemical features (the original
-# "Franken tensor"); they are split transparently on load.
-_HANDLE_LEGACY_FEATURE_DIM = 67
-# Global ligand state fed to the policy readout and the STOP pathway:
-# [MW/500, heavy_atoms/50, ligand_volume/pocket_volume, has_ligand].
-GLOBAL_FEATURE_DIM = 4
+# Re-exported for backwards-compatible imports of the dimension contract.
+_HANDLE_CHEMICAL_FEATURE_DIM = HANDLE_FEATURE_DIM
 _NUM_DISTANCE_RBF = 16
 
 
@@ -209,14 +215,14 @@ class SynTreePolicy(nn.Module):
         """Run the full policy.
 
         Args:
-            batch_data: PyG ``Data``/``Batch`` with ``pocket_pos`` ``[N,3]``,
-                ``pocket_z`` ``[N]``, ``pocket_batch`` ``[N]`` (optional),
-                optional ``pocket_charge`` ``[N]``, optional
-                ``ligand_pos``/``ligand_z``/``ligand_batch``/``ligand_charge``
-                (intermediate ligand atoms), ``handle_features`` ``[B,64]``
-                (or legacy ``[B,67]``), optional ``handle_pos`` ``[B,3]``,
-                optional ``handle_nodes`` ``[B]``, optional
-                ``global_features`` ``[B,4]``.
+            batch_data: PyG ``Data``/``Batch`` object conforming to the
+                frozen V2 state schema
+                (:func:`syntree.core.schema.validate_state_batch`, issue
+                #6): all 13 canonical tensors with exact dtypes/shapes.
+                Legacy partial states and 67-dim Franken tensors raise
+                ``TensorContractError`` (a ``ValueError``). Optional
+                context: ``handle_nodes`` ``[B]`` (index of the reacting
+                handle within its graph's ligand nodes, ``-1`` absent).
             synthon_embeddings: ``[K, hidden_dim]`` catalog embeddings.
             synthon_compatibility_mask: ``[B, K]`` additive logit mask
                 (``0`` legal, ``-1e9`` illegal).
@@ -226,114 +232,43 @@ class SynTreePolicy(nn.Module):
 
         Returns:
             Dict with ``synthon_logits`` ``[B, K]``, ``synthon_log_probs``,
-            ``torsion_mu`` ``[B]``, ``torsion_kappa`` ``[B]``,
-            ``pocket_context`` ``[B, d]``, ``state_value`` ``[B]`` and
-            the joint graph tensors used by :meth:`act` to re-run the
-            torsion head after action selection.
+                ``torsion_mu`` ``[B]``, ``torsion_kappa`` ``[B]``,
+                ``pocket_context`` ``[B, d]``, ``state_value`` ``[B]`` and
+                the joint graph tensors used by :meth:`act` to re-run the
+                torsion head after action selection.
         """
-        pocket_pos = batch_data.pocket_pos
-        pocket_z = batch_data.pocket_z
-        pocket_batch = getattr(batch_data, "pocket_batch", None)
-        if pocket_batch is None:
-            # PyG names the follow-batch vector after the attribute it
-            # tracks (``pocket_pos`` -> ``pocket_pos_batch``).
-            pocket_batch = getattr(batch_data, "pocket_pos_batch", None)
-        if pocket_batch is None:
-            pocket_batch = torch.zeros(
-                pocket_pos.size(0), dtype=torch.long, device=pocket_pos.device
-            )
-        # Protonation-aware pocket features (pH 7.4 formal charges);
-        # optional so legacy neutral-only checkpoints keep working.
-        pocket_charge = getattr(batch_data, "pocket_charge", None)
-
-        ligand_pos = getattr(batch_data, "ligand_pos", None)
-        ligand_z = getattr(batch_data, "ligand_z", None)
-        ligand_batch = getattr(batch_data, "ligand_batch", None)
-        if ligand_batch is None and ligand_pos is not None:
-            ligand_batch = getattr(batch_data, "ligand_pos_batch", None)
-        ligand_charge = getattr(batch_data, "ligand_charge", None)
-        handle_nodes = getattr(batch_data, "handle_nodes", None)
-        has_ligand = (
-            ligand_pos is not None
-            and ligand_pos.numel() > 0
-            and ligand_z is not None
-            and ligand_z.numel() > 0
+        # Fail-closed contract check (#6 ARCH-02): every canonical field
+        # present with exact dtype/shape; no fallbacks, no legacy 67-dim
+        # tolerance, no implicit zeros defaults.
+        state: StateTensorContract = validate_state_batch(
+            batch_data, where="SynTreePolicy.forward"
         )
 
-        handle_features = batch_data.handle_features
-        if handle_features.dim() == 1:
-            if handle_features.size(0) in (
-                _HANDLE_CHEMICAL_FEATURE_DIM, _HANDLE_LEGACY_FEATURE_DIM,
-            ):
-                handle_features = handle_features.unsqueeze(0)
-            elif handle_features.size(0) % _HANDLE_LEGACY_FEATURE_DIM == 0:
-                # Legacy PyG concatenation of 67-dim vectors.
-                handle_features = handle_features.view(-1, _HANDLE_LEGACY_FEATURE_DIM)
-            elif handle_features.size(0) % _HANDLE_CHEMICAL_FEATURE_DIM == 0:
-                handle_features = handle_features.view(
-                    -1, _HANDLE_CHEMICAL_FEATURE_DIM
-                )
-            else:
-                raise ValueError(
-                    f"handle_features has unsupported size {handle_features.size(0)}; "
-                    "expected a multiple of 64 (chemical) or 67 (legacy)"
-                )
-        if handle_features.size(-1) == _HANDLE_LEGACY_FEATURE_DIM:
-            # Split the legacy Franken tensor: chemical features and the
-            # handle position travel separately from here on.
-            chemical_handle_features = handle_features[..., :_HANDLE_CHEMICAL_FEATURE_DIM]
-            legacy_position = handle_features[..., _HANDLE_CHEMICAL_FEATURE_DIM:]
-        elif handle_features.size(-1) == _HANDLE_CHEMICAL_FEATURE_DIM:
-            chemical_handle_features = handle_features
-            legacy_position = None
-        else:
-            raise ValueError(
-                f"handle_features must have last dim 64 (or legacy 67), "
-                f"got {handle_features.size(-1)}"
-            )
-        batch_size = chemical_handle_features.size(0)
+        pocket_pos = state.pocket_pos
+        pocket_z = state.pocket_z
+        pocket_batch = state.pocket_batch
+        pocket_charge = state.pocket_charge
+        ligand_pos = state.ligand_pos
+        ligand_z = state.ligand_z
+        ligand_batch = state.ligand_batch
+        ligand_charge = state.ligand_charge
+        chemical_handle_features = state.handle_features
+        handle_position = state.handle_pos.to(pocket_pos.dtype)
+        global_features = state.global_features
+        batch_size = state.batch_size
+        has_ligand = state.num_ligand > 0
 
-        # Handle position: dedicated field preferred, legacy tail otherwise.
-        handle_position = getattr(batch_data, "handle_pos", None)
-        if handle_position is None and legacy_position is not None:
-            handle_position = legacy_position
-        if handle_position is None:
-            handle_position = torch.zeros(
-                batch_size, 3, device=chemical_handle_features.device,
-                dtype=chemical_handle_features.dtype,
-            )
-        handle_position = handle_position.view(batch_size, 3).to(pocket_pos.dtype)
-
-        # Global ligand-size features (MW, heavy count, volume ratio,
-        # presence flag); default: no ligand grown yet.
-        global_features = getattr(batch_data, "global_features", None)
-        if global_features is None:
-            global_features = chemical_handle_features.new_zeros(
-                batch_size, GLOBAL_FEATURE_DIM
-            )
-        else:
-            global_features = global_features.view(batch_size, -1)
-            if global_features.size(-1) != GLOBAL_FEATURE_DIM:
-                raise ValueError(
-                    f"global_features must have last dim {GLOBAL_FEATURE_DIM}, "
-                    f"got {global_features.size(-1)}"
-                )
+        handle_nodes = getattr(batch_data, "handle_nodes", None)
 
         # ------------------------------------------------------------------
         # 1. Joint pocket+ligand encoding (the ghost-ligand fix).
         # ------------------------------------------------------------------
-        num_pocket = pocket_pos.size(0)
+        num_pocket = state.num_pocket
         handle_flag = None
         handle_union_index = None  # union-graph index of each graph's handle node (-1 -> 0)
+        valid = None
         if has_ligand:
-            ligand_pos = ligand_pos.to(pocket_pos.dtype)
-            ligand_z = ligand_z.to(pocket_z.dtype)
-            if ligand_batch is None:
-                ligand_batch = torch.zeros(
-                    ligand_pos.size(0), dtype=torch.long, device=ligand_pos.device
-                )
-            ligand_batch = ligand_batch.to(torch.long)
-            num_ligand = ligand_pos.size(0)
+            num_ligand = state.num_ligand
             num_total = num_pocket + num_ligand
             handle_flag = torch.zeros(
                 num_total, dtype=torch.long, device=pocket_pos.device
@@ -395,7 +330,9 @@ class SynTreePolicy(nn.Module):
             handle_node_scalar = joint_s[
                 (handle_union_index + num_pocket).to(joint_s.device)
             ]  # [B, d]
-            valid_mask = valid.unsqueeze(-1) if 'valid' in locals() else torch.ones_like(query)
+            valid_mask = (
+                valid.unsqueeze(-1) if valid is not None else torch.ones_like(query)
+            )
             query = query + torch.where(
                 valid_mask,
                 self.handle_node_proj(handle_node_scalar),
@@ -456,11 +393,8 @@ class SynTreePolicy(nn.Module):
             context, reaction_compatibility_mask
         )
 
-        stop_mask = getattr(batch_data, "stop_mask", None)
-        if stop_mask is None:
-            stop_mask = torch.zeros(batch_size, dtype=context.dtype, device=context.device)
-        else:
-            stop_mask = stop_mask.view(batch_size).to(context.dtype)
+        # Validated [B] additive STOP mask (schema contract, #6).
+        stop_mask = state.stop_mask.to(context.dtype)
 
         stop_logit_bias = self.global_stop_proj(
             global_features.to(context.dtype)

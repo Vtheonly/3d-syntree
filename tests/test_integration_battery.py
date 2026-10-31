@@ -165,15 +165,17 @@ class TestPaiNNVectorEquivariance:
         state = Data(
             pocket_pos=torch.randn(8, 3),
             pocket_z=torch.randint(6, 9, (8,)),
+            pocket_charge=torch.zeros(8),
             pocket_batch=torch.zeros(8, dtype=torch.long),
             ligand_pos=torch.randn(4, 3),
             ligand_z=torch.randint(6, 8, (4,)),
+            ligand_charge=torch.zeros(4),
             ligand_batch=torch.zeros(4, dtype=torch.long),
             handle_features=torch.randn(1, 64),
             handle_pos=torch.randn(1, 3),
             handle_nodes=torch.tensor([1]),
             global_features=torch.zeros(1, GLOBAL_FEATURE_DIM),
-            stop_mask=torch.tensor(0.0),
+            stop_mask=torch.tensor([0.0]),
         )
         emb = torch.randn(5, 32)
         R = self._rotation(2.1, axis=0)
@@ -332,7 +334,7 @@ class TestDataIntegrity:
                     handle_pos=torch.randn(1, 3),
                     handle_nodes=torch.tensor([0]),
                     global_features=torch.zeros(1, GLOBAL_FEATURE_DIM),
-                    stop_mask=torch.tensor(0.0),
+                    stop_mask=torch.tensor([0.0]),
                 )
             )
         manifest = write_shards(samples, "train", str(tmp_path), max_shard_bytes=1024)

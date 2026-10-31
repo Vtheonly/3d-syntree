@@ -194,3 +194,128 @@ implementation-status table). No claims of unimplemented features.
    (#8), discovery/checkpoint test failures (#32), legacy
    batch-Tanimoto diversity reward (#30), AMP/GradScaler machinery still
    in trainer (#10).
+
+---
+
+## S-2026-11-01-B — #6 ARCH-02: frozen state tensor schema & PyG batch contracts
+
+- **Date/time:** 2026-11-01 (Asia/Shanghai), agent: Z.ai (GLM), autonomous
+  session triggered by the standing #45 entry prompt.
+- **Repository/branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `e74e649` (verified == `origin/3d-synV2`; #5's
+  `b4ba696` + docs-SHA commit). Working tree clean at start.
+  *Operational note: the initial clone raced the previous agent's push by
+  ~2 minutes (`44edb8b` cloned; `e74e649` appeared on origin immediately
+  after); detected via issue #5's completion comment + `git fetch`
+  (`44edb8b..e74e649`) and pulled before starting.*
+- **Issues worked:** #6 ARCH-02 (sole issue; no scope creep).
+
+### 1. State discovery
+
+- Re-read #45 key sections (§7.1, §18, §22, §25) and the previous
+  handoff: continuation instruction = "implement #6 ARCH-02; #7 MATH-01
+  parallel-safe; do NOT redo the purge".
+- Read issue #6 in full: requires `syntree/core/schema.py`
+  `StateTensorContract` (13 canonical fields), collator enforcement of
+  `handle_features == 64` with hard ValueError on 67, explicit
+  `handle_pos [B,3]`, and `tests/test_tensor_contracts.py`.
+- Baseline suite (fresh env: torch 2.15 CPU, PyG 2.8.0.post1, rdkit
+  2026.03.6 via vendored wheels): **837 passed / 12 failed** — exactly the
+  documented pre-existing set (7 core_discovery_checkpoint, 1
+  core_manifest_checksums, 4 von Mises/torsion). Baseline confirmed.
+- **Conflict recorded (D-2-009):** issue #6 says `syntree/core/schema.py`,
+  ARCHITECTURE.md §2 said `syntree/data/schema.py` → followed the issue
+  body, updated the doc.
+
+### 2. Implemented
+
+- **NEW `syntree/core/schema.py`** (563 lines): `SCHEMA_VERSION=2`,
+  dimension constants (`HANDLE_FEATURE_DIM=64`, `GLOBAL_FEATURE_DIM=4`,
+  `MAX_ATOMIC_NUMBER=100`), `TensorContractError(ValueError)`,
+  frozen `StateTensorContract` dataclass (validates in `__post_init__`),
+  `validate_state_batch` (exact dtype/rank/shape; cross-field length &
+  batch-index consistency; z∈[1,100]; finiteness; schema-version check;
+  **67-dim rejection takes precedence over missing-field diagnostics**),
+  `collate_state_batch` (single canonical batching path: documented
+  normalisations only — 0-dim→[1], 1-D [64]→[1,64]; strips verified
+  sample-carried zeros batch vectors; `follow_batch` → canonical
+  `pocket_batch`/`ligand_batch` rename + alias deletion; stamps +
+  validates the final batch), `stamp_schema_version`, empty-ligand (t=0)
+  support everywhere.
+- **`syntree/models/policy.py`:** deleted the entire legacy tolerance
+  block (1-D divisibility reshape guessing, 67→64+3 transparent split,
+  `pocket_pos_batch`/`ligand_pos_batch` fallbacks, zeros defaults for
+  `handle_pos`/`global_features`/`stop_mask`, `'valid' in locals()` hack).
+  `forward` now validates through the contract and reads the 13 canonical
+  fields from the returned `StateTensorContract`. Net −198/+150 lines of
+  clearer code.
+- **`syntree/engine/trainer.py`:** `collate_batch` keeps hygiene
+  (non-finite drop, pocket trim) and delegates batching to
+  `collate_state_batch` (single path; removed the local follow_batch +
+  rename logic).
+- **`syntree/engine/environment.py`:** `stop_mask` now `[B]` (was 0-dim);
+  states stamped with `schema_version`.
+- **`syntree/data/trajectory.py`:** `handle_features` emitted as
+  `[1,64]` canonical rank (was 1-D `[64]`); both sample constructors
+  stamped.
+- **`syntree/data/featurizer.py`:** dimension constants now imported from
+  the schema module (single source of truth) and re-exported.
+- **`scripts/verify_setup.py`:** `collate_pyg` delegates to the canonical
+  collator.
+- **Tests:** NEW `tests/test_tensor_contracts.py` (43 tests: both #6
+  acceptance criteria + collator + versioning + policy integration).
+  Updated 7 test files to the strict contract — completing partial
+  fixtures (`pocket_charge`/`ligand_charge`/`stop_mask [B]`/empty-ligand
+  tensors) and **inverting** `test_models_architecture
+  ::test_legacy_67_dim_features_split_transparently` into
+  `..._rejected` (asserts the exact deprecation message), per #45 §24.3
+  (old tests must not preserve legacy behavior).
+
+### 3. Tested locally (CPU)
+
+- `python -m pytest tests/test_tensor_contracts.py` — **43/43 passed**.
+- Full suite: **880 passed / 12 failed** (baseline 837/12; +43 passing,
+  identical pre-existing failure set, zero new failures). Command:
+  `python -m pytest tests/ -q --tb=no -p no:cacheprovider` (193 s).
+- Empirical PyG collation behaviour verified before design lock: custom
+  `*_batch` keys are auto-incremented via `Data.__inc__` `max()+1` (crashes
+  on empty tensors) → motivated the strip-and-follow_batch design.
+- Mid-run discovery fixed: `test_full_policy_scalar_invariance_under_ligand_rotation`
+  and two batch2/batch5 fixtures were partial states → completed to the
+  13-field contract (intended fail-closed behaviour, not a contract bug).
+- Not tested on T4 (no GPU in sandbox; no authorized remote session —
+  #36 gate). Not scientifically validated (unit/contract level only).
+
+### 4. Git record
+
+- Mandatory review: `git status --short`, `git diff --check` (clean),
+  `git diff --stat` (13 files, +180/−220 + 2 new files), full diff
+  reviewed hunk-by-hunk before commit.
+- Commit: `<see §6>` `feat(arch-02): frozen V2 state tensor schema, canonical
+  PyG collate contract, legacy 67-D rejection (#6)`.
+- Investigated a suspected corruption (`andle_node_idx]` in grep/Read
+  output): `od -c` proved the bytes are correct
+  (`torch.tensor([handle_node_idx]`) — a display artifact of the agent's
+  tool output for `[h` sequences, not a file defect. No change needed.
+
+### 5. Documentation updated
+
+- ARCHITECTURE.md §2 row (module path corrected) + §3.1 INTERIM→VERIFIED;
+  README §16 status rows; DECISIONS D-2-009/D-2-010; STATUS (#6 closed,
+  #21/#22 dep-count updates, new baseline); HANDOFF rewritten; this entry.
+
+### 6. GitHub updates
+
+- Issue #6 comment with evidence + commit SHA; issue #6 closed.
+- Issues #21/#22 not edited (their dependency lists remain accurate:
+  #21 still needs #7; the "needs #6" half is now satisfied).
+
+### 7. Exact next actions
+
+1. **#7 MATH-01** (non-singular PaiNN norms, `syntree/models/equivariant.py`)
+   — next dependency-ready task; with #6 closed it is the only remaining
+   blocker of #21 MODEL-01.
+2. Then #21 (BipartitePaiNN V2 verification) or, in parallel, #11 CHEM-01
+   (unblocks the whole chemistry/data chain #12/#13/#15/#18/#40/#41).
+3. Unchanged known debts: pre-existing 12 failures (#8/#32), AMP removal
+   (#10), stationary reward (#30), #38 semantics.

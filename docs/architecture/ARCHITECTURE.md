@@ -5,7 +5,7 @@
 > `[TARGET]` (specified, not yet implemented), `[INTERIM]` (V1-inherited
 > code present on the branch, re-verification pending), or
 > `[VERIFIED]` (implemented + tested on this branch).
-> Last updated: 2026-11-01 (S-2026-11-01-A). Update this file whenever a
+> Last updated: 2026-11-01 (S-2026-11-01-B, #6 ARCH-02). Update this file whenever a
 > durable contract changes; supersede decisions in
 > `docs/agent/DECISIONS.md`.
 
@@ -43,7 +43,7 @@ the exact formulation is #38 FLOW-04 `[TARGET]`.
 
 | Layer | Canonical module(s) | Backlog |
 |---|---|---|
-| Tensor schemas & batch contracts | `syntree/data/schema.py` (frozen, versioned) | #6 |
+| Tensor schemas & batch contracts | `syntree/core/schema.py` (frozen, versioned) | #6 |
 | Equivariant math kernels | `syntree/models/equivariant.py` | #7, #8, #9 |
 | Precision engine | `syntree/utils/hardware.py` (fail-closed FP32) | #10 |
 | Reaction registry (32 reactions / 9 families) | `syntree/chemistry/reactions.py` | #11 |
@@ -69,17 +69,29 @@ the exact formulation is #38 FLOW-04 `[TARGET]`.
 
 ## 3. Binding cross-cutting contracts
 
-### 3.1 Tensor schema separation `[TARGET — #6]`
+### 3.1 Tensor schema separation `[VERIFIED — #6, 2026-11-01]`
 
 Invariant chemical features (`[N, d]`), Cartesian positions (`[N, 3]`),
 atomic numbers, and formal charges are **separate tensors**; never
 concatenate descriptors with coordinates into one feature vector (the V1
 "Franken-tensor" 64+3 mistake). Schemas are frozen and versioned; malformed
-shapes and schema-version mismatches fail closed. `[INTERIM]` The current
-`syntree/data/featurizer.py` + policy already keep `pocket_pos`/`pocket_z`
-separate and support `handle_features [B,64]` (legacy `[B,67]` tolerated
-with explicit conversion) — #6 must freeze this as a checked contract and
-delete the legacy 67-dim path.
+shapes and schema-version mismatches fail closed.
+
+Implemented in `syntree/core/schema.py` (#6 ARCH-02): the frozen
+`StateTensorContract` (13 canonical fields, `SCHEMA_VERSION = 2`),
+`validate_state_batch` (exact dtype/rank/shape, cross-field length and
+batch-index consistency, atomic-number bounds, finiteness), the canonical
+`collate_state_batch` (single batching path; materialises `pocket_batch`/
+`ligand_batch`; empty-ligand t=0 states supported; stamps + validates),
+and the hard rejection of legacy 67-dim tensors
+(`ValueError("Legacy 67D Franken-tensors are deprecated ...")` — exact
+message pinned by `tests/test_tensor_contracts.py`). `SynTreePolicy.forward`
+now validates its input through this contract — all implicit fallbacks
+(`pocket_pos_batch` aliasing, zeros defaults, 1-D reshape guessing, legacy
+67→64+3 splitting) are deleted. Producers (`environment.py`,
+`trajectory.py`) stamp `schema_version`; dimension constants
+(`HANDLE_FEATURE_DIM=64`, `GLOBAL_FEATURE_DIM=4`) live in the schema module
+and are re-exported by the featurizer.
 
 ### 3.2 Precision `[TARGET — #10]`
 
@@ -157,7 +169,7 @@ only via environment variables.
 main.py                    # CLI: train | rl | generate | evaluate | info
 syntree/
   chemistry/               # reactions, catalog, conformer, validator, encoder
-  core/                    # registry, masking
+  core/                    # schema (frozen state contract), registry, masking
   data/                    # featurizer, fragmenter, curation, splits,
                            # trajectory, hf_loader, multidataset, synthon_library
   engine/                  # trainer, curriculum, environment, generator,

@@ -197,10 +197,16 @@ class TestGFlowNetTB(unittest.TestCase):
 
         # Mock transition
         from torch_geometric.data import Data
+        # Complete V2 13-field state (#6 ARCH-02; empty ligand: seed step).
         state = Data(
             pocket_pos=torch.randn(6, 3),
             pocket_z=torch.tensor([6, 6, 7, 8, 6, 6]),
+            pocket_charge=torch.zeros(6),
             pocket_batch=torch.zeros(6, dtype=torch.long),
+            ligand_pos=torch.zeros(0, 3),
+            ligand_z=torch.zeros(0, dtype=torch.long),
+            ligand_charge=torch.zeros(0),
+            ligand_batch=torch.zeros(0, dtype=torch.long),
             handle_features=torch.randn(1, 64),
             handle_pos=torch.zeros(1, 3),
             handle_nodes=torch.tensor([-1]),

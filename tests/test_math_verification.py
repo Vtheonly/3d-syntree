@@ -520,7 +520,7 @@ class TestEquivariance:
             handle_pos=torch.randn(1, 3),
             handle_nodes=torch.tensor([0]),
             global_features=torch.zeros(1, GLOBAL_FEATURE_DIM),
-            stop_mask=torch.tensor(0.0),
+            stop_mask=torch.tensor([0.0]),
         )
         rotated = Data(**{k: v for k, v in state.items()})
         rotated.pocket_pos = state.pocket_pos @ R.T

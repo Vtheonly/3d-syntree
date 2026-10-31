@@ -155,3 +155,66 @@
   set modulo removed subjects; zero new failures).
 - **Affected:** #32 (Suite A re-engineering must restore builder-level
   coverage when #16 lands).
+
+## D-2-009 — 2026-11-01 — Schema module location: `syntree/core/schema.py`
+
+- **Problem:** Issue #6 body specifies `syntree/core/schema.py` for the
+  frozen state contract, while `docs/architecture/ARCHITECTURE.md` §2
+  (written during #5) listed `syntree/data/schema.py` — an internal
+  requirement conflict (#45 §0 requires documenting, not guessing).
+- **Decision:** Follow the **issue body** (`syntree/core/schema.py`) and
+  update the architecture doc to match. Rationale: the implementation
+  issue is the binding task specification; the schema is consumed by the
+  data, model and engine layers alike (a `core/` concern, beside
+  `registry.py`/`masking.py`), not a data-layer-only module.
+- **Alternatives considered:** `syntree/data/schema.py` (rejected: both
+  consumers and the issue text point to `core/`); a new top-level
+  `syntree/schema/` package (rejected: over-structuring for one module).
+- **Evidence:** issue #6 §2 ("In `syntree/core/schema.py`, establish the
+  canonical PyG batch schema"); ARCHITECTURE.md §2 row updated this
+  session.
+- **Affected:** #6, ARCHITECTURE.md.
+
+## D-2-010 — 2026-11-01 — Strictness rules of the V2 state contract (#6)
+
+- **Problem:** The V1 policy tolerated a zoo of malformed inputs (1-D
+  reshape guessing by divisibility, 67-dim transparent splitting,
+  `pocket_pos_batch` alias fallbacks, silent zeros defaults for
+  `handle_pos`/`global_features`/`stop_mask`), violating #45 §7.1
+  ("no implicit shape guessing or Franken-tensor compatibility parser").
+- **Decision (binding contract rules, `syntree/core/schema.py`):**
+  1. All 13 canonical fields are **required** on every state; the ligand
+     sub-graph may be empty (`[0,3]`/`[0]`) but must exist explicitly
+     (the t=0 state).
+  2. `handle_features` is exactly `[B, 64]` float32 at the policy
+     boundary; last-dim 67 raises
+     `ValueError("Legacy 67D Franken-tensors are deprecated ...")`
+     (exact prefix pinned by test) — the rejection takes precedence over
+     missing-field diagnostics so legacy states get the actionable
+     message.
+  3. Only the **collator** performs documented normalisations: 0-dim
+     tensors → `[1]`, 1-D `[64]` handle features → `[1, 64]` (explicit
+     single-graph rule; 1-D `[67]` → Franken error). Nothing else
+     reshapes.
+  4. `collate_state_batch` is the **single** batching path: PyG
+     `follow_batch=['pocket_pos','ligand_pos']` → renamed to canonical
+     `pocket_batch`/`ligand_batch`, aliases deleted. Sample-carried
+     batch vectors must be the implied zeros and are stripped (PyG
+     double-increments `*_batch` keys and crashes on empty
+     `ligand_batch`); pre-batched objects are rejected.
+  5. `schema_version` is stamped by producers (`stamp_schema_version`,
+     tensor form so it survives collation to `[B]`) and checked by the
+     validator; unstamped states still pass full field validation
+     (interim until #19 re-stamps shards).
+  6. `handle_nodes` stays optional context (not in the 13-field core).
+  7. `stop_mask` is `[B]` float32 (env and tests updated; 0-dim scalars
+     were a legacy habit).
+- **Alternatives considered:** validator-side implied-zeros for missing
+  `pocket_batch` at B==1 (rejected: two-mode contract invites drift);
+  keeping the 67→64+3 split in a load shim (rejected: #6 explicitly
+  demands a hard error).
+- **Evidence:** `tests/test_tensor_contracts.py` (43 tests incl. both #6
+  acceptance criteria); full suite 880 passed / 12 pre-existing failures
+  (unchanged failure set vs. baseline).
+- **Affected:** #6, #21–#25 (model consumers), #19 (shard stamping),
+  #32/#33.

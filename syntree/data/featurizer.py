@@ -28,14 +28,13 @@ import torch
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 
+# Dimension contracts live in the frozen V2 schema (issue #6 ARCH-02);
+# they are re-exported here for backwards-compatible imports.
+from syntree.core.schema import GLOBAL_FEATURE_DIM, HANDLE_FEATURE_DIM
+
 # Dimensionality of the flat handle feature vector (chemical features only;
 # the handle xyz is returned separately as `handle_pos`).
-HANDLE_FEATURE_DIM = 64
-HANDLE_CHEMICAL_FEATURE_DIM = 64
-
-# Dimensionality of the global ligand-state features:
-# [MW/500, heavy_atoms/50, ligand_volume/pocket_volume, has_ligand].
-GLOBAL_FEATURE_DIM = 4
+HANDLE_CHEMICAL_FEATURE_DIM = HANDLE_FEATURE_DIM
 
 # Offset layout of the handle feature vector:
 #   [0, 16)   one-hot atomic number (capped)
