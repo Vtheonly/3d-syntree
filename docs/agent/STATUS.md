@@ -8,7 +8,7 @@
 > Issue **#45** is the permanent operating constitution — always OPEN,
 > never counted in the progress denominator.
 >
-> Last synchronized: **2026-11-01** (session S-2026-11-01-B, #6 ARCH-02).
+> Last synchronized: **2026-11-01** (session S-2026-11-01-C, #7 MATH-01).
 
 ## Legend
 
@@ -22,7 +22,7 @@ Verification` → `Verified — Ready to Close` → `Closed`.
 |---|---|---|---|---|---|---|---|
 | 5 | ARCH-01 | Purge legacy pipelines; V2 foundation | **Closed** (2026-11-01) | repo-wide | `b4ba696` | Purge verified (13 targets absent, 0 dangling imports in `syntree/`); suite 837 passed / 12 pre-existing failures; README + agent docs landed | — |
 | 6 | ARCH-02 | Frozen tensor schemas & PyG contracts | **Closed** (2026-11-01) | `syntree/core/schema.py` | `b5c86122249f0707467dcd0de1b9077c4eeacaf5` | `tests/test_tensor_contracts.py` 43/43; full suite 880 passed / 12 pre-existing; 67-D Franken rejection + fail-closed contract verified | — |
-| 7 | MATH-01 | Non-singular PaiNN norms | **Ready (next recommended)** | `syntree/models/equivariant.py` | — | — | #6 done; #21 MODEL-01 now needs only #7 |
+| 7 | MATH-01 | Non-singular PaiNN norms | **Closed** (2026-11-01) | `syntree/models/equivariant.py` | `bbd8e20d` | `tests/test_mathematical_singularities.py` 26/26; full suite 906 passed / 12 pre-existing; zero-at-zero + SO(3) covariance verified | — |
 | 8 | MATH-02 | Stable von Mises backward (Amos ratio) | Ready (after #5) | `syntree/models/torsion_head.py` | — | — | Note: 3 pre-existing von Mises test failures exist (see §pre-existing) |
 | 9 | MATH-03 | Continuous cosine cutoff envelopes | Ready (after #5) | `syntree/models/equivariant.py` | — | — | |
 | 10 | MATH-04 | Fail-closed FP32 precision engine | Ready (after #5) | `syntree/utils/hardware.py`, `engine/trainer.py` | — | — | AMP/GradScaler code still present in trainer (legacy, must be removed here) |
@@ -36,7 +36,7 @@ Verification` → `Verified — Ready to Close` → `Closed`.
 | 18 | DATA-03 | Trajectory extraction + exact replay | Blocked (needs #11, #12, #15, #17, #41) | `syntree/data/trajectory.py` | — | — | |
 | 19 | DATA-04 | Compressed sharding engine | Blocked (needs #18) | `scripts/shard_and_upload.py`, `syntree/data/hf_loader.py` | — | — | |
 | 20 | DATA-05 | Coordinate/dihedral augmentation | Blocked (needs #19) | `syntree/data/` | — | — | Train split only |
-| 21 | MODEL-01 | BipartitePaiNN backbone | Blocked (needs #7 only) | `syntree/models/bipartite.py` | — | — | |
+| 21 | MODEL-01 | BipartitePaiNN backbone | **Ready (next recommended)** (#6, #7 closed) | `syntree/models/bipartite.py` | — | — | |
 | 22 | MODEL-02 | Handle selection head | Blocked (needs #21) | `syntree/models/synthon_head.py` | — | — | |
 | 23 | MODEL-03 | Cross-attention decoder | Blocked (needs #9, #21, #22) | `syntree/models/` | — | — | |
 | 24 | MODEL-04 | Hierarchical heads + torsion space | Blocked (needs #11, #8, #23) | `syntree/models/` | — | — | |
@@ -84,9 +84,10 @@ The von Mises / torsion / Bessel failures are squarely in scope of
 resolved (or re-specified) there. The discovery/checkpoint failures fall to
 **#32 TEST-01** (Suite A re-engineering).
 
-Baseline after #6 (S-2026-11-01-B): **880 passed / 12 failed** — identical
-failure set to the pre-#6 baseline (837/12) plus 43 new passing contract
-tests; zero new failures.
+Baseline after #6 (S-2026-11-01-B): **880 passed / 12 failed**; after #7
+(S-2026-11-01-C): **906 passed / 12 failed** — identical pre-existing
+failure set throughout (837/12 → 880/12 → 906/12, +43 contract tests then
++26 singularity tests); zero new failures in either session.
 
 ## Session log pointer
 

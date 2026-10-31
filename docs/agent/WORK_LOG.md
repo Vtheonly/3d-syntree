@@ -319,3 +319,81 @@ implementation-status table). No claims of unimplemented features.
    (unblocks the whole chemistry/data chain #12/#13/#15/#18/#40/#41).
 3. Unchanged known debts: pre-existing 12 failures (#8/#32), AMP removal
    (#10), stationary reward (#30), #38 semantics.
+
+---
+
+## S-2026-11-01-C — #7 MATH-01: non-singular PaiNN norms & bounded unit vectors
+
+- **Date/time:** 2026-11-01 (Asia/Shanghai), agent: Z.ai (GLM), continuation
+  of the standing #45 autonomous session (same session, second issue).
+- **Starting commit:** `c37ce57` (clean tree; #6 closed minutes earlier).
+- **Issues worked:** #7 MATH-01 (sole issue).
+
+### 1. Implemented
+
+- `syntree/models/equivariant.py`: `SAFE_NORM_EPS = 1e-5` +
+  `safe_norm` (`||x||_eps = sqrt(Σx²+eps²) − eps`; gradient
+  `x/sqrt(Σx²+eps²)`, |∇| ≤ 1, exactly 0 at x=0) + `safe_unit_vector`
+  (unit well-defined incl. zero vector; gradient bounded by 1/eps).
+- `PaiNNInteraction`: deleted the `clamp(min=1e-6)` + `/(d+1e-8)` guard;
+  direction via `safe_unit_vector`; **removed the now-redundant
+  `edge_dist` parameter** (callers updated: `PaiNNLayer`,
+  `BatchedPaiNNLayer`, `bipartite.py` ×2 incl. the gradient-checkpoint
+  call).
+- `PaiNNMixing`: deleted `torch.norm(vec_proj + 1e-8)` (additive bias
+  inside the norm) + `nan_to_num` + `clamp(max=1e4)` NaN-masking chain;
+  `v_norm = safe_norm(vec_proj, dim=1, eps=self.epsilon)`; `epsilon`
+  semantics = smoothing radius (default 1e-5), documented.
+- `PaiNNLayer`/`BatchedPaiNNLayer`: edge distances via `safe_norm`.
+- `bipartite.py`: `edge_dist = safe_norm(edge_vec)` (the direct geometry
+  feed of the interaction path — scope ruling D-2-011).
+- `models/__init__.py`: primitives exported.
+
+### 2. Tested locally (CPU)
+
+- NEW `tests/test_mathematical_singularities.py` — **26/26 passed**, incl.
+  both #7 acceptance criteria:
+  - `test_safe_norm_zero_distance`: output **exactly 0.0** (empirically
+    fp32-exact at eps=1e-5), gradient **strictly 0.0**, zero NaN/Inf;
+  - random-rotation SO(3) covariance: `unit(Rx) == R·unit(x)` for 5
+    random proper rotations (QR, det=+1 asserted) + end-to-end layer
+    equivariance over 3 more random rotations;
+  - analytic-gradient match (atol 1e-6), |∇| ≤ 1 bound across scales
+    0→1e3, asymptotics (|err| ≤ eps + fp32 rounding), coincident-atom
+    end-to-end finiteness through BatchedPaiNNLayer/PaiNNLayer/
+    BipartitePaiNN with position gradients bounded at O(1/eps)
+    (observed ~1.4e4 ≪ legacy >1e5 corruption regime), zero-vector
+    mixing semantics.
+- Updated call sites: `test_models_equivariant.py` (6-arg → 5-arg layer
+  calls; fixture norms routed through `safe_norm`),
+  `test_oom_nan_resilience.py` (same + the coincident-atom test renamed
+  and strengthened with a bounded-backward assertion),
+  `test_fp16_safety.py` (mixing reference rewritten from the retired
+  `torch.norm(v+eps)` to `safe_norm` semantics).
+- Full suite: **906 passed / 12 failed** (post-#6: 880/12; identical
+  pre-existing failure set, zero new failures).
+  `python -m pytest tests/ -q --tb=no -p no:cacheprovider` (195 s).
+- Not tested on T4 (CPU-verifiable math; #36 gate not requested).
+
+### 3. Git record
+
+- `git diff --check` clean; diff reviewed (7 files, +541/−51 + 1 new test
+  file).
+- Commit: `bbd8e20` `feat(math-01): non-singular PaiNN norms and bounded
+  unit vectors (#7)`; pushed, origin verified (`c37ce57..bbd8e20`).
+
+### 4. GitHub + docs
+
+- Issue #7: evidence comment + closed (completed).
+- DECISIONS D-2-011 (scope ruling); STATUS (#7 closed, #21 ready,
+  baseline 906/12); README status rows; ARCHITECTURE updated line;
+  HANDOFF rewritten (below).
+
+### 5. Exact next actions
+
+1. **#21 MODEL-01** (BipartitePaiNN V2 verification) — both hard deps
+   (#6, #7) closed; next on the critical path.
+2. Parallel-ready: #8 MATH-02 (owns the remaining torsion-head
+   `torch.norm` debt + the 4 pre-existing von Mises failures), #9
+   MATH-03, #10 MATH-04 (fp16 clamps in equivariant.py are noted interim
+   for #10), #11 CHEM-01, #14 CHEM-04, #16 DATA-01, #32 TEST-01.

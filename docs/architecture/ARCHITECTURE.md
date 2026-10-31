@@ -5,7 +5,7 @@
 > `[TARGET]` (specified, not yet implemented), `[INTERIM]` (V1-inherited
 > code present on the branch, re-verification pending), or
 > `[VERIFIED]` (implemented + tested on this branch).
-> Last updated: 2026-11-01 (S-2026-11-01-B, #6 ARCH-02). Update this file whenever a
+> Last updated: 2026-11-01 (S-2026-11-01-C, #7 MATH-01). Update this file whenever a
 > durable contract changes; supersede decisions in
 > `docs/agent/DECISIONS.md`.
 
@@ -44,7 +44,7 @@ the exact formulation is #38 FLOW-04 `[TARGET]`.
 | Layer | Canonical module(s) | Backlog |
 |---|---|---|
 | Tensor schemas & batch contracts | `syntree/core/schema.py` (frozen, versioned) | #6 |
-| Equivariant math kernels | `syntree/models/equivariant.py` | #7, #8, #9 |
+| Equivariant math kernels | `syntree/models/equivariant.py` | #7 (done), #8, #9 |
 | Precision engine | `syntree/utils/hardware.py` (fail-closed FP32) | #10 |
 | Reaction registry (32 reactions / 9 families) | `syntree/chemistry/reactions.py` | #11 |
 | Synthon catalog + pharm3d + chemoselectivity | `syntree/chemistry/catalog.py`, `synthon_encoder.py` | #12, #40 |

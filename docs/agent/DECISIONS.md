@@ -218,3 +218,25 @@
   (unchanged failure set vs. baseline).
 - **Affected:** #6, #21–#25 (model consumers), #19 (shard stamping),
   #32/#33.
+
+## D-2-011 — 2026-11-01 — #7 scope: bipartite.py norm included, torsion_head delegated
+
+- **Problem:** Issue #7 names `syntree/models/equivariant.py` (PaiNNInteraction/
+  PaiNNMixing), but the same PaiNN geometry path computes `torch.norm(edge_vec)`
+  in `bipartite.py`, and `torsion_head.py::_pool_vector_stats` also has a raw
+  `torch.norm` on vector features.
+- **Decision:** Route `bipartite.py`'s edge distance through `safe_norm` in #7
+  (it is the direct feed of the interaction's edge geometry — the issue's
+  motivating formula `edge_vec/(edge_dist+1e-8)` describes exactly this path),
+  and **delegate** the torsion-head norm to #8 MATH-02 (that module is owned
+  by #8's von Mises/torsion rework; cross-editing it here risks conflicting
+  with #8's rewrite). Recorded in the #7 issue comment and STATUS debt table.
+- **Also removed in #7:** the `edge_dist` parameter of `PaiNNInteraction` and
+  `BatchedPaiNNLayer` (direction/distance now derive non-singularly from
+  `edge_vec` inside the interaction — a dead input invites contract drift);
+  `PaiNNMixing.epsilon` semantics changed from an additive bias inside the
+  norm (`torch.norm(v + 1e-8)`) to the smoothing radius of `safe_norm`
+  (default aligned to 1e-5).
+- **Evidence:** `tests/test_mathematical_singularities.py` 26/26; suite
+  906/12 (identical pre-existing failures).
+- **Affected:** #7, #8 (inherits the torsion-norm debt), #21, #32.
