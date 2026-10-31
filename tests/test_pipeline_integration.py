@@ -4,7 +4,7 @@ trainer -> checkpoint/resume -> generation.
 This module runs the production data path end-to-end against a fake Hugging
 Face Hub (local directory + monkeypatched hf_hub_download), proving that:
 
-* the dataset built by scripts/build_full_dataset.py streams losslessly
+* the dataset built by the trajectory builder + write_shards streams losslessly
   through ShardedHuggingFaceDataset,
 * ResilientTrainer accepts the real-shard dataset with the production
   fail-closed guard ENABLED (require_real_data=true, min_real_samples=50),
@@ -29,7 +29,6 @@ from rdkit.Chem import AllChem
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import syntree.data.hf_loader as hf_loader  # noqa: E402
-from scripts import build_full_dataset as bfd  # noqa: E402
 from scripts.shard_and_upload import write_shards  # noqa: E402
 
 POCKET_PDB = (
@@ -68,40 +67,73 @@ def _write_sdf(mol: Chem.Mol, path: Path) -> None:
 def real_shard_repo(tmp_path_factory, assets_dir):
     """Build a mini real dataset and serve it as a fake HF repo.
 
-    40 pocket/ligand complexes are enough for the 80/10/10 split to place
-    >= 50 training states and non-empty val/test splits, which lets the
-    production guard (min_real_samples=50) run with its real threshold.
+    V2 (#5 ARCH-01): the legacy `build_full_dataset.py` builder was purged;
+    the fixture now drives the remaining production path directly:
+    `RetrosyntheticTrajectoryBuilder` (pocket+ligand -> replayable states)
+    and `scripts.shard_and_upload.write_shards` (states -> sharded repo).
+
+    16 copies x 4 amide/ester products -> 128 states, enough for the
+    80/10/10 split to place >= 50 training states and non-empty val/test
+    splits, which lets the production guard (min_real_samples=50) run with
+    its real threshold.
     """
-    raw = tmp_path_factory.mktemp("pipe_raw") / "crossdocked"
-    raw.mkdir(parents=True)
+    import random
+    import shutil
+
+    from syntree.chemistry.catalog import SynthonCatalog
+    from syntree.data.trajectory import RetrosyntheticTrajectoryBuilder
+
+    catalog = SynthonCatalog(
+        assets_dir["catalog_path"], embedding_dim=32, validate_handles=False
+    )
+    builder = RetrosyntheticTrajectoryBuilder(catalog, max_steps=2)
+    pocket_mol = Chem.MolFromPDBBlock(POCKET_PDB, removeHs=False)
+
+    states = []
     n = 0
-    for copy in range(10):
+    for _ in range(16):
         for smi in _CANDIDATE_PRODUCTS:
             n += 1
-            pdir = raw / f"protein_{n:03d}"
-            pdir.mkdir()
-            cid = f"1abc_{n}_1"
-            (pdir / f"{cid}_pocket10.pdb").write_text(POCKET_PDB)
-            _write_sdf(_embedded(smi), pdir / f"{cid}_ligand.sdf")
-    (raw.parent / ".extracted_marker").touch()
+            ligand = _embedded(smi)
+            traj_states, _meta = builder.build(
+                ligand, pocket_mol, trajectory_id=f"1abc_{n}_1"
+            )
+            states.extend(traj_states)
+    assert len(states) >= 63, (
+        f"fixture produced only {len(states)} states; cannot exercise the "
+        "production guard at threshold 50 with val/test splits"
+    )
+
+    # Deterministic 80/10/10 split BY TRAJECTORY GROUP: every state of a
+    # trajectory lands in the same split (test-fixture only; the
+    # leakage-proof production split is MMseqs2 cluster-based, #17 DATA-02).
+    groups = {}
+    for s in states:
+        groups.setdefault(int(s.trajectory_hash.item()), []).append(s)
+    group_keys = sorted(groups)
+    random.Random(42).shuffle(group_keys)
+    n_val = max(1, len(group_keys) // 10)
+    n_test = max(1, len(group_keys) // 10)
+    val_keys = set(group_keys[:n_val])
+    test_keys = set(group_keys[n_val:n_val + n_test])
+    splits = {
+        "train": [s for k in group_keys if k not in val_keys and k not in test_keys for s in groups[k]],
+        "val": [s for k in sorted(val_keys) for s in groups[k]],
+        "test": [s for k in sorted(test_keys) for s in groups[k]],
+    }
 
     out_dir = tmp_path_factory.mktemp("pipe_shards")
-    argv = [
-        "build_full_dataset.py",
-        "--raw-dir", str(raw.parent),
-        "--catalog", assets_dir["catalog_path"],
-        "--output-dir", str(out_dir),
-        "--max-steps", "2",
-        "--shard-mb", "1",
-        "--max-target-pockets", "5",
-    ]
-    old_argv = sys.argv
-    sys.argv = argv
-    try:
-        rc = bfd.main()
-    finally:
-        sys.argv = old_argv
-    assert rc == 0
+    for split, samples in splits.items():
+        write_shards(samples, split, str(out_dir), max_shard_bytes=512 * 1024)
+
+    # Catalog + staged RL target pockets (the layout the trainer/generator
+    # expect next to the shard repo).
+    catalog_copy = out_dir / "enamine_3d_subset.parquet"
+    shutil.copy(assets_dir["catalog_path"], catalog_copy)
+    targets_dir = out_dir / "targets"
+    targets_dir.mkdir()
+    for t_idx in range(3):
+        (targets_dir / f"tgt{t_idx:02d}_pocket.pdb").write_text(POCKET_PDB)
 
     train_manifest = json.loads((out_dir / "train" / "manifest.json").read_text())
     assert train_manifest["total_samples"] >= 50, (
@@ -110,9 +142,8 @@ def real_shard_repo(tmp_path_factory, assets_dir):
     )
 
     class FakeHub:
-        """Serves builder output as an HF repo: repo paths `data/<split>/...`
-        map to the local layout `<out>/<split>/...` (matching what
-        upload_split places in the repository)."""
+        """Serves shard output as an HF repo: repo paths `data/<split>/...`
+        map to the local layout `<out>/<split>/...`."""
 
         def __init__(self, root: Path):
             self.root = root
@@ -129,9 +160,9 @@ def real_shard_repo(tmp_path_factory, assets_dir):
     return {
         "hub": FakeHub(out_dir),
         "out_dir": out_dir,
-        "catalog": out_dir / "enamine_3d_subset.parquet",
+        "catalog": catalog_copy,
         "train_total": train_manifest["total_samples"],
-        "targets": list((out_dir / "targets").glob("*.pdb")),
+        "targets": list(targets_dir.glob("*.pdb")),
     }
 
 
@@ -251,7 +282,7 @@ class TestTrainerOnRealShards:
 
     def test_guard_passes_with_production_threshold(self, trained, real_shard_repo):
         """The exact production guard (min_real_samples=50) accepts a real
-        dataset built by scripts/build_full_dataset.py."""
+        sharded dataset written by write_shards."""
         assert len(trained["trainer"].dataset) >= 50
         assert trained["trainer"].data_backend == "huggingface"
 

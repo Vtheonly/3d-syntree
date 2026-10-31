@@ -80,13 +80,7 @@
     "enabled": true,
     "pocket_dir": "./data/test_pockets",
     "episodes": 512,
-    "ppo_epochs": 4,
     "rollout_episodes": 8,
-    "minibatch_size": 4,
-    "clip_epsilon": 0.2,
-    "gamma": 0.99,
-    "value_coef": 0.5,
-    "entropy_coef": 0.01,
     "learning_rate": 1e-05,
     "max_grad_norm": 1,
     "temperature": 1,
@@ -103,7 +97,8 @@
       "contact_scale": 5,
       "diversity_weight": 0.2,
       "key_interaction_weight": 1.5
-    }
+    },
+    "algorithm": "gflownet"
   },
   "evaluation": {
     "num_test_pockets": 100,

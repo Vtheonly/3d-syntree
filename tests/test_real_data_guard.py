@@ -96,7 +96,7 @@ class TestStubDatasetGuard:
         msg = str(excinfo.value)
         assert "FATAL" in msg
         assert "min required: 50" in msg
-        assert "build_full_dataset.py" in msg
+        assert "Hugging Face sharded dataset" in msg
         assert "2 training samples" in msg
 
     def test_guard_fails_closed_when_keys_missing(self, tiny_config_with_assets, monkeypatch, tmp_path):
@@ -149,25 +149,10 @@ class TestStubDatasetGuard:
         assert len(trainer.dataset) == 49
 
 
-class TestSyntheticFallbackGuard:
-    def test_local_synthetic_fallback_rejected(self, tiny_config_with_assets, tmp_path):
-        """Production mode must refuse the silent synthetic smoke dataset."""
-        cfg = json.loads(json.dumps(tiny_config_with_assets))
-        cfg["data"]["synthetic_fallback"] = True
-        cfg["data"]["synthetic_samples"] = 100  # even a large synthetic set...
-        cfg["data"]["require_real_data"] = True
-        cfg["data"]["min_real_samples"] = 50
-        cfg["data"].pop("backend", None)  # local path
-        with pytest.raises(RuntimeError) as excinfo:
-            _make_trainer(cfg, tmp_path)
-        assert "SYNTHETIC" in str(excinfo.value)
-
-    def test_local_synthetic_allowed_when_opted_out(self, tiny_config_with_assets, tmp_path):
-        cfg = json.loads(json.dumps(tiny_config_with_assets))
-        cfg["data"]["require_real_data"] = False
-        cfg["data"].pop("backend", None)
-        trainer = _make_trainer(cfg, tmp_path)
-        assert bool(trainer.dataset.use_synthetic) is True
+# V2 (#5 ARCH-01): the two local-synthetic-fallback guard tests were
+# removed with the CrossDockedDataset loader (their subject no longer
+# exists). The fail-closed guard itself is covered by TestStubDatasetGuard
+# on the huggingface backend and TestTrajectoryBackendGuard below.
 
 
 class TestTrajectoryBackendGuard:
@@ -202,7 +187,7 @@ class TestTrajectoryBackendGuard:
         torch.save(states, path)
 
         cfg = json.loads(json.dumps(tiny_config_with_assets))
-        cfg["data"].pop("backend", None)
+        cfg["data"]["backend"] = "trajectory_pt"
         cfg["data"]["trajectory_dataset_path"] = path
         cfg["data"]["require_real_data"] = True
         cfg["data"]["min_real_samples"] = 50

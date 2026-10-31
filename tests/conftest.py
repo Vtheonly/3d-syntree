@@ -157,10 +157,80 @@ def assets_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def tiny_config_with_assets(tiny_config, assets_dir):
+def smoke_trajectory_path(assets_dir, tmp_path_factory):
+    """Small real trajectory .pt dataset for trainer smoke tests.
+
+    V2 (#5 ARCH-01): the synthetic CrossDockedDataset smoke loader was
+    purged; trainer tests use the remaining production backend
+    (trajectory_pt) fed by RetrosyntheticTrajectoryBuilder states, so the
+    smoke path exercises the real pocket+ligand featurization pipeline.
+    """
+    import torch
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from syntree.chemistry.catalog import SynthonCatalog
+    from syntree.data.trajectory import RetrosyntheticTrajectoryBuilder
+
+    catalog = SynthonCatalog(
+        assets_dir["catalog_path"], embedding_dim=32, validate_handles=False
+    )
+    builder = RetrosyntheticTrajectoryBuilder(catalog, max_steps=2)
+    pocket = Chem.MolFromPDBBlock(
+        "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N\n"
+        "ATOM      2  CA  GLY A   1       1.458   0.000   0.000  1.00 20.00           C\n"
+        "ATOM      3  C   GLY A   1       2.009   1.361   0.000  1.00 20.00           C\n"
+        "ATOM      4  O   GLY A   1       1.272   2.348   0.000  1.00 20.00           O\n"
+        "ATOM      5  N   GLY A   2       3.315   1.545   0.000  1.00 20.00           N\n"
+        "ATOM      6  CA  GLY A   2       3.866   2.906   0.000  1.00 20.00           C\n"
+        "ATOM      7  C   GLY A   2       4.417   4.267   0.000  1.00 20.00           C\n"
+        "ATOM      8  O   GLY A   2       3.680   5.254   0.000  1.00 20.00           O\n"
+        "TER\nEND\n",
+        removeHs=False,
+    )
+    products = [
+        "O=C(NC1CCCCC1)C1CCCCC1",
+        "CC(C)(C)C(=O)NCC1CCCCC1",
+        "CC(C)COC(=O)C1CCCCC1",
+        "CC(C)COC(=O)C(C)(C)C",
+    ]
+    states = []
+    n = 0
+    for _ in range(12):
+        for smi in products:
+            n += 1
+            ligand = Chem.AddHs(Chem.MolFromSmiles(smi))
+            AllChem.EmbedMolecule(ligand, randomSeed=42)
+            traj_states, _meta = builder.build(
+                ligand, pocket, trajectory_id=f"smoke_{n:03d}"
+            )
+            states.extend(traj_states)
+    # Deterministic hash-bucket split: ensure every split is non-empty and
+    # train is large enough for the smoke training runs.
+    n_train = sum(1 for s in states if int(s.trajectory_hash.item()) % 1000 < 800)
+    n_val = sum(
+        1 for s in states
+        if 800 <= int(s.trajectory_hash.item()) % 1000 < 900
+    )
+    assert n_train >= 20 and n_val >= 2, (
+        f"smoke trajectory fixture too small: train={n_train}, val={n_val}"
+    )
+    out = tmp_path_factory.mktemp("smoke_traj") / "smoke_trajectories.pt"
+    torch.save(states, str(out))
+    return str(out)
+
+
+@pytest.fixture(scope="session")
+def tiny_config_with_assets(tiny_config, assets_dir, smoke_trajectory_path):
     cfg = json.loads(json.dumps(tiny_config))
     cfg["data"]["data_dir"] = assets_dir["crossdocked_dir"]
     cfg["data"]["synthon_catalog_path"] = assets_dir["catalog_path"]
+    # V2 (#5 ARCH-01): trajectory_pt backend replaces the purged synthetic
+    # CrossDocked loader as the smoke-test data source.
+    cfg["data"]["backend"] = "trajectory_pt"
+    cfg["data"]["trajectory_dataset_path"] = smoke_trajectory_path
+    cfg["data"].pop("synthetic_fallback", None)
+    cfg["data"].pop("synthetic_samples", None)
     return cfg
 
 

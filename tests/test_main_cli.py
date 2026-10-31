@@ -81,7 +81,12 @@ class TestGenerateMode:
     def test_missing_catalog_fails_cleanly(self, tmp_path):
         cfg_path = tmp_path / "cfg.json"
         cfg_path.write_text(json.dumps({
-            "data": {"data_dir": "x", "synthon_catalog_path": "missing.parquet"},
+            "data": {
+                "backend": "huggingface",
+                "huggingface": {"repo_id": "test/repo"},
+                "data_dir": "x",
+                "synthon_catalog_path": "missing.parquet",
+            },
         }))
         proc = run_cli(["--mode", "generate", "--config", str(cfg_path)])
         assert proc.returncode == 2
@@ -200,7 +205,6 @@ class TestPackaging:
         import syntree.utils
 
         assert syntree.chemistry.ReactionEngine
-        assert syntree.data.CrossDockedDataset
         assert syntree.engine.ResilientTrainer
         assert syntree.models.SynTreePolicy
         assert syntree.utils.CheckpointManager

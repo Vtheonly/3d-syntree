@@ -24,7 +24,7 @@ torch.set_num_threads(2)
 
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
 from syntree.core.registry import CANONICAL_MODELS, run_preflight_audit
-from syntree.utils.hardware import resolve_amp_dtype, autotune_batch_size
+from syntree.utils.hardware import resolve_amp_dtype
 from syntree.utils.checkpoint import CheckpointManager
 from syntree.models.policy import SynTreePolicy
 import main as main_cli
@@ -58,17 +58,6 @@ class TestHardwareUtilities(unittest.TestCase):
         self.assertIsNone(resolve_amp_dtype("bf16", cpu))
         self.assertIsNone(resolve_amp_dtype("fp16", cpu))
         print("  -> PASS: CPU correctly resolves to float32 (None autocast).")
-
-    def test_04_autotune_batch_size_downward_search(self):
-        print("\n[TEST] Hardware: autotune_batch_size OOM Downward Recovery (Auditing C4)")
-        def mock_probe(b: int):
-            if b > 4:
-                raise torch.cuda.OutOfMemoryError("CUDA out of memory in probe.")
-
-        res_cpu = autotune_batch_size(mock_probe, dataset_size=100, start_batch=16, device=torch.device("cpu"))
-        self.assertEqual(res_cpu["batch_size"], 16.0)
-        print("  -> PASS: CPU autotune returns safe default without crashing.")
-
 
 class TestCheckpointManager(unittest.TestCase):
     def setUp(self):
@@ -178,7 +167,11 @@ class TestMainEntrypoint(unittest.TestCase):
 
         valid_cfg = {
             "system": {"device": "cpu", "mixed_precision": "fp32"},
-            "data": {"backend": "local", "batch_size": 16},
+            "data": {
+                "backend": "huggingface",
+                "batch_size": 16,
+                "huggingface": {"repo_id": "test/dataset"},
+            },
             "model": {"hidden_dim": 128},
             "training": {"max_epochs": 10, "time_budget_hours": 1.0, "learning_rate": 0.001},
         }

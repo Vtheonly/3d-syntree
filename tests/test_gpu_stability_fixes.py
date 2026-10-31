@@ -13,7 +13,7 @@ A. Stage-1 ``loss nan`` / ``val_loss 98,958,339``:
      backpropagated, and the epoch still reports finite metrics.
 
 B. Stage-2 CUDA OOM in ``update_rollout``:
-   * Every tensor stored inside a ``PPOTransition`` / ``RolloutTransition`` is
+   * Every tensor stored inside a ``RolloutTransition`` is
      ``.detach().cpu()``-ed by construction, so stored transitions never pin
      the forward autograd graph or VRAM between rollout steps.
    * ``configs/rl_colab_12h.json`` pins the T4-safe PPO geometry
@@ -376,13 +376,19 @@ class TestRolloutTransitionIsolation:
 # ======================================================================
 class TestRlOomConfiguration:
     def test_colab_rl_config_is_t4_safe(self, repo_root):
+        """V2 (#5 ARCH-01): Stage 2 is GFlowNet-TB only; the T4 safety knobs
+        are rollout buffering (episodes held before the TB update) and the
+        rollout temperature."""
         cfg = json.load(open(os.path.join(repo_root, "configs", "rl_colab_12h.json")))
         rl = cfg["reinforcement_learning"]
-        assert int(rl["minibatch_size"]) <= 4, (
-            "PPO minibatch must stay <= 4 on 15 GB T4s "
-            "(minibatch forward graphs are all alive until loss.backward)"
+        assert str(rl["algorithm"]) == "gflownet", (
+            "V2 Stage-2 algorithm must be GFlowNet Trajectory Balance "
+            "(PPO/DPO were purged in #5 ARCH-01)"
         )
-        assert int(rl["rollout_episodes"]) <= 8
+        assert int(rl["rollout_episodes"]) <= 8, (
+            "rollout episodes buffered before the TB update must stay <= 8 "
+            "on 15 GB T4s (all rollout transitions are held in CPU memory)"
+        )
 
     def test_main_sets_expandable_segments_before_torch(self, repo_root):
         src = open(os.path.join(repo_root, "main.py")).read()

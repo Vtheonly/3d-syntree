@@ -126,20 +126,3 @@ class TestNewFamilyRetrosynthesis:
         target = fragmenter.find_target(ligand)
         assert target is not None
         assert target.reaction_family == "reductive_amination"
-
-    def test_sulfonamide_fingerprint_in_cache_names(self, assets_dir):
-        """The processed-cache name embeds the grammar fingerprint so
-        grammar upgrades invalidate stale caches (data integrity)."""
-        from syntree.chemistry.reactions import grammar_fingerprint
-        from syntree.data.crossdocked import CrossDockedDataset
-
-        fp = grammar_fingerprint()
-        ds = CrossDockedDataset(
-            assets_dir["crossdocked_dir"],
-            split="train",
-            catalog=None,
-            num_synthetic=4,
-            synthetic=True,
-        )
-        name = ds.processed_file_names[0]
-        assert f"_g{fp}" in name

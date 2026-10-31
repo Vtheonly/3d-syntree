@@ -1,5 +1,7 @@
-"""CLI-level smoke tests: real subprocess invocations of main.py and
-scripts/build_full_dataset.py (the interfaces the Colab notebook calls)."""
+"""CLI-level smoke tests: real subprocess invocations of main.py (the
+interface the Colab notebook calls). The legacy build_full_dataset.py CLI
+tests were removed with the script in #5 ARCH-01; the V2 multi-source
+builder arrives with #16 DATA-01)."""
 
 from __future__ import annotations
 
@@ -48,6 +50,8 @@ class TestMainCLI:
         cfg = {
             "system": {"seed": 42, "device": "cpu", "num_workers": 0},
             "data": {
+                "backend": "huggingface",
+                "huggingface": {"repo_id": "test/repo"},
                 "data_dir": str(tmp_path),
                 "synthon_catalog_path": str(tmp_path / "missing.parquet"),
                 "require_real_data": True,
@@ -58,45 +62,3 @@ class TestMainCLI:
         result = _run(["main.py", "--mode", "train", "--config", str(cfg_path)])
         assert result.returncode == 2
         assert "catalog missing" in result.stderr
-
-
-class TestBuilderCLI:
-    def test_upload_without_token_fails_closed(self):
-        result = _run(
-            ["scripts/build_full_dataset.py", "--upload"],
-            env={"HF_TOKEN": ""},
-        )
-        assert result.returncode == 1
-        assert "HF_TOKEN" in result.stderr
-
-    def test_empty_raw_dir_fails(self, tmp_path):
-        raw = tmp_path / "raw"
-        raw.mkdir()
-        (raw / ".extracted_marker").touch()
-        result = _run([
-            "scripts/build_full_dataset.py",
-            "--raw-dir", str(raw),
-            "--output-dir", str(tmp_path / "out"),
-        ])
-        assert result.returncode == 1
-        assert "No pocket/ligand pairs" in result.stderr
-
-    @pytest.mark.parametrize("n", [0, 1, 2, -5])
-    def test_max_complexes_below_three_rejected(self, tmp_path, n):
-        raw = tmp_path / "raw"
-        raw.mkdir()
-        (raw / ".extracted_marker").touch()
-        result = _run([
-            "scripts/build_full_dataset.py",
-            "--raw-dir", str(raw),
-            "--output-dir", str(tmp_path / "out"),
-            "--max-complexes", str(n),
-        ])
-        assert result.returncode == 1
-        assert "--max-complexes must be >= 3" in result.stderr
-
-    def test_help_documents_workflow(self):
-        result = _run(["scripts/build_full_dataset.py", "--help"])
-        assert result.returncode == 0
-        assert "CrossDocked2020" in result.stdout
-        assert "--upload" in result.stdout

@@ -1,4 +1,4 @@
-"""Centralized, immutable registry for all 3D-SynTree models, datasets, and HF repos."""
+"""Centralized, immutable registry for 3D-SynTree V2 models, datasets, and HF repos."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 
 HF_ORG = "JJKK1212"
 
@@ -42,26 +42,9 @@ CANONICAL_MODELS: Dict[str, ModelSchema] = {
         synthon_dim=128,
         target_hardware="Colab T4 (15 GB VRAM) / Portable Baseline / CPU",
     ),
-    "3d-syntree-large": ModelSchema(
-        name="3d-syntree-large",
-        hidden_dim=256,
-        num_layers=8,
-        num_heads=8,
-        num_radial=20,
-        cutoff=5.0,
-        synthon_dim=256,
-        target_hardware="Mid-tier GPU (V100/A10G >= 24 GB VRAM)",
-    ),
-    "3d-syntree-h100": ModelSchema(
-        name="3d-syntree-h100",
-        hidden_dim=512,
-        num_layers=12,
-        num_heads=8,
-        num_radial=32,
-        cutoff=6.5,
-        synthon_dim=512,
-        target_hardware="Enterprise Accelerator (H100/RTX 6000 Ada >= 80 GB VRAM)",
-    ),
+    # V2 (#5 ARCH-01): the '3d-syntree-large' (V100/A10G) and
+    # '3d-syntree-h100' schemas were removed - #45 §5 restricts supported
+    # GPU targets to Google Colab Tesla T4 and Kaggle Tesla T4 only.
 }
 
 
@@ -113,10 +96,11 @@ class CanonicalFilenames:
 # ----------------------------------------------------------------------
 # 5. SUPPORTED DATA BACKENDS
 # ----------------------------------------------------------------------
+# V2 (#5 ARCH-01): 'local' (CrossDockedDataset) and 'kaggle_offline'
+# loaders were purged; the multi-source local pipeline is rebuilt by
+# #16 DATA-01 / #19 DATA-04.
 SUPPORTED_DATA_BACKENDS: Tuple[str, ...] = (
-    "local",
     "huggingface",
-    "kaggle_offline",
     "trajectory_pt",
 )
 

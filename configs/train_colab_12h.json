@@ -71,14 +71,6 @@
     },
     "eval_interval_epochs": 1,
     "log_every_steps": 40,
-    "auto_scale": {
-      "enabled": true,
-      "target_vram_fraction": 0.85,
-      "max_batch_size": 64,
-      "probe_trim_top_fraction": 0.10,
-      "scale_model": true,
-      "lr_scale_rule": "linear"
-    },
     "max_pocket_atoms": 1600
   },
   "curriculum": {

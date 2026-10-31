@@ -1,3 +1,10 @@
+# Raw data-source provenance record (V2).
+# Archived from configs/download.yaml when the legacy download mode was
+# purged in #5 ARCH-01. These upstream sources and their checksums feed
+# the V2 multi-source ingestion pipeline (#16 DATA-01). Do not edit the
+# verified entries; append new verifications below instead.
+# Original file also carried verified-on dates inline (2026-10-28).
+---
 workspace_dir: "./raw_workspace"
 hf_repo_id: "JJKK1212/3d-syntree-raw-sources"
 max_connections: 16

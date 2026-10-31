@@ -2,7 +2,8 @@
 
 Strictly CPU-executable within 8 GB RAM constraints.
 Tests feature extraction, SNAr aryl fluoride handling, fast bulk similarity,
-recursive CrossDocked pair discovery, and multi-step trajectory generation.
+and multi-step trajectory generation (CrossDocked loader tests removed in
+#5 ARCH-01; the multi-source pipeline is rebuilt by #16 DATA-01).
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.reactions import ReactionEngine, REACTION_FAMILY_NAMES
 from syntree.data.featurizer import MolecularFeaturizer, GLOBAL_FEATURE_DIM, HANDLE_FEATURE_DIM
 from syntree.data.fragmenter import ReactionConstrainedFragmenter
-from syntree.data.crossdocked import CrossDockedDataset
 from syntree.data.trajectory import RetrosyntheticTrajectoryBuilder
 from syntree.data.hf_loader import ShardAwareShuffleSampler
 
@@ -137,8 +137,9 @@ class TestFragmenter(unittest.TestCase):
         print("  -> PASS: Precomputed bulk fingerprint lookup executed cleanly with zero NoneType errors.")
 
 
-class TestCrossDockedAndTrajectory(unittest.TestCase):
-    """Tests for syntree/data/crossdocked.py and trajectory.py."""
+class TestTrajectoryAndShardPipeline(unittest.TestCase):
+    """Tests for the V2-interim data pipeline (trajectory.py, hf_loader).
+    (CrossDockedDataset tests removed in #5 ARCH-01; the loader was purged.)"""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
@@ -152,53 +153,6 @@ class TestCrossDockedAndTrajectory(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
-
-    def test_05_crossdocked_recursive_pair_discovery(self):
-        """DIAGNOSTIC TEST (F-08/F-15): CrossDockedDataset must discover nested *_pocket10.pdb files."""
-        print("\n[TEST] CrossDocked: Recursive Pair Discovery (Auditing F-08/F-15)")
-        flat_p = Path(self.test_dir) / "flat_pocket.pdb"
-        flat_l = Path(self.test_dir) / "flat_ligand.sdf"
-        flat_p.write_text("ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00 20.00           C\nEND\n")
-        flat_l.write_text("$$$$\n")
-
-        nested_dir = Path(self.test_dir) / "nested_target"
-        nested_dir.mkdir()
-        nested_p = nested_dir / "complex_pocket10.pdb"
-        nested_l = nested_dir / "complex_ligand.sdf"
-        nested_p.write_text("ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00 20.00           C\nEND\n")
-        nested_l.write_text("$$$$\n")
-
-        pairs = CrossDockedDataset._discover_pairs(self.test_dir)
-        discovered_pockets = [Path(p).name for p, _, _ in pairs]
-        print(f"  -> Discovered pocket files: {discovered_pockets}")
-
-        self.assertIn("flat_pocket.pdb", discovered_pockets)
-        self.assertIn("complex_pocket10.pdb", discovered_pockets)
-        self.assertEqual(len(pairs), 2)
-        print("  -> PASS: Both flat and nested Zenodo *_pocket10.pdb archives discovered successfully.")
-
-    def test_06_crossdocked_synthetic_plumbing_and_pyg_collation(self):
-        """Synthetic mode must produce valid PyG Data objects that collate cleanly."""
-        print("\n[TEST] CrossDocked: Synthetic Data Collation Safety")
-        ds = CrossDockedDataset(
-            root_dir=self.test_dir,
-            split="train",
-            catalog=self.catalog,
-            num_synthetic=4,
-            synthetic=True,
-            force_rebuild=True,
-        )
-        self.assertEqual(len(ds), 4)
-        sample = ds[0]
-
-        for attr in ("pocket_pos", "pocket_z", "pocket_charge", "handle_features", "global_features"):
-            self.assertTrue(hasattr(sample, attr), f"Sample missing attribute: {attr}")
-
-        batch = CrossDockedDataset._collate([ds[0], ds[1]])
-        self.assertEqual(batch.pocket_pos.dim(), 2)
-        n_graphs = batch.handle_features.size(0) if batch.handle_features.dim() == 2 else batch.handle_features.size(0) // 64
-        self.assertEqual(n_graphs, 2)
-        print("  -> PASS: Synthetic samples collate into valid PyG Batch without dimensionality errors.")
 
     def test_07_trajectory_builder_multistep(self):
         """RetrosyntheticTrajectoryBuilder must extract replayable states from amide ligand."""

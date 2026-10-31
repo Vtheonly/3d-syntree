@@ -359,8 +359,8 @@ def sync_hf_dataset(
         raise RuntimeError(
             f"HF dataset {repo_id}@{revision} contains only {train_count} training "
             f"samples (minimum required: {int(min_train_samples)}). This looks like "
-            "a stub dataset. Build and upload the full real dataset with "
-            "python scripts/build_full_dataset.py --upload"
+            "a stub dataset. Rebuild and upload the full real dataset with "
+            "the V2 dataset pipeline (see docs/agent/STATUS.md; #16 DATA-01)"
         )
 
     result = {

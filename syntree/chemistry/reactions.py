@@ -510,7 +510,7 @@ def grammar_fingerprint() -> str:
     Hashes the SMARTS templates **and** the retro-family tuple so that any
     grammar change (new reaction, modified SMARTS, new retro family)
     automatically invalidates processed dataset caches built under the old
-    grammar. Used by :mod:`syntree.data.crossdocked` in its processed-file
+    grammar. Used by the data pipeline (processed-file
     names to guarantee that stale caches can never be silently reused after
     a grammar upgrade (data-integrity guard).
     """

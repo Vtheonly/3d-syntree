@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""3D-SynTree unified CLI entrypoint.
+"""3D-SynTree V2 unified CLI entrypoint.
 
 Modes:
     train      – run the resilient, time-budgeted training loop.
-    rl         – run Stage 2 chemistry-constrained PPO optimization.
+    rl         – run Stage 2 GFlowNet Trajectory-Balance fine-tuning.
     generate   – generate pocket-conditioned ligands + synthesis recipes.
     evaluate   – run the benchmark battery over generated molecules.
     info       – print runtime/hardware and configuration diagnostics.
@@ -26,8 +26,8 @@ _logging.getLogger("httpx").setLevel(_logging.WARNING)
 _logging.getLogger("httpcore").setLevel(_logging.WARNING)
 
 # Stage-2 CUDA OOM fix: expandable segments stop the caching allocator from
-# fragmenting when PPO interleaves many small PaiNN forward graphs with
-# the rollout/replay cycle. The variable must be set BEFORE torch initializes
+# fragmenting when the GFlowNet rollout/replay cycle interleaves many small
+# PaiNN forward graphs. The variable must be set BEFORE torch initializes
 # its caching allocator (first CUDA tensor allocation), hence before the
 # torch import below. An explicit user override always wins (setdefault).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -155,7 +155,9 @@ def validate_config(config: dict) -> list:
         )
 
     data = config.get("data", {}) or {}
-    backend = str(data.get("backend", "local")).lower()
+    # V2 default backend matches the trainer (#5 ARCH-01: 'local' and
+    # 'kaggle_offline' loaders were purged).
+    backend = str(data.get("backend", "huggingface")).lower()
     if backend not in SUPPORTED_DATA_BACKENDS:
         errors.append(
             f"data.backend must be one of {list(SUPPORTED_DATA_BACKENDS)}, "
@@ -166,11 +168,6 @@ def validate_config(config: dict) -> list:
     ).strip():
         errors.append(
             "data.huggingface.repo_id is required when data.backend='huggingface'"
-        )
-    if backend == "kaggle_offline" and not str(data.get("data_dir", "")).strip():
-        errors.append(
-            "data.data_dir is required when data.backend='kaggle_offline' "
-            "(the mounted offline dataset directory)"
         )
     if backend == "trajectory_pt" and not data.get("trajectory_dataset_path"):
         errors.append(
@@ -253,11 +250,11 @@ def validate_config(config: dict) -> list:
             errors.append(f"curriculum.feature_sample_stride must be >= 1, got {stride}")
 
     rl = config.get("reinforcement_learning", {}) or {}
-    algorithm = str(rl.get("algorithm", "ppo")).strip().lower()
-    if algorithm not in ("ppo", "gflownet", "dpo"):
+    algorithm = str(rl.get("algorithm", "gflownet")).strip().lower()
+    if algorithm != "gflownet":
         errors.append(
-            f"reinforcement_learning.algorithm must be ppo | gflownet | dpo, "
-            f"got '{algorithm}'"
+            f"reinforcement_learning.algorithm must be 'gflownet' in V2 "
+            f"(PPO and DPO were removed in #5 ARCH-01), got '{algorithm}'"
         )
     if int(rl.get("episodes", 256)) < 1:
         errors.append("reinforcement_learning.episodes must be >= 1")
@@ -381,7 +378,7 @@ def main(argv=None) -> int:
     if not os.path.exists(catalog_path):
         print(
             f"[main] catalog missing ({catalog_path}); "
-            "run scripts/download_assets.py or craft/craft_mode.py first.",
+            "run scripts/download_assets.py first.",
             file=sys.stderr,
         )
         return 2
@@ -389,7 +386,6 @@ def main(argv=None) -> int:
     if args.mode == "train":
         from syntree.engine.trainer import ResilientTrainer
         from syntree.utils.checkpoint import CheckpointManager
-        from syntree.utils.hardware import scale_model_config
 
         ckpt_dir = os.path.join(args.output_dir or "./experiments", "checkpoints")
 
@@ -437,25 +433,18 @@ def main(argv=None) -> int:
                 )
                 print("[main] restored model architecture from checkpoint (runtime flags preserved)")
 
+        # V2 #5 ARCH-01: dynamic VRAM-probed model auto-scaling was purged
+        # (#45 §5.2 — architecture dimensions are frozen in version-controlled
+        # configuration, never mutated at runtime). A leftover
+        # training.auto_scale block is now inert and only warned about.
         auto_cfg = config.get("training", {}).get("auto_scale", {})
-        if (
-            not args.resume_auto
-            and auto_cfg.get("enabled", False)
-            and auto_cfg.get("scale_model", True)
-            and device.type == "cuda"
-        ):
-            scaled = scale_model_config(config.get("model", {}))
-            if scaled != config.get("model", {}):
-                print(
-                    f"[main] auto-scale: model hidden "
-                    f"{config['model'].get('hidden_dim', 128)} -> "
-                    f"{scaled['hidden_dim']}, layers "
-                    f"{config['model'].get('num_equivariant_layers', 4)} -> "
-                    f"{scaled['num_equivariant_layers']}, heads "
-                    f"{config['model'].get('num_attention_heads', 4)} -> "
-                    f"{scaled['num_attention_heads']}"
-                )
-                config["model"] = scaled
+        if auto_cfg.get("enabled", False):
+            print(
+                "[main] NOTE: training.auto_scale is obsolete in V2 (dynamic "
+                "runtime scaling was removed in #5 ARCH-01); the block is "
+                "ignored. Set explicit batch_size / accumulate_grad_batches "
+                "and a frozen model architecture instead."
+            )
 
         model = build_model(config).to(device)
         trainer = ResilientTrainer(
@@ -473,7 +462,7 @@ def main(argv=None) -> int:
             return 2
 
         from syntree.engine.generator import SBDDGenerator
-        from syntree.engine.rl import PPOFineTuner, ThreeDReward
+        from syntree.engine.rl import ThreeDReward
         from syntree.utils.checkpoint import CheckpointManager
 
         rl_cfg = config.get("reinforcement_learning", {})
@@ -512,8 +501,8 @@ def main(argv=None) -> int:
         reward_fn = ThreeDReward(rl_cfg.get("reward", {}))
 
         from syntree.engine.environment import MolecularAssemblyEnv
+        from syntree.engine.gflownet import GFlowNetTrainer
         from syntree.engine.rl import (
-            RolloutBuffer,
             apply_terminal_rewards,
             collect_episode,
         )
@@ -521,35 +510,24 @@ def main(argv=None) -> int:
 
         seed_everything(int(config.get("system", {}).get("seed", 42)))
 
-        algorithm = str(rl_cfg.get("algorithm", "ppo")).strip().lower()
-        if algorithm not in ("ppo", "gflownet", "dpo"):
+        # V2 (#5 ARCH-01): PPO and DPO were purged as redundant Stage-2
+        # paradigms; Stage 2 is GFlowNet Trajectory Balance only (#45 §12.3).
+        algorithm = str(rl_cfg.get("algorithm", "gflownet")).strip().lower()
+        if algorithm != "gflownet":
             print(
-                f"[main] reinforcement_learning.algorithm must be one of "
-                f"ppo | gflownet | dpo, got '{algorithm}'.",
+                f"[main] reinforcement_learning.algorithm='{algorithm}' is "
+                "not supported in V2: PPO and DPO were removed (#5 ARCH-01). "
+                "Stage 2 is GFlowNet Trajectory Balance only.",
                 file=sys.stderr,
             )
             return 2
 
-        if algorithm == "gflownet":
-            from syntree.engine.gflownet import GFlowNetTrainer
-
-            finetuner = GFlowNetTrainer(model, generator.catalog, device, rl_cfg)
-            print(
-                f"[main] Stage 2 algorithm: GFlowNet Trajectory Balance "
-                f"(lr={finetuner.lr}, lr_z={finetuner.lr_z}, "
-                f"reward_floor={finetuner.reward_floor})"
-            )
-        elif algorithm == "dpo":
-            from syntree.engine.dpo import DPOTrainer, build_preference_pairs
-
-            finetuner = DPOTrainer(model, generator.catalog, device, rl_cfg)
-            print(
-                f"[main] Stage 2 algorithm: Direct Preference Optimization "
-                f"(beta={finetuner.beta})"
-            )
-        else:
-            finetuner = PPOFineTuner(model, generator.catalog, device, rl_cfg)
-            print("[main] Stage 2 algorithm: PPO")
+        finetuner = GFlowNetTrainer(model, generator.catalog, device, rl_cfg)
+        print(
+            f"[main] Stage 2 algorithm: GFlowNet Trajectory Balance "
+            f"(lr={finetuner.lr}, lr_z={finetuner.lr_z}, "
+            f"reward_floor={finetuner.reward_floor})"
+        )
 
         assembly_env = MolecularAssemblyEnv(
             rxn_engine=generator.rxn_engine,
@@ -561,23 +539,15 @@ def main(argv=None) -> int:
         )
 
         def _algorithm_extra_state():
-            if algorithm == "gflownet":
-                return finetuner.state_dict()
-            if algorithm == "dpo":
-                return finetuner.state_dict()
-            return None
+            return finetuner.state_dict()
 
         if getattr(rl_manager, "last_extra_state", None):
             try:
-                if algorithm == "gflownet":
-                    finetuner.load_state_dict(rl_manager.last_extra_state)
-                    print(
-                        f"[main] restored GFlowNet log_Z="
-                        f"{float(finetuner.log_Z.item()):.4f} from checkpoint"
-                    )
-                elif algorithm == "dpo":
-                    finetuner.load_state_dict(rl_manager.last_extra_state)
-                    print("[main] restored DPO reference policy from checkpoint")
+                finetuner.load_state_dict(rl_manager.last_extra_state)
+                print(
+                    f"[main] restored GFlowNet log_Z="
+                    f"{float(finetuner.log_Z.item()):.4f} from checkpoint"
+                )
             except Exception as exc:
                 print(f"[main] could not restore algorithm state: {exc}")
 
@@ -629,12 +599,7 @@ def main(argv=None) -> int:
         temperature = float(rl_cfg.get("temperature", 1.0))
         checkpoint_every = int(rl_cfg.get("checkpoint_every", 16))
         rollout_episodes = max(1, int(rl_cfg.get("rollout_episodes", 32)))
-        minibatch_size = max(1, int(rl_cfg.get("minibatch_size", 32)))
         history = []
-        buffer = RolloutBuffer(
-            gamma=float(rl_cfg.get("gamma", 0.99)),
-            gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
-        )
         last_stats: Dict[str, float] = {}
         pending: list = []
 
@@ -658,7 +623,6 @@ def main(argv=None) -> int:
                 contact_energy=float(assembly_env.contact_energy()),
                 pocket_mol=assembly_env.pocket_mol,
             )
-            buffer.add_episode(transitions)
             pending.append({
                 "episode": episode,
                 "pocket": os.path.basename(pocket),
@@ -669,7 +633,7 @@ def main(argv=None) -> int:
             model.train()
 
             if (
-                buffer.num_episodes >= rollout_episodes
+                len(pending) >= rollout_episodes
                 or episode == episodes - 1
             ):
                 details_list = apply_terminal_rewards(
@@ -677,29 +641,11 @@ def main(argv=None) -> int:
                      for item in pending],
                     reward_fn,
                 )
-                if algorithm == "gflownet":
-                    last_stats = finetuner.train_step(
-                        [
-                            (item["transitions"], details["reward"])
-                            for item, details in zip(pending, details_list)
-                        ]
-                    )
-                elif algorithm == "dpo":
-                    pair_episodes = [
-                        {"transitions": item["transitions"],
-                         "reward": details["reward"]}
+                last_stats = finetuner.train_step(
+                    [
+                        (item["transitions"], details["reward"])
                         for item, details in zip(pending, details_list)
                     ]
-                    last_stats = finetuner.train_step(
-                        build_preference_pairs(pair_episodes)
-                    )
-                else:
-                    last_stats = finetuner.update_rollout(
-                        buffer, minibatch_size=minibatch_size
-                    )
-                buffer = RolloutBuffer(
-                    gamma=float(rl_cfg.get("gamma", 0.99)),
-                    gae_lambda=float(rl_cfg.get("gae_lambda", 0.95)),
                 )
                 for item, details in zip(pending, details_list):
                     entry = {
@@ -719,7 +665,7 @@ def main(argv=None) -> int:
                         f"reward={entry['reward']:.4f} | "
                         f"transitions={last_stats.get('transitions', 0)} | "
                         f"loss={entry.get('loss', 0.0):.4f} | "
-                        f"clip={entry.get('clip_fraction', 0.0):.3f}"
+                        f"log_Z={entry.get('log_Z', 0.0):.4f}"
                     )
                 pending = []
 
@@ -752,7 +698,7 @@ def main(argv=None) -> int:
         os.makedirs(rl_output, exist_ok=True)
         with open(os.path.join(rl_output, "rl_history.json"), "w") as f:
             json.dump(history, f, indent=2)
-        print(f"[main] Stage 2 complete: {episodes} {algorithm.upper()} episodes")
+        print(f"[main] Stage 2 complete: {episodes} GFlowNet episodes")
         return 0
 
     if args.mode == "generate":

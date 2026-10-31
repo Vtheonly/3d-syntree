@@ -10,7 +10,8 @@ from torch_geometric.data import Batch
 
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.reactions import REACTION_FAMILY_NAMES
-from syntree.data.crossdocked import CrossDockedDataset
+from torch_geometric.data import Data
+
 from syntree.models.policy import SynTreePolicy
 
 _NUM_FAMILIES = len(REACTION_FAMILY_NAMES)
@@ -21,12 +22,44 @@ def catalog(assets_dir):
     return SynthonCatalog(assets_dir["catalog_path"], embedding_dim=32)
 
 
-@pytest.fixture(scope="module")
-def dataset(assets_dir, catalog):
-    return CrossDockedDataset(
-        assets_dir["crossdocked_dir"], split="train", catalog=catalog,
-        synthetic=True, num_synthetic=10, seed=5,
+def _synthetic_sample(seed: int) -> Data:
+    """Minimal synthetic pocket/handle state (V2 #5 ARCH-01: the synthetic
+    CrossDockedDataset smoke loader was purged; policy tests build the
+    PyG state directly)."""
+    g = torch.Generator().manual_seed(seed)
+    n_pocket = 18 + seed % 5
+    return Data(
+        pocket_pos=torch.randn(n_pocket, 3, generator=g) * 8.0,
+        pocket_z=torch.randint(1, 30, (n_pocket,), generator=g),
+        # Empty ligand: the pre-growth state (no ligand atoms yet), matching
+        # the original synthetic samples.
+        ligand_pos=torch.zeros(0, 3, dtype=torch.float32),
+        ligand_z=torch.zeros(0, dtype=torch.long),
+        handle_features=torch.randn(1, 64, generator=g),
+        handle_pos=torch.randn(1, 3, generator=g),
+        handle_nodes=torch.tensor([-1], dtype=torch.long),
+        global_features=torch.randn(1, 4, generator=g),
+        stop_mask=torch.tensor([0.0], dtype=torch.float32),
     )
+
+
+class _FreshSamples:
+    """Returns a fresh clone on every __getitem__ (tests mutate samples
+    in place, matching the old dataset semantics)."""
+
+    def __init__(self, samples):
+        self._samples = samples
+
+    def __getitem__(self, i):
+        return self._samples[i].clone()
+
+    def __len__(self):
+        return len(self._samples)
+
+
+@pytest.fixture(scope="module")
+def dataset():
+    return _FreshSamples([_synthetic_sample(i) for i in range(10)])
 
 
 @pytest.fixture()
@@ -37,8 +70,9 @@ def model(tiny_config):
 
 @pytest.fixture()
 def batch(dataset):
-    return Batch.from_data_list([dataset[i] for i in range(4)],
-                                follow_batch=["pocket_pos"])
+    return Batch.from_data_list(
+        [dataset[i] for i in range(4)], follow_batch=["pocket_pos"]
+    )
 
 
 class TestConstruction:

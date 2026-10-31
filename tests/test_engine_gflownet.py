@@ -10,10 +10,8 @@ import torch
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from syntree.engine.dpo import DPOTrainer, build_preference_pairs
 from syntree.engine.gflownet import GFlowNetTrainer
 from syntree.engine.rl import (
-    PPOTransition,
     RolloutTransition,
     ThreeDReward,
     joint_log_prob_and_entropy,
@@ -273,109 +271,7 @@ class TestTrajectoryBalanceMath:
 
 
 # ---------------------------------------------------------------------------
-# DPO math
 # ---------------------------------------------------------------------------
-class TestDPOMath:
-    def _trainer(self, k: int = 4):
-        torch.manual_seed(7)
-        model = FakePolicy(k)
-        return DPOTrainer(model, FakeCatalog(k), torch.device("cpu"), {}), model
-
-    def test_reference_model_is_frozen(self):
-        trainer, _ = self._trainer()
-        assert all(not p.requires_grad for p in trainer.reference_model.parameters())
-
-    def test_preference_loss_zero_at_initialization(self):
-        """pi_theta == pi_ref at initialization -> margin == 0 ->
-        -log sigmoid(0) == log 2."""
-        import torch.nn.functional as F
-
-        trainer, _ = self._trainer()
-        win = _make_trajectory(2, seed=1)
-        lose = _make_trajectory(2, seed=2)
-        loss = trainer.preference_loss(win, lose)
-        assert loss is not None
-        assert abs(float(loss) - math.log(2.0)) < 1e-5
-
-    def test_loss_decreases_when_policy_moves_toward_winner(self):
-        trainer, _ = self._trainer()
-        win = _make_trajectory(2, seed=1)
-        lose = _make_trajectory(2, seed=2)
-        first = trainer.train_step([(win, lose)])["loss"]
-        for _ in range(20):
-            last = trainer.train_step([(win, lose)])["loss"]
-        assert last < first
-
-    def test_empty_trajectories_give_none(self):
-        trainer, _ = self._trainer()
-        assert trainer.preference_loss([], []) is None
-        assert trainer.preference_loss(_make_trajectory(1), []) is None
-
-    def test_train_step_empty(self):
-        trainer, _ = self._trainer()
-        stats = trainer.train_step([])
-        assert stats["pairs"] == 0
-
-    def test_state_dict_roundtrip_restores_reference(self):
-        trainer, model = self._trainer()
-        # Move the live policy away from the reference.
-        with torch.no_grad():
-            model.state_proj.weight.add_(0.5)
-        state = trainer.state_dict()
-
-        torch.manual_seed(11)
-        model2 = FakePolicy(4)
-        trainer2 = DPOTrainer(model2, FakeCatalog(4), torch.device("cpu"), {})
-        trainer2.load_state_dict(state)
-        for p_ref, q_ref in zip(trainer.reference_model.parameters(),
-                                trainer2.reference_model.parameters()):
-            assert torch.equal(p_ref, q_ref)
-
-    def test_beta_scales_margin(self):
-        big = DPOTrainer(FakePolicy(4), FakeCatalog(4), torch.device("cpu"),
-                         {"dpo_beta": 5.0})
-        small = DPOTrainer(FakePolicy(4), FakeCatalog(4), torch.device("cpu"),
-                           {"dpo_beta": 0.1})
-        assert big.beta == 5.0 and small.beta == 0.1
-
-
-class TestBuildPreferencePairs:
-    def test_pairs_ordered_by_reward(self):
-        high = {"transitions": _make_trajectory(1, 0), "reward": 2.0}
-        low = {"transitions": _make_trajectory(1, 1), "reward": 1.0}
-        pairs = build_preference_pairs([high, low])
-        assert len(pairs) == 1
-        win, lose = pairs[0]
-        assert win is high["transitions"]
-        assert lose is low["transitions"]
-
-    def test_swapped_order_handled(self):
-        low = {"transitions": _make_trajectory(1, 0), "reward": 0.5}
-        high = {"transitions": _make_trajectory(1, 1), "reward": 3.0}
-        pairs = build_preference_pairs([low, high])
-        win, lose = pairs[0]
-        assert win is high["transitions"]
-
-    def test_ties_dropped(self):
-        a = {"transitions": _make_trajectory(1, 0), "reward": 1.0}
-        b = {"transitions": _make_trajectory(1, 1), "reward": 1.0}
-        assert build_preference_pairs([a, b]) == []
-
-    def test_empty_transitions_skipped(self):
-        a = {"transitions": [], "reward": 2.0}
-        b = {"transitions": _make_trajectory(1), "reward": 1.0}
-        assert build_preference_pairs([a, b]) == []
-
-    def test_odd_batch_pairs_consecutive(self):
-        eps = [
-            {"transitions": _make_trajectory(1, i), "reward": float(i)}
-            for i in range(5)
-        ]
-        pairs = build_preference_pairs(eps)
-        assert len(pairs) == 2  # (0,1) and (2,3); 4 dropped (no partner)
-        for win, lose in pairs:
-            # win must have come from the higher-reward episode
-            assert any(win is e["transitions"] for e in eps if e["reward"] > 0)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +307,7 @@ class TestAlgorithmCheckpointPlumbing:
 # End-to-end CLI runs (real policy + real chemistry, tiny config)
 # ---------------------------------------------------------------------------
 class TestStage2AlgorithmCLI:
-    def _write_config(self, base_cfg, tmp_path, algorithm):
+    def _write_config(self, base_cfg, tmp_path):
         import json as _json
 
         cfg = _json.loads(_json.dumps(base_cfg))
@@ -420,15 +316,13 @@ class TestStage2AlgorithmCLI:
         cfg["catalog"] = {"encoder": "morgan2d"}  # fastest path for CI
         cfg["reinforcement_learning"] = {
             "enabled": True,
-            "algorithm": algorithm,
+            "algorithm": "gflownet",
             "episodes": 2,
             "rollout_episodes": 2,
-            "minibatch_size": 2,
-            "ppo_epochs": 1,
             "learning_rate": 1e-4,
             "reward": {"docking_weight": 0.0},
         }
-        cfg_path = tmp_path / f"cfg_{algorithm}.json"
+        cfg_path = tmp_path / "cfg_gflownet.json"
         cfg_path.write_text(_json.dumps(cfg))
         return cfg_path
 
@@ -449,15 +343,13 @@ class TestStage2AlgorithmCLI:
             )
         return str(pockets)
 
-    @pytest.mark.parametrize("algorithm", ["gflownet", "dpo"])
-    def test_stage2_runs_end_to_end(self, tiny_config_with_assets, tmp_path,
-                                    algorithm):
+    def test_stage2_runs_end_to_end(self, tiny_config_with_assets, tmp_path):
         import json as _json
         import os
         import subprocess
         import sys
 
-        cfg_path = self._write_config(tiny_config_with_assets, tmp_path, algorithm)
+        cfg_path = self._write_config(tiny_config_with_assets, tmp_path)
         out_dir = tmp_path / "exp"
         proc = subprocess.run(
             [sys.executable, "main.py", "--mode", "train",
@@ -468,7 +360,7 @@ class TestStage2AlgorithmCLI:
         assert proc.returncode == 0, proc.stderr[-3000:]
 
         pockets = self._stage_pocket(tmp_path)
-        rl_out = tmp_path / f"rl_{algorithm}"
+        rl_out = tmp_path / "rl_gflownet"
         proc = subprocess.run(
             [sys.executable, "main.py", "--mode", "rl",
              "--config", str(cfg_path), "--pocket-dir", pockets,
@@ -477,7 +369,7 @@ class TestStage2AlgorithmCLI:
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )
         assert proc.returncode == 0, proc.stderr[-4000:]
-        assert f"Stage 2 algorithm" in proc.stdout
+        assert "Stage 2 algorithm" in proc.stdout
 
         with open(rl_out / "rl_history.json") as f:
             history = _json.load(f)
@@ -496,7 +388,12 @@ class TestStage2AlgorithmCLI:
         import subprocess
         import sys
 
-        cfg_path = self._write_config(tiny_config_with_assets, tmp_path, "a3c")
+        cfg_path = self._write_config(tiny_config_with_assets, tmp_path)
+        import json as _json
+        cfg = _json.loads(cfg_path.read_text())
+        cfg["reinforcement_learning"]["algorithm"] = "ppo"
+        cfg_path.write_text(_json.dumps(cfg))
+
         proc = subprocess.run(
             [sys.executable, "main.py", "--mode", "rl",
              "--config", str(cfg_path), "--pocket-dir", str(tmp_path),
@@ -505,4 +402,4 @@ class TestStage2AlgorithmCLI:
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )
         assert proc.returncode == 2
-        assert "ppo | gflownet | dpo" in proc.stderr
+        assert "PPO and DPO were removed" in proc.stderr

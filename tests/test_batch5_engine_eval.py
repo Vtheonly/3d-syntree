@@ -1,9 +1,9 @@
-"""Batch 5 Test Suite: Optimization, Reinforcement Learning, GFlowNet, DPO & Evaluator.
+"""Batch 5 Test Suite: Optimization, Stage-2 GFlowNet, Rewards & Evaluator.
 
 Strictly CPU-executable within 8 GB RAM constraints.
 Tests sub-graph radius construction memory scaling, docking output parsing,
-rollout no-grad invariants, 3D reward diversity, GFlowNet Trajectory Balance,
-DPO within-pocket pairing, and evaluation metrics.
+rollout no-grad invariants, 3D reward diversity, Stage-2 GFlowNet Trajectory
+Balance, and evaluation metrics (V2: PPO/DPO purged in #5 ARCH-01).
 """
 
 from __future__ import annotations
@@ -34,12 +34,10 @@ from syntree.models.policy import SynTreePolicy
 from syntree.engine.evaluator import EvaluationPipeline
 from syntree.engine.rl import (
     ThreeDReward,
-    RolloutBuffer,
     RolloutTransition,
     count_key_interactions,
 )
 from syntree.engine.gflownet import GFlowNetTrainer
-from syntree.engine.dpo import DPOTrainer, build_preference_pairs
 
 
 class TestEquivariantGraphOptimization(unittest.TestCase):
@@ -160,35 +158,8 @@ class TestReinforcementLearningAndRewards(unittest.TestCase):
         print(f"  -> Counted key interactions: {salt} salt bridges, {hbond} H-bonds.")
         print("  -> PASS: Diversity scoring and pharmacophore interactions certified.")
 
-    def test_04_rollout_buffer_gae_computation(self):
-        """RolloutBuffer must compute GAE advantages and normalize across buffer."""
-        print("\n[TEST] RL: Multi-Episode GAE Advantage Estimation")
-        buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
-
-        t1 = RolloutTransition(
-            state=None, reaction_mask=None, synthon_masks=None,
-            family_idx=0, action_idx=1,
-            old_log_prob=torch.tensor(-0.5), old_value=torch.tensor(1.0),
-            reward=0.2, done=False
-        )
-        t2 = RolloutTransition(
-            state=None, reaction_mask=None, synthon_masks=None,
-            family_idx=0, action_idx=len(self.cat_df) if hasattr(self, 'cat_df') else 2,
-            old_log_prob=torch.tensor(-0.2), old_value=torch.tensor(1.5),
-            reward=2.0, done=True  # Terminal reward
-        )
-        buffer.add_episode([t1, t2])
-
-        advs, returns = buffer.compute_gae()
-        self.assertEqual(len(advs), 2)
-        self.assertEqual(len(returns), 2)
-        self.assertFalse(torch.isnan(advs).any())
-        self.assertFalse(torch.isnan(returns).any())
-        print("  -> PASS: GAE advantages and returns evaluated cleanly across episodes.")
-
-
-class TestGFlowNetAndDPO(unittest.TestCase):
-    """Tests for syntree/engine/gflownet.py and dpo.py."""
+class TestGFlowNetTB(unittest.TestCase):
+    """Tests for syntree/engine/gflownet.py (V2: the only Stage-2 engine)."""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
@@ -255,27 +226,6 @@ class TestGFlowNetAndDPO(unittest.TestCase):
         self.assertIn("log_Z", state_dict)
         print(f"  -> GFlowNet step complete (TB loss={stats['loss']:.4f}, log_Z={stats['log_Z']:.4f}).")
         print("  -> PASS: Trajectory Balance optimizer certified.")
-
-    def test_06_dpo_within_pocket_preference_pairing(self):
-        """DIAGNOSTIC TEST (H2): DPO must pair candidate episodes within the SAME pocket."""
-        print("\n[TEST] DPO: Within-Pocket Preference Pairing (Auditing H2)")
-        ep1 = {"pocket": "1a9u", "reward": 0.8, "transitions": [1, 2]}
-        ep2 = {"pocket": "1a9u", "reward": 0.3, "transitions": [3, 4]}  # 1a9u loser
-        ep3 = {"pocket": "3nyr", "reward": 0.9, "transitions": [5, 6]}
-        ep4 = {"pocket": "3nyr", "reward": 0.4, "transitions": [7, 8]}  # 3nyr loser
-
-        pairs = build_preference_pairs([ep1, ep2, ep3, ep4])
-        self.assertEqual(len(pairs), 2, "Failed to form 2 preference pairs!")
-
-        # Pair 0 must be (ep1, ep2) because both belong to 1a9u and ep1 > ep2
-        win_1, lose_1 = pairs[0]
-        self.assertEqual(win_1, [1, 2])
-        self.assertEqual(lose_1, [3, 4])
-
-        # Test DPOTrainer instantiation and step
-        trainer = DPOTrainer(self.policy, self.catalog, device=torch.device("cpu"), config={"dpo_beta": 0.2})
-        self.assertIsNotNone(trainer.reference_model)
-        print("  -> PASS: Preference pairs formed strictly within matching pocket contexts.")
 
 
 class TestEvaluationPipelineBattery(unittest.TestCase):

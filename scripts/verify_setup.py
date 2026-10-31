@@ -16,8 +16,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from torch_geometric.data import Data
+
 from syntree.chemistry.catalog import SynthonCatalog
-from syntree.data.crossdocked import CrossDockedDataset
 from syntree.models.policy import SynTreePolicy
 
 
@@ -101,8 +102,21 @@ def main() -> int:
 
     # Forward + Backward check
     print("\n[3/3] Testing forward and backward gradient passes...")
-    ds = CrossDockedDataset("/tmp/verify_smoke", split="train", catalog=cat, num_synthetic=4, synthetic=True)
-    batch = collate_pyg([ds[0]])
+    # V2 (#5 ARCH-01): the synthetic CrossDockedDataset smoke loader was
+    # purged; a minimal synthetic pocket/ligand graph is built directly.
+    torch.manual_seed(0)
+    n_pocket, n_ligand = 24, 6
+    sample = Data(
+        pocket_pos=torch.randn(n_pocket, 3) * 8.0,
+        pocket_z=torch.randint(1, 30, (n_pocket,)),
+        ligand_pos=torch.randn(n_ligand, 3) * 2.0,
+        ligand_z=torch.randint(1, 30, (n_ligand,)),
+        handle_features=torch.randn(1, 64),
+        handle_pos=torch.randn(1, 3),
+        handle_nodes=torch.zeros(1, dtype=torch.long),
+        global_features=torch.randn(1, 4),
+    )
+    batch = collate_pyg([sample])
     preds = model(batch, cat.embeddings, None, None)
     loss = preds["synthon_logits"].sum() + preds["reaction_logits"].sum()
     loss.backward()

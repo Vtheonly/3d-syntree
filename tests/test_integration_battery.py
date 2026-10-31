@@ -17,8 +17,9 @@ Reproducibility
 * Identical training runs -> identical loss history.
 
 Data integrity
-* Every field of the new joint state schema present on all three data
-  pipelines (synthetic, real CrossDocked, trajectory builder).
+* Every field of the joint state schema present on the remaining data
+  pipelines (trajectory builder; the synthetic/real CrossDocked loaders
+  were purged in #5 ARCH-01 and are rebuilt by #16 DATA-01).
 * Shard manifest sha256 digests match the shard bytes.
 """
 
@@ -269,26 +270,6 @@ class TestReproducibility:
         assert r1["recipe"] == r2["recipe"]
         assert r1["clash_score"] == pytest.approx(r2["clash_score"])
 
-    def test_synthetic_dataset_is_seed_reproducible(self, tmp_path, catalog):
-        from syntree.data.crossdocked import CrossDockedDataset
-
-        ds1 = CrossDockedDataset(
-            str(tmp_path), synthetic=True, catalog=catalog,
-            num_synthetic=8, seed=99,
-        )
-        ds2 = CrossDockedDataset(
-            str(tmp_path), synthetic=True, catalog=catalog,
-            num_synthetic=8, seed=99,
-        )
-        for i in range(len(ds1)):
-            a, b = ds1[i], ds2[i]
-            assert int(a.target_synthon) == int(b.target_synthon)
-            assert float(a.target_dihedral) == pytest.approx(
-                float(b.target_dihedral)
-            )
-            assert torch.equal(a.pocket_pos, b.pocket_pos)
-
-
 # =====================================================================
 # Data integrity
 # =====================================================================
@@ -300,22 +281,6 @@ class TestDataIntegrity:
         "target_synthon", "target_dihedral", "target_reaction_family_idx",
         "stop_mask",
     )
-
-    def test_synthetic_schema_complete(self, tmp_path, catalog):
-        from syntree.data.crossdocked import CrossDockedDataset
-
-        ds = CrossDockedDataset(
-            str(tmp_path), synthetic=True, catalog=catalog,
-            num_synthetic=4, seed=3,
-        )
-        for i in range(len(ds)):
-            sample = ds[i]
-            for field in self.EXPECTED_FIELDS:
-                assert hasattr(sample, field), (
-                    f"synthetic sample {i} missing {field}"
-                )
-            assert sample.ligand_pos.size(0) == 0  # synthetic: no ligand
-            assert sample.global_features.shape == (1, GLOBAL_FEATURE_DIM)
 
     def test_trajectory_builder_schema_complete(self, catalog):
         from syntree.chemistry.reactions import ReactionEngine

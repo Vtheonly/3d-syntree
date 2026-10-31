@@ -7,66 +7,8 @@ import math
 import pytest
 import torch
 
-from syntree.models.pocket_encoder import PocketEncoder
 from syntree.models.synthon_head import SynthonHead, make_compatibility_mask
 from syntree.models.torsion_head import ContinuousTorsionHead, log_bessel_i0
-
-
-class TestPocketEncoder:
-    @pytest.fixture()
-    def encoder(self):
-        torch.manual_seed(0)
-        return PocketEncoder(hidden_dim=32, num_layers=2, num_radial=12,
-                             cutoff=5.0)
-
-    def test_single_graph_shapes(self, encoder):
-        pos = torch.randn(20, 3)
-        z = torch.randint(1, 9, (20,))
-        s, v, pooled = encoder(pos, z)
-        assert s.shape == (20, 32)
-        assert v.shape == (20, 3, 32)
-        assert pooled.shape == (1, 32)
-
-    def test_batched_shapes(self, encoder):
-        n1, n2 = 15, 25
-        pos = torch.randn(n1 + n2, 3)
-        z = torch.randint(1, 9, (n1 + n2,))
-        batch = torch.tensor([0] * n1 + [1] * n2)
-        s, v, pooled = encoder(pos, z, batch)
-        assert s.shape == (n1 + n2, 32)
-        assert pooled.shape == (2, 32)
-
-    def test_pooling_is_mean(self, encoder):
-        pos = torch.randn(10, 3)
-        z = torch.randint(1, 9, (10,))
-        encoder.eval()
-        with torch.no_grad():
-            s, _, pooled = encoder(pos, z)
-        assert torch.allclose(pooled[0], s.mean(dim=0), atol=1e-5)
-
-    def test_length_mismatch_raises(self, encoder):
-        with pytest.raises(ValueError):
-            encoder(torch.randn(10, 3), torch.randint(1, 9, (9,)))
-
-    def test_bad_pos_shape_raises(self, encoder):
-        with pytest.raises(ValueError):
-            encoder(torch.randn(10, 2), torch.randint(1, 9, (10,)))
-
-    def test_invalid_dims_raise(self):
-        with pytest.raises(ValueError):
-            PocketEncoder(hidden_dim=0)
-        with pytest.raises(ValueError):
-            PocketEncoder(num_layers=0)
-
-    def test_gradients_flow(self, encoder):
-        pos = torch.randn(12, 3)
-        z = torch.randint(1, 9, (12,))
-        s, v, pooled = encoder(pos, z)
-        s.sum().backward()
-        assert encoder.atomic_embedding.weight.grad is not None
-
-    def test_num_parameters(self, encoder):
-        assert encoder.num_parameters() > 0
 
 
 class TestSynthonHead:

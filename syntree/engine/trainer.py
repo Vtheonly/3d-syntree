@@ -26,7 +26,6 @@ from torch.utils.data import DataLoader
 
 from syntree.chemistry.catalog import SynthonCatalog
 from syntree.chemistry.reactions import HANDLE_NAMES, REACTION_FAMILY_NAMES
-from syntree.data.crossdocked import CrossDockedDataset
 from syntree.data.hf_loader import (
     ShardedHuggingFaceDataset,
     ShardAwareShuffleSampler,
@@ -34,14 +33,15 @@ from syntree.data.hf_loader import (
 from syntree.data.trajectory import TrajectoryDataset
 from syntree.models.torsion_head import ContinuousTorsionHead
 from syntree.utils.checkpoint import CheckpointManager
-from syntree.utils.hardware import autotune_batch_size, free_vram_bytes
 from syntree.utils.logger import StructuredLogger
 
 logger = logging.getLogger(__name__)
 
 # Fail-closed backend registry: an unknown data.backend must never silently
-# fall through to the local CrossDocked loader (tasklist Step 6).
-SUPPORTED_DATA_BACKENDS = ("local", "huggingface", "kaggle_offline", "trajectory_pt")
+# fall through to a different loader. V2 interim backends (#5 ARCH-01 purge:
+# CrossDockedDataset and the Kaggle offline loaders were removed; the
+# multi-source local pipeline is rebuilt by #16 DATA-01 / #19 DATA-04).
+SUPPORTED_DATA_BACKENDS = ("huggingface", "trajectory_pt")
 
 
 def seed_everything(seed: int) -> None:
@@ -114,59 +114,24 @@ class ResilientTrainer:
             encoder=str(catalog_cfg.get("encoder", "pharm3d")),
             cache_embeddings=bool(catalog_cfg.get("cache_embeddings", True)),
         )
-        val_fraction = float(data_cfg.get("val_fraction", 0.1))
         trajectory_path = data_cfg.get("trajectory_dataset_path")
-        self.data_backend = str(data_cfg.get("backend", "local")).lower()
+        # V2 interim default (#5 ARCH-01): the legacy 'local' CrossDocked
+        # loader and 'kaggle_offline' loaders were purged; the default is
+        # the Hugging Face sharded backend. #16 DATA-01 / #19 DATA-04 rebuild
+        # the multi-source local pipeline.
+        self.data_backend = str(
+            data_cfg.get("backend", "huggingface")
+        ).lower()
 
         if self.data_backend not in SUPPORTED_DATA_BACKENDS:
             raise ValueError(
                 f"data.backend '{self.data_backend}' is not one of "
                 f"{list(SUPPORTED_DATA_BACKENDS)}. Refusing to guess: an "
-                f"unknown backend silently falling through to the local "
+                f"unknown backend silently falling through to another "
                 f"loader could train on the wrong data."
             )
 
-        if self.data_backend == "kaggle_offline":
-            # Offline RTX 6000 / Kaggle path (tasklist Steps 5-6): the sharded
-            # dataset is mounted read-only (e.g. /kaggle/input) and must be
-            # served with zero network access. preload_to_ram exploits the
-            # 175 GB host RAM; disabling it switches to an LRU shard cache.
-            from syntree.data.kaggle_loader import (
-                KaggleInMemoryDataset,
-                KaggleLazyDataset,
-            )
-
-            data_dir = str(
-                data_cfg.get("data_dir", "/kaggle/input/3d-syntree-dataset")
-            )
-            if not os.path.isdir(data_dir):
-                raise FileNotFoundError(
-                    f"data.backend='kaggle_offline' requires a mounted dataset "
-                    f"directory, but '{data_dir}' does not exist. Attach the "
-                    f"offline dataset (e.g. as a Kaggle Dataset) and point "
-                    f"data.data_dir at it."
-                )
-            preload = bool(data_cfg.get("preload_to_ram", True))
-            if preload:
-                print(
-                    f"[trainer] kaggle_offline backend: preloading the entire "
-                    f"dataset from {data_dir} into system RAM"
-                )
-                self.dataset = KaggleInMemoryDataset(data_dir, split="train")
-                self.val_dataset = KaggleInMemoryDataset(data_dir, split="val")
-            else:
-                max_cached = int(data_cfg.get("max_cached_shards", 2))
-                print(
-                    f"[trainer] kaggle_offline backend: lazy shard loading "
-                    f"(LRU cache of {max_cached}) from {data_dir}"
-                )
-                self.dataset = KaggleLazyDataset(
-                    data_dir, split="train", max_cached_shards=max_cached
-                )
-                self.val_dataset = KaggleLazyDataset(
-                    data_dir, split="val", max_cached_shards=max_cached
-                )
-        elif self.data_backend == "huggingface":
+        if self.data_backend == "huggingface":
             hf_cfg = dict(data_cfg.get("huggingface", {}))
             repo_id = str(hf_cfg.get("repo_id", "")).strip()
             if not repo_id:
@@ -195,26 +160,13 @@ class ResilientTrainer:
             self.dataset = TrajectoryDataset(trajectory_path, split="train")
             self.val_dataset = TrajectoryDataset(trajectory_path, split="val")
         else:
-            if self.data_backend == "trajectory_pt":
-                raise ValueError(
-                    "data.backend='trajectory_pt' requires "
-                    "data.trajectory_dataset_path to be set"
-                )
-            self.dataset = CrossDockedDataset(
-                data_cfg["data_dir"],
-                split="train",
-                catalog=self.catalog,
-                num_synthetic=int(data_cfg.get("synthetic_samples", 100)),
-                synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
-                split_manifest_path=data_cfg.get("split_manifest_path"),
-            )
-            self.val_dataset = CrossDockedDataset(
-                data_cfg["data_dir"],
-                split="val",
-                catalog=self.catalog,
-                num_synthetic=max(8, int(self.dataset.num_synthetic * val_fraction)),
-                synthetic_fallback=bool(data_cfg.get("synthetic_fallback", False)),
-                split_manifest_path=data_cfg.get("split_manifest_path"),
+            raise ValueError(
+                "data.backend='trajectory_pt' requires "
+                "data.trajectory_dataset_path to be set, and the legacy "
+                "local CrossDocked loader was removed in the V2 purge "
+                "(#5 ARCH-01). Use the 'huggingface' sharded backend, or "
+                "wait for the V2 multi-source local pipeline (#16 DATA-01 / "
+                "#19 DATA-04)."
             )
 
         # STRICT REAL-DATA GUARD: Reject toy stubs and synthetic fallbacks in
@@ -232,8 +184,9 @@ class ResilientTrainer:
                     f"'{self.data_backend}', {len(self.dataset)} samples).\n\n"
                     f"Training on synthetic data would silently produce a model\n"
                     f"with no real-chemistry value.\n"
-                    f"To build and upload the complete real dataset, run:\n"
-                    f"  python scripts/build_full_dataset.py --upload\n"
+                    f"To obtain the verified real dataset, sync it from the\n"
+                    f"Hugging Face sharded dataset repository (see\n"
+                    f"docs/agent/STATUS.md and scripts/download_assets.py).\n"
                     f"{'='*70}"
                 )
             if len(self.dataset) < min_samples:
@@ -243,8 +196,9 @@ class ResilientTrainer:
                     f"'{self.data_backend}' contains only {len(self.dataset)} training "
                     f"samples (min required: {min_samples}).\n\n"
                     f"Training will NOT proceed on a stub or placeholder dataset.\n"
-                    f"To build and upload the complete real dataset, run:\n"
-                    f"  python scripts/build_full_dataset.py --upload\n"
+                    f"To obtain the verified real dataset, sync it from the\n"
+                    f"Hugging Face sharded dataset repository (see\n"
+                    f"docs/agent/STATUS.md and scripts/download_assets.py).\n"
                     f"{'='*70}"
                 )
 
@@ -301,10 +255,11 @@ class ResilientTrainer:
             self.collate_batch, pocket_atom_cap=self.pocket_atom_cap,
             stats=self.collate_stats,
         )
-        # GPU auto-scaling.
+        # Explicit micro-batch / gradient-accumulation settings (V2 #5
+        # ARCH-01: dynamic VRAM-probing auto-scale was purged; the T4 memory
+        # profile is certified by measurement in #43 OPS-03, not probed).
         self.batch_size = max(1, int(data_cfg.get("batch_size", 16)))
         self.lr_scale_factor = 1.0
-        self._autoscale_batch(train_cfg)
 
         self.loader = self._make_loader(
             self.dataset, shuffle=True,
@@ -591,182 +546,6 @@ class ResilientTrainer:
             collate_fn=self._collate_fn,
             drop_last=False,
             pin_memory=self.device.type == "cuda",
-        )
-
-    # ------------------------------------------------------------------
-    # GPU auto-scaling
-    # ------------------------------------------------------------------
-    def _heaviest_probe_pool(
-        self, max_items: int = 64, sample_cap: int = 512, trim_top: float = 0.0
-    ):
-        """Indices of the heaviest-pocket items, ranked by atom count.
-        Deterministic strided sample (at most ``sample_cap`` __getitem__
-        calls, so full-data runs stay cheap), ranked by pocket atom count,
-        truncated to ``max_items``. Used by the auto-scale probe so memory
-        certification reflects heavy-but-plausible training batches.
-
-        ``trim_top`` drops the top fraction of the ranked sample before
-        truncation (default 0.10 via config). Rationale: certifying against
-        the literal top-k monster pockets sized the micro-batch for the 1%
-        worst case, which left ~10 GB idle on a T4 for the whole run (real
-        batches only needed ~4 GB). The trimmed monster tail is instead
-        absorbed at runtime by the OOM skip guard + the adaptive epoch-end
-        rescale, which together make an aggressive batch safe.
-        """
-        n = len(self.dataset)
-        if n <= 0:
-            return []
-        stride = max(1, n // max(1, sample_cap))
-        sized = []
-        for idx in range(0, n, stride):
-            try:
-                item = self.dataset[idx]
-                pos = getattr(item, "pocket_pos", None)
-                if pos is None:
-                    pos = getattr(item, "pos", None)
-                n_atoms = int(pos.size(0)) if pos is not None else 0
-            except Exception:
-                continue
-            sized.append((n_atoms, idx))
-        sized.sort(key=lambda t: (-t[0], t[1]))
-        if trim_top > 0.0 and len(sized) > 4:
-            sized = sized[max(1, int(len(sized) * float(trim_top))):]
-        return [idx for _, idx in sized[: max(1, max_items)]]
-
-    def _autoscale_batch(self, train_cfg: dict) -> None:
-        """Grow batch size until target VRAM fraction is reached."""
-        auto = dict(train_cfg.get("auto_scale", {}))
-        if not auto.get("enabled", False) or self.device.type != "cuda":
-            return
-
-        # Explicit micro-batch override (e.g. in the Colab env cell:
-        # os.environ["SYNTREE_FORCE_MICRO_BATCH"] = "16"). Skips probing
-        # entirely; the runtime OOM skip + adaptive rescale guard keeps an
-        # aggressive choice safe.
-        try:
-            force = int(os.environ.get("SYNTREE_FORCE_MICRO_BATCH", "0") or 0)
-        except ValueError:
-            force = 0
-        if force >= 1:
-            effective = self.batch_size * self.accum_steps
-            tuned = max(1, force)
-            new_accum = max(1, int(round(effective / tuned)))
-            print(
-                f"[trainer] auto-scale: SYNTREE_FORCE_MICRO_BATCH={tuned} "
-                f"override | accum {self.accum_steps} -> {new_accum} | "
-                f"effective {effective} -> {tuned * new_accum} "
-                f"(runtime OOM guard active)"
-            )
-            self.batch_size, self.accum_steps = tuned, new_accum
-            return
-
-        target_fraction = float(auto.get("target_vram_fraction", 0.85))
-        max_batch = int(auto.get("max_batch_size", 8192))
-        free_bytes = free_vram_bytes(self.device)
-        if free_bytes <= 0:
-            return
-        target_bytes = int(free_bytes * target_fraction)
-
-        rng_state = torch.get_rng_state()
-        cuda_states = (
-            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-        )
-
-        # Realistic-pool probing (T4 under-utilisation fix): the previous
-        # probe certified the literal top-k HEAVIEST items, so a batch of 8
-        # was sized for eight 1600-atom monsters (8.5 GB peak reserved)
-        # while real random batches at batch=8 only needed ~4 GB - leaving
-        # ~10 GB of the T4 idle for the entire run. The pool now drops the
-        # top ``probe_trim_top_fraction`` of the atom-count ranking (heavy
-        # but plausible batches) and the runtime OOM skip + adaptive rescale
-        # guard absorbs the rare monster batches that slip through.
-        pool = self._heaviest_probe_pool(
-            max_items=int(auto.get("probe_pool_size", 64)),
-            sample_cap=int(auto.get("probe_sample_cap", 512)),
-            trim_top=float(auto.get("probe_trim_top_fraction", 0.10)),
-        )
-
-        def probe(batch_size: int) -> None:
-            items = [self.dataset[i] for i in pool[:batch_size]]
-            batch = self._collate_fn(items).to(self.device)
-            target = batch.target_synthon.clamp(min=0, max=len(self.catalog) - 1)
-            stop_index = len(self.catalog)
-            target_stop = getattr(
-                batch, "target_stop", torch.zeros_like(target, dtype=torch.bool)
-            )
-            target_action = torch.where(
-                target_stop.bool(),
-                torch.full_like(target, stop_index),
-                target,
-            )
-            synthon_mask, reaction_mask = self._build_training_masks(batch)
-            with torch.autocast(
-                device_type="cuda", dtype=self.amp_dtype, enabled=self.use_amp
-            ):
-                preds = self.model(
-                    batch,
-                    self.catalog.embeddings.to(self.device),
-                    synthon_mask,
-                    reaction_mask,
-                )
-                loss = (
-                    self.criterion(preds["reaction_logits"], batch.target_reaction_family_idx)
-                    + self.criterion(preds["synthon_logits"], target_action)
-                    + 0.5 * ContinuousTorsionHead.loss_fn(
-                        preds["torsion_mu"], preds["torsion_kappa"],
-                        batch.target_dihedral,
-                    )
-                )
-            loss.backward()
-            self.model.zero_grad(set_to_none=True)
-
-        try:
-            result = autotune_batch_size(
-                probe,
-                dataset_size=min(len(self.dataset), max(1, len(pool))),
-                start_batch=min(self.batch_size, max(1, len(pool))),
-                max_batch=min(max_batch, max(1, len(pool))),
-                target_bytes=target_bytes,
-                device=self.device,
-            )
-        except Exception as exc:
-            logger.warning("auto-scale probe failed (%s); keeping batch=%d", exc, self.batch_size)
-            result = {"batch_size": float(self.batch_size), "peak_bytes": 0.0}
-        finally:
-            torch.set_rng_state(rng_state)
-            if cuda_states is not None:
-                torch.cuda.set_rng_state_all(cuda_states)
-            self.model.zero_grad(set_to_none=True)
-            torch.cuda.empty_cache()
-
-        tuned = max(1, int(result["batch_size"]))
-        peak_gb = float(result["peak_bytes"]) / 1024 ** 3
-        free_gb = free_bytes / 1024 ** 3
-        target_gb = target_bytes / 1024 ** 3
-
-        if tuned <= self.batch_size and peak_gb < 0.5:
-            print(f"[trainer] auto-scale: disabled (probe inconclusive); batch={self.batch_size}")
-            return
-
-        effective = self.batch_size * self.accum_steps
-        new_accum = max(1, int(round(effective / tuned)))
-        old_batch, old_accum = self.batch_size, self.accum_steps
-        old_effective = max(1, old_batch * old_accum)
-        self.batch_size, self.accum_steps = tuned, new_accum
-        new_effective = max(1, self.batch_size * self.accum_steps)
-        auto_lr_rule = str(auto.get("lr_scale_rule", "linear")).lower()
-        if auto_lr_rule == "linear":
-            self.lr_scale_factor = new_effective / old_effective
-        elif auto_lr_rule == "sqrt":
-            self.lr_scale_factor = math.sqrt(new_effective / old_effective)
-        else:
-            self.lr_scale_factor = 1.0
-
-        print(
-            f"[trainer] auto-scale: free VRAM {free_gb:.2f} GB | target {target_gb:.2f} GB\n"
-            f"[trainer] auto-scale: batch {old_batch} -> {tuned} | accum {old_accum} -> {new_accum} | "
-            f"effective {old_effective} -> {new_effective} | lr scale {self.lr_scale_factor:.3f} | "
-            f"probe peak {peak_gb:.2f} GB ({100.0 * peak_gb / max(free_gb, 1e-9):.0f}% of free)"
         )
 
     def _make_scheduler(self):

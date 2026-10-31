@@ -26,7 +26,7 @@
     "synthetic_samples": 100,
     "trajectory_dataset_path": null,
     "terminal_cap_min_mw": 250,
-    "backend": "local",
+    "backend": "huggingface",
     "huggingface": {
       "repo_id": "JJKK1212/3d-syntree-multidataset",
       "revision": "main",
@@ -70,13 +70,6 @@
       "reaction_ce": 0.5
     },
     "eval_interval_epochs": 1,
-    "auto_scale": {
-      "enabled": false,
-      "target_vram_fraction": 0.85,
-      "max_batch_size": 8192,
-      "scale_model": true,
-      "lr_scale_rule": "linear"
-    },
     "fresh_start": false
   },
   "reinforcement_learning": {

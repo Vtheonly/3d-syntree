@@ -3,7 +3,7 @@
 The notebook is the production entrypoint (Google Colab), so it must satisfy
 a strict contract:
 * valid nbformat v4 JSON with the documented cell sequence,
-* CELL 4.5 build gate (BUILD_REAL_DATASET) invoking build_full_dataset.py,
+* CELL 4.5 build gate (BUILD_REAL_DATASET; V2: builder pending #16 DATA-01),
 * CELL 5 syncing assets and asserting train_samples >= 50,
 * CELL 1 RUNTIME_CONFIG merging (via main.deep_update) with
   configs/train_colab_12h.json into a fail-closed production config,
@@ -69,7 +69,7 @@ class TestNotebookStructure:
             "CELL 6.5: Training Mode",
             "CELL 7: Launch",
             "CELL 8: Status",
-            "CELL 9: Stage 2 PPO",
+            "CELL 9: Stage 2 GFlowNet",
             "CELL 10: Comparative Benchmark",
         ]
         positions = []
@@ -92,12 +92,14 @@ class TestBuildGate:
         src = _src(cell)
         assert "BUILD_REAL_DATASET = False" in src
 
-    def test_build_gate_invokes_builder(self, notebook):
+    def test_build_gate_fails_closed_until_v2_pipeline(self, notebook):
+        """V2 (#5 ARCH-01): the legacy builder was purged; the gate must
+        default off and refuse (fail closed) until #16 DATA-01 lands."""
         _, cell = _find_cell(notebook, "CELL 4.5")
         src = _src(cell)
-        assert "build_full_dataset.py" in src
-        assert "--upload" in src
-        assert "--repo-id JJKK1212/3d-syntree-multidataset" in src
+        assert "BUILD_REAL_DATASET = False" in src
+        assert "#16 DATA-01" in src
+        assert "raise RuntimeError" in src
 
 
 class TestSyncGate:
@@ -112,9 +114,11 @@ class TestSyncGate:
         src = _src(cell)
         assert "assert train_samples >= 50" in src
 
-    def test_cell5_mentions_build_command(self, notebook):
+    def test_cell5_mentions_v2_rebuild_path(self, notebook):
         _, cell = _find_cell(notebook, "CELL 5: Sync Clean Sharded")
-        assert "build_full_dataset.py" in _src(cell)
+        # V2 (#5 ARCH-01): the legacy builder was purged; the cell must
+        # point at the agent status doc instead of a deleted script.
+        assert "docs/agent/STATUS.md" in _src(cell)
 
     def test_cell5_uses_download_assets(self, notebook):
         _, cell = _find_cell(notebook, "CELL 5: Sync Clean Sharded")

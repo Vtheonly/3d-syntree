@@ -105,7 +105,10 @@ class TestCurriculumRun:
             assert "curriculum_level_weights" in entry
             assert "curriculum_level_counts" in entry
             weights = entry["curriculum_level_weights"]
-            assert abs(sum(weights.values()) - 1.0) < 1e-6
+            # Weights are recorded rounded to 4 decimals (curriculum.py
+            # history serialization); the sum may drift by up to
+            # n_levels * 5e-5, so normalize to 1e-3, not 1e-6.
+            assert abs(sum(weights.values()) - 1.0) < 1e-3
             # floor respected in the sampled mixture
             for lv, w in weights.items():
                 assert w >= 0.05 - 1e-9

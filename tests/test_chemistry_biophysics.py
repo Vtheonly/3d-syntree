@@ -38,7 +38,6 @@ from syntree.data.featurizer import (
     MolecularFeaturizer,
     assign_pocket_formal_charges,
 )
-from syntree.models.pocket_encoder import PocketEncoder
 
 
 @pytest.fixture(scope="module")
@@ -580,48 +579,6 @@ class TestPocketFormalCharges:
         assert feats["pocket_charge"].shape == feats["pocket_z"].shape
         assert feats["pocket_charge"].dtype == torch.float32
         assert feats["pocket_charge"].abs().sum().item() == 0.0  # neutral gly
-
-
-# ---------------------------------------------------------------------------
-# PocketEncoder charge consumption (Mistake 6 wiring)
-# ---------------------------------------------------------------------------
-class TestPocketEncoderCharges:
-    @staticmethod
-    def _encoder():
-        torch.manual_seed(0)
-        return PocketEncoder(hidden_dim=16, num_layers=1, num_radial=6)
-
-    def test_charge_changes_encoding(self):
-        enc = self._encoder().eval()
-        pos = torch.tensor([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [0.0, 1.5, 0.0]])
-        z = torch.tensor([6, 7, 8])
-        s0, _, p0 = enc(pos, z)
-        s1, _, p1 = enc(pos, z, charges=torch.tensor([0.0, 0.0, 0.0]))
-        s2, _, p2 = enc(pos, z, charges=torch.tensor([1.0, -1.0, 0.0]))
-        # Neutral charges reproduce the legacy (None) pathway.
-        assert torch.allclose(s0, s1)
-        assert torch.allclose(p0, p1)
-        # Charged residues modulate the encoding.
-        assert not torch.allclose(s0, s2)
-        assert not torch.allclose(p0, p2)
-
-    def test_charged_atoms_change_more_than_neutral_ones(self):
-        enc = self._encoder().eval()
-        pos = torch.tensor([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [0.0, 1.5, 0.0]])
-        z = torch.tensor([6, 6, 6])
-        s0, _, _ = enc(pos, z)
-        s1, _, _ = enc(pos, z, charges=torch.tensor([0.0, 1.0, 0.0]))
-        delta = (s1 - s0).norm(dim=-1)
-        # The charged atom's features move most (message passing mixes a
-        # little into neighbours, but the direct effect dominates).
-        assert delta[1] >= delta.max() * 0.9
-
-    def test_charge_length_mismatch_raises(self):
-        enc = self._encoder()
-        pos = torch.zeros(3, 3)
-        z = torch.tensor([6, 6, 6])
-        with pytest.raises(ValueError):
-            enc(pos, z, charges=torch.zeros(2))
 
 
 # ---------------------------------------------------------------------------

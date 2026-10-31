@@ -1,9 +1,9 @@
 """Trajectory-Balance GFlowNet Stage-2 engine (tasklist RL modernisation).
 
-Standard PPO maximises ``E[R]`` and is mathematically incentivised to
-collapse the policy onto the single highest-scoring molecule it has found -
-useless in drug discovery, where 50 structurally diverse chemical series are
-worth more than one greedy hit. GFlowNets (Bengio et al., 2022) instead
+A reward-maximising policy-gradient objective is mathematically
+incentivised to collapse onto the single highest-scoring molecule it has
+found - useless in drug discovery, where 50 structurally diverse chemical
+series are worth more than one greedy hit. GFlowNets (Bengio et al., 2022) instead
 train the policy to sample molecules *proportional to their reward*,
 
     P(x) = R(x) / Z,
@@ -31,7 +31,7 @@ the hotspot placement heuristic (not by the policy), so TB conditions on
 
 The policy's factorized log-probability ``log P(reaction family) +
 log P(synthon | family)`` is the forward flow contribution; the von Mises
-torsion head stays supervised-only (identical to the PPO objective's scope).
+torsion head stays supervised-only.
 """
 
 from __future__ import annotations
