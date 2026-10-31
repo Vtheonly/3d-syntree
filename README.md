@@ -277,9 +277,9 @@ tracker; last updated 2026-11-01):
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Branch clean-room reset (purge of all legacy content) | **Done, verified** | commit `075f86d` — branch tree verified empty on origin |
-| Frozen state tensor contract & PyG batch path | **Implemented + locally tested** | `syntree/core/schema.py`, `tests/test_tensor_contracts.py` (#6) |
-| Non-singular PaiNN norms & bounded unit vectors | **Implemented + locally tested** | `syntree/models/equivariant.py`, `tests/test_mathematical_singularities.py` (#7) |
+| Branch clean-room reset (purge of all legacy content) | **Done, verified, closed** | commit `075f86d` — branch tree verified empty on origin; foundation `0f5d74a` (#5) |
+| Frozen state tensor contract & PyG batch path | **Done, verified, closed** | `syntree/core/schema.py` @ `0001087`, 93/93 tests (#6) |
+| Non-singular PaiNN norms & bounded unit vectors | **Done, verified, closed** | `syntree/models/equivariant.py` @ `00ec653`, 45/45 tests (#7) |
 | Reaction registry, catalog, chemistry engines | Not started | #11–#15, #40–#42 |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Backbone, decoder, policy heads, policy assembly | Not started | #21–#25, #39 |

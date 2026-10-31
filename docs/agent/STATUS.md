@@ -12,7 +12,8 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-01 (session S-V2-01, in progress).
+> Last synchronized: 2026-11-01 (session S-V2-01 close: #5, #6, #7 verified
+> and closed in the clean-room era).
 
 ## Legend
 
@@ -24,9 +25,9 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 
 | # | ID | Title (short) | Status | Module | Latest commit | Test evidence | Blocker / next action |
 |---|---|---|---|---|---|---|---|
-| 5 | ARCH-01 | Clean-room purge + V2 foundation | In Progress | repo-wide | `075f86d` (purge, verified empty) | Tree API: 0 entries at HEAD; all legacy targets 404 | Deliver fresh foundation (scaffold, README, agent docs) — this session |
-| 6 | ARCH-02 | Frozen tensor schemas & PyG contracts | In Progress | `syntree/core/schema.py` | — | — | Implement from scratch per issue body + D-V2-002 rules |
-| 7 | MATH-01 | Non-singular PaiNN norms | In Progress | `syntree/models/equivariant.py` | — | — | Implement from scratch per issue body + D-V2-004 equations |
+| 5 | ARCH-01 | Clean-room purge + V2 foundation | **Closed** (2026-11-01) | repo-wide | `075f86d` (purge) + `0f5d74a` (foundation) | Trees API: 0 entries at purge commit; all legacy targets 404; 0 purged-module references in new `syntree/`; 138/138 tests green | — |
+| 6 | ARCH-02 | Frozen tensor schemas & PyG contracts | **Closed** (2026-11-01) | `syntree/core/schema.py` | `0001087` | `tests/test_tensor_contracts.py` 93/93; both #6 acceptance criteria verified (conforming states pass; exact 67-D message raised via constructor/validator/collator) | — |
+| 7 | MATH-01 | Non-singular PaiNN norms | **Closed** (2026-11-01) | `syntree/models/equivariant.py` | `00ec653` | `tests/test_mathematical_singularities.py` 45/45; `test_safe_norm_zero_distance` exact-0.0 value & gradient; SO(3) covariance over 5×200 vectors | — |
 | 8 | MATH-02 | Stable von Mises backward (Amos ratio) | Ready (deps: #5) | `syntree/models/` | — | — | |
 | 9 | MATH-03 | Continuous cosine cutoff envelopes | Ready (deps: #5) | `syntree/models/` | — | — | |
 | 10 | MATH-04 | Fail-closed FP32 precision engine | Ready (deps: #5) | `syntree/utils/` | — | — | V2 has no AMP by construction (D-V2-005); #10 adds enforcement |
@@ -40,7 +41,7 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 18 | DATA-03 | Trajectory extraction + exact replay | Blocked (needs #11, #12, #15, #17, #41) | `syntree/data/` | — | — | |
 | 19 | DATA-04 | Compressed sharding engine | Blocked (needs #18) | `syntree/data/` | — | — | |
 | 20 | DATA-05 | Coordinate/dihedral augmentation | Blocked (needs #19) | `syntree/data/` | — | — | Train split only |
-| 21 | MODEL-01 | BipartitePaiNN backbone | Ready once #6+#7 verified | `syntree/models/bipartite.py` | — | — | Critical path; consumes schema (#6) + safe primitives (#7) |
+| 21 | MODEL-01 | BipartitePaiNN backbone | **Ready (next recommended)** (#6, #7 closed) | `syntree/models/bipartite.py` | — | — | Critical path; consumes schema (#6) + safe primitives + PaiNN blocks (#7) |
 | 22 | MODEL-02 | Handle selection head | Blocked (needs #21) | `syntree/models/` | — | — | |
 | 23 | MODEL-03 | Cross-attention decoder | Blocked (needs #9, #21, #22) | `syntree/models/` | — | — | |
 | 24 | MODEL-04 | Hierarchical heads + torsion space | Blocked (needs #11, #8, #23) | `syntree/models/` | — | — | |
@@ -65,8 +66,14 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
 | 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: 0 (clean-room era).
-#45 excluded by standing rule.
+**Progress denominator: 40 issues (#5–#44).** Closed: 3 (#5, #6, #7 —
+clean-room era). #45 excluded by standing rule.
+
+## Pre-existing failures
+
+None. The clean-room suite started empty and is 138/138 green; there are
+no inherited failures (the pre-reset suite and its 12 documented failures
+were purged with the branch, decision D-V2-006).
 
 ## Session log pointer
 

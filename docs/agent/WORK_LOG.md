@@ -62,22 +62,87 @@
 - Dev environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric
   2.8.0.post1, pytest 9.0.2 (CPU sandbox — no GPU claims made).
 
-### 4. Implementation records for #6 / #7
+### 4. #6 ARCH-02 — implemented, tested locally, closed
 
-(To be finalized at session close: modules, tests, commands, results,
-commit SHAs — see the issue comments for the authoritative evidence.)
+- `src/syntree/core/schema.py` (new, 745 lines): frozen
+  `StateTensorContract` (12 canonical tensor fields + `schema_version`,
+  `SCHEMA_VERSION = 2`), `validate_state_tensors` /
+  `validate_state_batch` (fail-closed dtype/rank/shape, cross-field
+  lengths, batch-index ranges, atomic-number bounds 1..100, finiteness),
+  `collate_state_batch` (single batching path; canonical
+  `pocket_batch`/`ligand_batch` materialised via PyG `follow_batch` with
+  aliases dropped; explicit empty-ligand t=0 states; only two documented
+  normalisations 0-dim→`[1]` and 1-D `[64]`→`[1,64]`; pre-batched /
+  multi-graph samples rejected; per-sample stamps verified then stripped;
+  batch stamped + re-validated), `stamp_schema_version`,
+  `is_schema_version_compatible`, `TensorContractError(ValueError)`, and
+  the hard 67-D rejection with the exact issue-pinned message taking
+  precedence over missing-field diagnostics.
+- `tests/test_tensor_contracts.py` (new, 93 tests): both acceptance
+  criteria + full fail-closed contract + version stamping + every
+  collator rule.
+- Commit `0001087`, pushed (`0f5d74a..0001087`). Local CPU test run:
+  `python -m pytest tests/test_tensor_contracts.py -q` → **93 passed**.
 
-### 5. Commands executed (session, abridged)
+### 5. #7 MATH-01 — implemented, tested locally, closed
 
-```
-git clone https://github.com/Vtheonly/3d-syntree.git && git checkout 3d-synV2
-<GitHub API via token: issue fetch/reopen/comment operations>
-git rm -r -f . && git commit && git push <token-scoped URL> 3d-synV2
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install torch_geometric-2.8.0.post1.whl   # cached wheel, upstream artifact
-python -m pytest tests/ -q                    # evidence recorded below at close
-```
+- `src/syntree/models/equivariant.py` (new, 348 lines): `SAFE_NORM_EPS =
+  1e-5`, `safe_norm` / `safe_unit_vector` (exact issue signatures and
+  formulas), `PaiNNInteraction` (paper Eqs. 7–8: shared φ(s_j) atomwise
+  network split into three gates × bias-free radial filter banks; vector
+  message = gated `v_j` + gated non-singular direction; scatter-add;
+  residual), `PaiNNMixing` (paper Eqs. 9–10: U/V linear maps,
+  `safe_norm(||Vv||)`, invariant `⟨Uv,Vv⟩` coupling, shared scaling
+  network). Equation form verified against arXiv:2102.03150v4 (PDF
+  fetched and Eqs. 7–10 extracted 2026-11-01; decision D-V2-004). No
+  NaN-masking / fp16 clamps anywhere (D-V2-005).
+- `tests/test_mathematical_singularities.py` (new, 45 tests): both
+  acceptance criteria (exact pinned names
+  `test_safe_norm_zero_distance`, `TestSO3Covariance::
+  test_directional_vectors_exact_rotation_covariance`) plus analytic
+  gradient identity, |∇| ≤ 1 bound across 11 magnitude scales,
+  torch.norm asymptotics, unit boundedness across 30 orders of magnitude,
+  degenerate geometry through the blocks (coincident atoms, zero edge
+  vectors, zero vector features, empty edge sets) with finite bounded
+  gradients (block-level documented bound H/ε, observed ~1.1e5), NaN
+  propagation (fail-loudly), and invariance/equivariance/translation
+  tests of interaction, mixing, and their composition under random rigid
+  motions.
+- Commit `00ec653`, pushed (`0001087..00ec653`). Local CPU test run:
+  `python -m pytest tests/ -q` → **138 passed** (93 + 45).
 
-### 6. Next actions
+### 6. Verification summary (all local CPU; no GPU/T4 claims)
 
-Recorded in `HANDOFF.md` at session close.
+- Environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric
+  2.8.0.post1, pytest 9.0.2.
+- `python -m pytest tests/ -q` → **138 passed, 0 failed, 0 warnings**.
+- #5 acceptance: purge verified (Trees API 0 entries at `075f86d`;
+  legacy targets 404); `rg 'craft|download_mode|dpo|pocket_encoder|
+  crossdocked|kaggle_loader' src/syntree/` → 0 matches; clean git status.
+- #6 acceptance: `TestConformingStates` 8/8; `TestLegacyFrankenRejection`
+  8/8 (exact message text asserted verbatim).
+- #7 acceptance: `test_safe_norm_zero_distance` 1/1 (exact 0.0 output and
+  strictly-0.0 gradient — fp32 and fp64); `TestSO3Covariance` 3/3.
+- Issues #5/#6/#7 closed with evidence comments (this session).
+
+### 7. Commits / pushes (session total)
+
+| Commit | Content | Push range |
+|---|---|---|
+| `075f86d` | reset(v2)!: purge branch to empty root | `6dbb66a..075f86d` |
+| `0f5d74a` | feat(arch-01): fresh V2 foundation | `075f86d..0f5d74a` |
+| `0001087` | feat(arch-02): frozen state tensor contract + canonical batch path | `0f5d74a..0001087` |
+| `00ec653` | feat(math-01): non-singular norms + PaiNN blocks | `0001087..00ec653` |
+| (this docs commit) | docs(agent): session record — statuses, SHAs, handoff | — |
+
+### 8. GitHub issues updated
+
+- Reopened with rationale: #5, #6, #7 (earlier this session).
+- Closed with evidence comments: #5, #6, #7 (end of session).
+- Verified untouched and OPEN: #45 (permanent).
+
+### 9. Next actions
+
+See `HANDOFF.md` §1: next dependency-ready task is #21 MODEL-01
+(BipartitePaiNN backbone) on the critical path; parallel-safe:
+#8, #9, #10, #11, #14, #16, #32; #36 requires user authorization.
