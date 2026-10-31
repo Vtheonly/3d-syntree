@@ -6,6 +6,8 @@ from syntree.models.equivariant import (
     PaiNNMixing,
     RadialBasis,
     build_radius_graph,
+    safe_norm,
+    safe_unit_vector,
 )
 from syntree.models.torsion_head import ContinuousTorsionHead
 from syntree.models.reaction_head import ReactionHead
@@ -17,6 +19,8 @@ __all__ = [
     "PaiNNMixing",
     "RadialBasis",
     "build_radius_graph",
+    "safe_norm",
+    "safe_unit_vector",
     "ContinuousTorsionHead",
     "ReactionHead",
     "SynTreePolicy",

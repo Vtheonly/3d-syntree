@@ -30,6 +30,7 @@ import torch.utils.checkpoint
 
 from syntree.models.equivariant import (
     BatchedPaiNNLayer,
+    safe_norm,
     RadialBasis,
     build_radius_graph,
 )
@@ -192,7 +193,9 @@ class BipartitePaiNN(nn.Module):
         edge_index = build_radius_graph(all_pos, all_batch, self.cutoff)
         row, col = edge_index
         edge_vec = all_pos[col] - all_pos[row]
-        edge_dist = torch.norm(edge_vec, dim=-1)
+        # Non-singular edge distances (#7 MATH-01): coincident atoms stay
+        # finite and gradients stay bounded.
+        edge_dist = safe_norm(edge_vec, dim=-1)
         edge_rbf = self.rbf(edge_dist)                     # [E, num_radial]
 
         scalar = self.atomic_embedding(all_z) + self.node_type_embedding(node_type)
@@ -228,12 +231,12 @@ class BipartitePaiNN(nn.Module):
                 # GradScaler and tolerates non-tensor/constant inputs
                 # (edge_index, edge_vec, ... are grad-free buffers here).
                 scalar, vector = torch.utils.checkpoint.checkpoint(
-                    layer, scalar, vector, edge_index, edge_vec, edge_dist,
+                    layer, scalar, vector, edge_index, edge_vec,
                     edge_rbf, use_reentrant=False,
                 )
             else:
                 scalar, vector = layer(
-                    scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
+                    scalar, vector, edge_index, edge_vec, edge_rbf
                 )
 
         scalar = self.layer_norm(self.dropout(scalar))

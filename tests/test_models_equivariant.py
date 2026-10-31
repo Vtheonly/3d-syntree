@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from syntree.models.equivariant import (
+    safe_norm,
     BatchedPaiNNLayer,
     CosineCutoff,
     PaiNNLayer,
@@ -105,7 +106,7 @@ class TestPaiNNLayers:
         ei = build_radius_graph(pos, batch, cutoff=5.0)
         row, col = ei
         edge_vec = pos[col] - pos[row]
-        edge_dist = torch.norm(edge_vec, dim=-1)
+        edge_dist = safe_norm(edge_vec, dim=-1)
         rbf = RadialBasis(16, 5.0)
         edge_rbf = rbf(edge_dist)
         return ei, edge_vec, edge_dist, edge_rbf
@@ -115,7 +116,7 @@ class TestPaiNNLayers:
         layer = BatchedPaiNNLayer(hidden_dim=32, num_radial=16)
         s = torch.randn(15, 32)
         v = torch.randn(15, 3, 32)
-        s2, v2 = layer(s, v, ei, edge_vec, edge_dist, edge_rbf)
+        s2, v2 = layer(s, v, ei, edge_vec, edge_rbf)
         assert s2.shape == (15, 32)
         assert v2.shape == (15, 3, 32)
 
@@ -134,7 +135,7 @@ class TestPaiNNLayers:
         layer = BatchedPaiNNLayer(hidden_dim=32, num_radial=16)
         s = torch.randn(15, 32, requires_grad=True)
         v = torch.randn(15, 3, 32, requires_grad=True)
-        s2, v2 = layer(s, v, ei, edge_vec, edge_dist, edge_rbf)
+        s2, v2 = layer(s, v, ei, edge_vec, edge_rbf)
         (s2.sum() + v2.sum()).backward()
         assert s.grad is not None and s.grad.abs().sum() > 0
         assert v.grad is not None and v.grad.abs().sum() > 0
@@ -145,7 +146,7 @@ class TestPaiNNLayers:
         s = torch.randn(15, 32)
         v = torch.randn(15, 2, 32)  # wrong spatial dim
         with pytest.raises(ValueError):
-            layer(s, v, ei, edge_vec, edge_dist, edge_rbf)
+            layer(s, v, ei, edge_vec, edge_rbf)
 
 
 class TestEquivariance:
@@ -164,7 +165,7 @@ class TestEquivariance:
         ei = build_radius_graph(pos, batch, cutoff=10.0)  # dense: stable edges
         row, col = ei
         edge_vec = pos[col] - pos[row]
-        edge_dist = torch.norm(edge_vec, dim=-1)
+        edge_dist = safe_norm(edge_vec, dim=-1)
         edge_rbf = RadialBasis(12, 10.0)(edge_dist)
         return pos, batch, ei, edge_vec, edge_dist, edge_rbf
 
@@ -183,16 +184,16 @@ class TestEquivariance:
         layer.eval()
         R = self._rot(0.9)
         with torch.no_grad():
-            s1, _ = layer(s, v, ei, edge_vec, edge_dist, edge_rbf)
+            s1, _ = layer(s, v, ei, edge_vec, edge_rbf)
             pos2 = pos @ R.T
             ei2 = build_radius_graph(pos2, batch, cutoff=10.0)
             row, col = ei2
             ev2 = pos2[col] - pos2[row]
-            ed2 = torch.norm(ev2, dim=-1)
+            ed2 = safe_norm(ev2, dim=-1)
             er2 = RadialBasis(12, 10.0)(ed2)
             # Equivariance scenario: BOTH positions and vector inputs rotate.
             v_rot = torch.einsum("nkh,sk->nsh", v, R)
-            s2, _ = layer(s, v_rot, ei2, ev2, ed2, er2)
+            s2, _ = layer(s, v_rot, ei2, ev2, er2)
         assert torch.allclose(s1, s2, atol=1e-5), (s1 - s2).abs().max()
 
     def test_vector_equivariance_under_rotation(self, layer, inputs):
@@ -202,16 +203,16 @@ class TestEquivariance:
         layer.eval()
         R = self._rot(1.3, axis=0)
         with torch.no_grad():
-            _, v1 = layer(s, v, ei, edge_vec, edge_dist, edge_rbf)
+            _, v1 = layer(s, v, ei, edge_vec, edge_rbf)
             pos2 = pos @ R.T
             ei2 = build_radius_graph(pos2, batch, cutoff=10.0)
             row, col = ei2
             ev2 = pos2[col] - pos2[row]
-            ed2 = torch.norm(ev2, dim=-1)
+            ed2 = safe_norm(ev2, dim=-1)
             er2 = RadialBasis(12, 10.0)(ed2)
             # Equivariance scenario: rotated positions AND rotated vectors in.
             v_rot = torch.einsum("nkh,sk->nsh", v, R)
-            _, v2 = layer(s, v_rot, ei2, ev2, ed2, er2)
+            _, v2 = layer(s, v_rot, ei2, ev2, er2)
             # v2 must equal v1 rotated: v1 @ R.T (spatial index at dim 1)
             expected = torch.einsum("nkh,sk->nsh", v1, R)
         assert torch.allclose(v2, expected, atol=1e-4), (v2 - expected).abs().max()
@@ -223,14 +224,14 @@ class TestEquivariance:
         layer.eval()
         t = torch.tensor([3.0, -2.0, 7.0])
         with torch.no_grad():
-            s1, v1 = layer(s, v, ei, edge_vec, edge_dist, edge_rbf)
+            s1, v1 = layer(s, v, ei, edge_vec, edge_rbf)
             pos2 = pos + t
             ei2 = build_radius_graph(pos2, batch, cutoff=10.0)
             row, col = ei2
             ev2 = pos2[col] - pos2[row]
-            ed2 = torch.norm(ev2, dim=-1)
+            ed2 = safe_norm(ev2, dim=-1)
             er2 = RadialBasis(12, 10.0)(ed2)
-            s2, v2 = layer(s, v, ei2, ev2, ed2, er2)
+            s2, v2 = layer(s, v, ei2, ev2, er2)
         assert torch.allclose(s1, s2, atol=1e-5)
         assert torch.allclose(v1, v2, atol=1e-5)
 

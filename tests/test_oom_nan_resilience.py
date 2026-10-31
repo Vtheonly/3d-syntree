@@ -78,29 +78,35 @@ def test_painn_layer_saturates_overflowing_inputs():
     row, col = (dist <= cutoff).nonzero(as_tuple=True)
     edge_index = torch.stack([row, col])
     edge_vec = pos[col] - pos[row]
-    edge_dist = torch.norm(edge_vec, dim=-1)
     rbf = torch.exp(
         -torch.pow(dist[row, col].unsqueeze(-1) - torch.linspace(0, cutoff, 8), 2)
     )
     scalar = torch.full((n, 16), 6.0e4)  # already at the fp16 ceiling
     vector = torch.zeros(n, 3, 16)
-    out_s, out_v = layer(scalar, vector, edge_index, edge_vec, edge_dist, rbf)
+    out_s, out_v = layer(scalar, vector, edge_index, edge_vec, rbf)
     assert torch.isfinite(out_s).all(), "scalar channel must stay finite"
     assert torch.isfinite(out_v).all(), "vector channel must stay finite"
 
 
-def test_interaction_distance_clamp_protects_coincident_atoms():
-    """Duplicate coordinates (d == 0) must not produce NaN unit vectors."""
+def test_interaction_safe_unit_vector_protects_coincident_atoms():
+    """Duplicate coordinates (d == 0) must not produce NaN unit vectors.
+
+    #7 MATH-01: the clamp+1e-8 guard was replaced by safe_unit_vector; the
+    direction and its gradient stay finite and bounded.
+    """
     torch.manual_seed(0)
     inter = BatchedPaiNNLayer(hidden_dim=16, num_radial=8).interaction
     edge_index = torch.tensor([[0, 1], [1, 0]])
-    edge_vec = torch.zeros(2, 3)  # perfectly coincident atoms
-    edge_dist = torch.zeros(2)
+    edge_vec = torch.zeros(2, 3, requires_grad=True)  # perfectly coincident atoms
     edge_rbf = torch.ones(2, 8) * 0.5
     scalar = torch.randn(2, 16)
     vector = torch.randn(2, 3, 16)
-    agg_s, agg_v = inter(scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf)
+    agg_s, agg_v = inter(scalar, vector, edge_index, edge_vec, edge_rbf)
     assert torch.isfinite(agg_s).all() and torch.isfinite(agg_v).all()
+    (agg_s.sum() + agg_v.sum()).backward()
+    assert torch.isfinite(edge_vec.grad).all()
+    # gradient magnitude bounded by the 1/eps scale of the smoothing radius
+    assert edge_vec.grad.abs().max() <= 1.0 / 1e-5 + 1.0
 
 
 # ---------------------------------------------------------------------------

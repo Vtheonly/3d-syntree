@@ -133,15 +133,22 @@ class TestPaiNNMixingFp16Safety:
         assert torch.isfinite(out_v).all()
 
     def test_small_values_unchanged(self):
-        """The fp32-norm shortcut must not alter ordinary fp32 results."""
+        """The non-singular norm must not alter ordinary fp32 results.
+
+        Reference uses the #7 MATH-01 primitive (safe_norm) that the mixing
+        now routes through; the legacy reference ``torch.norm(v + eps)``
+        was retired with the singularity fix.
+        """
         torch.manual_seed(2)
         mixing = PaiNNMixing(hidden_dim=16)
         scalar = torch.randn(10, 16)
         vector = torch.randn(10, 3, 16)
         out_s, out_v = mixing(scalar, vector)
 
+        from syntree.models.equivariant import safe_norm
+
         vec_proj = mixing.vec_proj(vector)
-        v_norm = torch.norm(vec_proj + mixing.epsilon, dim=1)
+        v_norm = safe_norm(vec_proj, dim=1, eps=mixing.epsilon)
         h = torch.cat([scalar, v_norm], dim=-1)
         u = mixing.update_mlp(h)
         a_ss, a_sv, a_vv = torch.split(u, mixing.hidden_dim, dim=-1)

@@ -5,6 +5,13 @@ update scheme with scalar features ``s_i`` and vector features ``v_i``
 attached to every atom. The layers are E(3)-equivariant: rotating the input
 positions rotates the vector features accordingly while leaving scalar
 features invariant.
+
+All norms and normalisations route through the non-singular primitives
+:func:`safe_norm` / :func:`safe_unit_vector` (#7 MATH-01): the
+``eps``-smoothed root ``||x||_eps = sqrt(sum x^2 + eps^2) - eps`` has the
+bounded gradient ``x / sqrt(sum x^2 + eps^2)``, which is exactly zero at
+``x = 0`` and never divides a zero vector by its own norm. Raw
+``torch.norm`` + ``+1e-8`` guards are retired from this module.
 """
 
 from __future__ import annotations
@@ -20,7 +27,58 @@ import torch.nn.functional as F
 # (max finite fp16 = 65,504). Used as the saturation bound for activations
 # so that unbounded residual growth under fp16 autocast saturates cleanly
 # instead of overflowing to +/-inf and poisoning gradients with NaN.
+# NOTE (#10 MATH-04): fp16 clamping machinery is interim and scheduled for
+# removal by the pure-FP32 precision engine.
 FP16_ACT_CLAMP = 6.0e4
+
+#: Default smoothing radius of the non-singular norm primitives (#7).
+#: Well below any physical inter-atomic distance (Angstrom scale) and well
+#: above fp32 rounding noise, so the approximation error is negligible
+#: for real geometry while the gradient stays bounded at coincident
+#: coordinates.
+SAFE_NORM_EPS = 1e-5
+
+
+def safe_norm(
+    x: torch.Tensor,
+    dim: int = -1,
+    keepdim: bool = False,
+    eps: float = SAFE_NORM_EPS,
+) -> torch.Tensor:
+    """Non-singular norm with smooth, bounded gradient as ``x -> 0``.
+
+    ``||x||_eps = sqrt(sum_k x_k^2 + eps^2) - eps``
+
+    with gradient ``x / sqrt(sum_k x_k^2 + eps^2)`` (magnitude bounded by
+    1 everywhere, exactly ``0`` at ``x = 0``). Unlike ``torch.norm``, the
+    gradient cannot spike or produce ``0/0`` NaNs at coincident
+    coordinates or clashing fragments (#7 MATH-01, #45 §8.1).
+    """
+    return torch.sqrt(torch.sum(x * x, dim=dim, keepdim=keepdim) + (eps * eps)) - eps
+
+
+def safe_unit_vector(
+    vec: torch.Tensor,
+    dim: int = -1,
+    eps: float = SAFE_NORM_EPS,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Directional unit vectors and distances strictly bounded away from ``0/0``.
+
+    Returns ``(unit, dist)`` where
+
+    * ``unit = vec / sqrt(sum vec^2 + eps^2)`` - a well-defined direction
+      for every input, including the zero vector (``unit = 0`` there);
+    * ``dist = (sqrt(sum vec^2 + eps^2) - eps).clamp(min=0)`` - the
+      :func:`safe_norm` distance, non-negative by construction.
+
+    Both the values and their gradients w.r.t. ``vec`` stay finite for
+    coincident coordinates; the gradient magnitude is bounded by
+    ``1 / eps`` instead of diverging.
+    """
+    norm = torch.sqrt(torch.sum(vec * vec, dim=dim, keepdim=True) + (eps * eps))
+    unit = vec / norm
+    dist = (norm.squeeze(dim) - eps).clamp(min=0.0)
+    return unit, dist
 
 
 def finite_act_clamp(x: torch.Tensor) -> torch.Tensor:
@@ -101,9 +159,15 @@ class PaiNNInteraction(nn.Module):
         vector: torch.Tensor,          # [N, 3, H]
         edge_index: torch.Tensor,      # [2, E]
         edge_vec: torch.Tensor,        # [E, 3]
-        edge_dist: torch.Tensor,       # [E]
         edge_rbf: torch.Tensor,        # [E, num_radial]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Message-passing update.
+
+        The directional unit vector is computed by :func:`safe_unit_vector`
+        (#7 MATH-01): coincident coordinates (``d -> 0``) yield a zero
+        direction with a bounded gradient instead of the ``0/0`` division
+        the legacy ``edge_vec / (edge_dist + 1e-8)`` guard produced.
+        """
         if scalar.dim() != 2 or vector.dim() != 3 or vector.shape[1] != 3:
             raise ValueError(
                 f"Unexpected feature shapes: scalar {tuple(scalar.shape)}, "
@@ -114,13 +178,8 @@ class PaiNNInteraction(nn.Module):
         filters = self.filter_mlp(edge_rbf)                     # [E, 3H]
         f_s, f_v, f_vv = torch.split(filters, self.hidden_dim, dim=-1)
 
-        # fp16 safety: distances are physical (>= 0) but degenerate data can
-        # produce coincident atoms (d == 0); clamp so the unit vector and RBF
-        # stay finite instead of dividing by ~0.
-        edge_dist = edge_dist.clamp(min=1e-6)
-
-        # Directional unit vectors, [E, 3, 1].
-        dir_vec = edge_vec / (edge_dist.unsqueeze(-1) + 1e-8)
+        # Non-singular directional unit vectors, [E, 3].
+        dir_vec, _ = safe_unit_vector(edge_vec, dim=-1)
 
         msg_s = scalar[col] * f_s                                # [E, H]
         msg_v = (
@@ -138,13 +197,17 @@ class PaiNNInteraction(nn.Module):
 class PaiNNMixing(nn.Module):
     """Intra-atomic update mixing scalar and vector channels.
 
-    Computes scalar norms of the (projected) vector features, applies an
-    MLP over ``[s, |v|]``, and emits per-atom deltas for both channels.
+    Computes scalar norms of the (projected) vector features via
+    :func:`safe_norm` (#7 MATH-01), applies an MLP over ``[s, |v|]``, and
+    emits per-atom deltas for both channels.
     """
 
-    def __init__(self, hidden_dim: int, epsilon: float = 1e-8):
+    def __init__(self, hidden_dim: int, epsilon: float = SAFE_NORM_EPS):
         super().__init__()
         self.hidden_dim = int(hidden_dim)
+        # Smoothing radius of the non-singular norm (NOT an additive bias:
+        # the legacy ``torch.norm(v + 1e-8)`` shifted every vector by eps
+        # before taking the norm - mathematically wrong and still singular).
         self.epsilon = float(epsilon)
         self.vec_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.update_mlp = nn.Sequential(
@@ -157,13 +220,10 @@ class PaiNNMixing(nn.Module):
         self, scalar: torch.Tensor, vector: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         vec_proj = self.vec_proj(vector)                        # [N, 3, H]
-        # AMP/fp16 safety: torch.norm squares its inputs and fp16 overflows
-        # above 65,504, so vector features that grow during training would
-        # turn v_norm into inf and poison BOTH channels. Compute the norm in
-        # fp32 with a saturation cap, then return to the ambient dtype.
-        v_norm = torch.norm(vec_proj.float() + self.epsilon, dim=1)   # [N, H]
-        v_norm = torch.nan_to_num(v_norm, nan=0.0, posinf=1e4, neginf=0.0)
-        v_norm = v_norm.clamp(max=1e4).to(scalar.dtype)              # [N, H]
+        # Non-singular vector-feature norms (#7): bounded gradients, no
+        # NaN-replacement clamps (fail loudly on genuinely poisoned inputs
+        # instead of hiding them, #45 §8).
+        v_norm = safe_norm(vec_proj, dim=1, eps=self.epsilon)     # [N, H]
 
         h = torch.cat([scalar, v_norm], dim=-1)                 # [N, 2H]
         u = self.update_mlp(h)                                  # [N, 3H]
@@ -196,11 +256,12 @@ class PaiNNLayer(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         row, col = edge_index
         edge_vec = pos[col] - pos[row]
-        edge_dist = torch.norm(edge_vec, dim=-1)
+        # Non-singular edge distances (#7): coincident atoms stay finite.
+        edge_dist = safe_norm(edge_vec, dim=-1)
         edge_rbf = self.rbf(edge_dist)
 
         agg_s, agg_v = self.interaction(
-            scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
+            scalar, vector, edge_index, edge_vec, edge_rbf
         )
         scalar = finite_act_clamp(scalar + agg_s)
         vector = finite_act_clamp(vector + agg_v)
@@ -212,9 +273,12 @@ class PaiNNLayer(nn.Module):
 class BatchedPaiNNLayer(nn.Module):
     """PaiNN block operating on precomputed batched graphs.
 
-    Identical math to :class:`PaiNNLayer` but consumes edge vectors,
-    distances, and radial basis features computed once by the encoder,
-    avoiding recomputation when stacking many layers.
+    Identical math to :class:`PaiNNLayer` but consumes edge vectors and
+    radial basis features computed once by the encoder, avoiding
+    recomputation when stacking many layers. (Edge distances are no
+    longer a constructor-of-messages input: the interaction derives the
+    non-singular direction/distance from ``edge_vec`` itself via
+    :func:`safe_unit_vector`, #7 MATH-01.)
     """
 
     def __init__(self, hidden_dim: int, num_radial: int = 20):
@@ -228,11 +292,10 @@ class BatchedPaiNNLayer(nn.Module):
         vector: torch.Tensor,
         edge_index: torch.Tensor,
         edge_vec: torch.Tensor,
-        edge_dist: torch.Tensor,
         edge_rbf: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         agg_s, agg_v = self.interaction(
-            scalar, vector, edge_index, edge_vec, edge_dist, edge_rbf
+            scalar, vector, edge_index, edge_vec, edge_rbf
         )
         scalar = finite_act_clamp(scalar + agg_s)
         vector = finite_act_clamp(vector + agg_v)
@@ -312,4 +375,7 @@ __all__ = [
     "build_radius_graph",
     "finite_act_clamp",
     "FP16_ACT_CLAMP",
+    "SAFE_NORM_EPS",
+    "safe_norm",
+    "safe_unit_vector",
 ]
