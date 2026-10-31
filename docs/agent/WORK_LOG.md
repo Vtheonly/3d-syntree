@@ -167,10 +167,14 @@ implementation-status table). No claims of unimplemented features.
 
 ### 5. Git record
 
-- Single coherent commit on `3d-synV2` (message: purge + V2 foundation).
-  SHA recorded in the issue #5 comment and in HANDOFF.md after push.
+- Single coherent commit on `3d-synV2`:
+  **`b4ba69635e129c68e1f8b21d922c1faefd7fe48e`** — `feat(arch-01): complete legacy purge, V2 foundation, agent
+  docs, README rewrite (#5)`; pushed and verified on origin
+  (`44edb8b..b4ba696`); 88 files changed, +1,544 / −12,121.
 - `git diff --check` clean (no whitespace errors); staged set inspected
-  with `git diff --stat` / `--unified=80` before committing.
+  with `git diff --stat` before committing; secret scan of the diff clean
+  (only a detection-regex and an empty-token assignment inside deleted
+  code).
 
 ### 6. GitHub updates
 

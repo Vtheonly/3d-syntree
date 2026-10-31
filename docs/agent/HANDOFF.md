@@ -5,13 +5,13 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-01, session S-2026-11-01-A.
+**Last updated:** 2026-11-01, session S-2026-11-01-A (commit `b4ba696`).
 
 ## 1. Continuation instruction (unambiguous)
 
 ```
 Next session: implement #6 ARCH-02 (Establish Frozen State Tensor Schemas &
-PyG Batch Contracts). Last verified commit: <SHA — filled after push>.
+PyG Batch Contracts). Last verified commit: `b4ba69635e129c68e1f8b21d922c1faefd7fe48e` (pushed to origin/3d-synV2, verified).
 #5 ARCH-01 is implemented, verified locally, and closed. Do NOT redo the
 purge. #7 MATH-01 is the independent parallel-safe second task. Before
 coding #6, re-read issue #6 in full and re-check the branch HEAD matches

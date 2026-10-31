@@ -20,7 +20,7 @@ Verification` → `Verified — Ready to Close` → `Closed`.
 
 | # | ID | Title (short) | Status | Module | Latest commit | Test evidence | Blocker / next action |
 |---|---|---|---|---|---|---|---|
-| 5 | ARCH-01 | Purge legacy pipelines; V2 foundation | **In Progress → see note** | repo-wide | (this session; pending commit) | Purge verified: 13 paths removed; 0 dangling imports in `syntree/`; suite 837 passed / 12 pre-existing failures | Close after README + agent docs land and commit is pushed |
+| 5 | ARCH-01 | Purge legacy pipelines; V2 foundation | **Closed** (2026-11-01) | repo-wide | `b4ba696` | Purge verified (13 targets absent, 0 dangling imports in `syntree/`); suite 837 passed / 12 pre-existing failures; README + agent docs landed | — |
 | 6 | ARCH-02 | Frozen tensor schemas & PyG contracts | Ready (after #5) | `syntree/data` (new) | — | — | Next recommended task |
 | 7 | MATH-01 | Non-singular PaiNN norms | Ready (after #5) | `syntree/models/equivariant.py` | — | — | Parallel second task |
 | 8 | MATH-02 | Stable von Mises backward (Amos ratio) | Ready (after #5) | `syntree/models/torsion_head.py` | — | — | Note: 3 pre-existing von Mises test failures exist (see §pre-existing) |
