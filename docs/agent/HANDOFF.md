@@ -12,7 +12,7 @@
 ```
 Next session: implement #7 MATH-01 (Non-Singular PaiNN Equivariant Norms &
 Bounded Unit Vectors) in syntree/models/equivariant.py. Last verified
-commit: <see WORK_LOG S-2026-11-01-B §4 / issue #6 comment>. #5 and #6 are
+commit: `b5c86122249f0707467dcd0de1b9077c4eeacaf5` (pushed to origin/3d-synV2, verified). #5 and #6 are
 implemented, locally verified, and CLOSED — do NOT redo the purge or the
 schema. #7 is the only remaining blocker of #21 MODEL-01. Before coding,
 re-read issue #7 in full and confirm branch HEAD matches the recorded

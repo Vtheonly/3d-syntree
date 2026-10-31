@@ -291,7 +291,7 @@ implementation-status table). No claims of unimplemented features.
 - Mandatory review: `git status --short`, `git diff --check` (clean),
   `git diff --stat` (13 files, +180/−220 + 2 new files), full diff
   reviewed hunk-by-hunk before commit.
-- Commit: `<see §6>` `feat(arch-02): frozen V2 state tensor schema, canonical
+- Commit: `b5c86122249f0707467dcd0de1b9077c4eeacaf5` `feat(arch-02): frozen V2 state tensor schema, canonical
   PyG collate contract, legacy 67-D rejection (#6)`.
 - Investigated a suspected corruption (`andle_node_idx]` in grep/Read
   output): `od -c` proved the bytes are correct

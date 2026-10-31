@@ -21,7 +21,7 @@ Verification` → `Verified — Ready to Close` → `Closed`.
 | # | ID | Title (short) | Status | Module | Latest commit | Test evidence | Blocker / next action |
 |---|---|---|---|---|---|---|---|
 | 5 | ARCH-01 | Purge legacy pipelines; V2 foundation | **Closed** (2026-11-01) | repo-wide | `b4ba696` | Purge verified (13 targets absent, 0 dangling imports in `syntree/`); suite 837 passed / 12 pre-existing failures; README + agent docs landed | — |
-| 6 | ARCH-02 | Frozen tensor schemas & PyG contracts | **Closed** (2026-11-01) | `syntree/core/schema.py` | `<sha>` (see WORK_LOG S-2026-11-01-B) | `tests/test_tensor_contracts.py` 43/43; full suite 880 passed / 12 pre-existing; 67-D Franken rejection + fail-closed contract verified | — |
+| 6 | ARCH-02 | Frozen tensor schemas & PyG contracts | **Closed** (2026-11-01) | `syntree/core/schema.py` | `b5c86122249f0707467dcd0de1b9077c4eeacaf5` | `tests/test_tensor_contracts.py` 43/43; full suite 880 passed / 12 pre-existing; 67-D Franken rejection + fail-closed contract verified | — |
 | 7 | MATH-01 | Non-singular PaiNN norms | **Ready (next recommended)** | `syntree/models/equivariant.py` | — | — | #6 done; #21 MODEL-01 now needs only #7 |
 | 8 | MATH-02 | Stable von Mises backward (Amos ratio) | Ready (after #5) | `syntree/models/torsion_head.py` | — | — | Note: 3 pre-existing von Mises test failures exist (see §pre-existing) |
 | 9 | MATH-03 | Continuous cosine cutoff envelopes | Ready (after #5) | `syntree/models/equivariant.py` | — | — | |
