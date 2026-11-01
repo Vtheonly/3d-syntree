@@ -5,37 +5,34 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-01, session S-V2-03 close (owner-directed
-GFlowNet reconciliation implemented — engine layer landed, #38 FLOW-04
-verified and closed; see D-V2-009).
+**Last updated:** 2026-11-01, session S-V2-04 close (#22 MODEL-02
+implemented, verified, and closed — decision D-V2-010).
 
 ## 1. Continuation instruction
 
 ```
-Next session: implement #22 MODEL-02 (HandleSelectionHead) — both hard
-deps are closed (#6 schema at commit 0001087, #21 backbone at commit
-e76d955). Last verified code state: the S-V2-03 reconciliation commits on
-3d-synV2 (see WORK_LOG.md §5 for exact SHAs; suite 257/257). #5, #6, #7,
-#21, and #38 are implemented from scratch, locally verified, and CLOSED —
-do NOT redo the purge, the schema, the norms, the backbone, or the
-GFlowNet state-space reconciliation (engine layer: environment.py /
-rl.py / gflownet.py + docs/architecture/MDP_STATE_SPACE.md, D-V2-009).
-Before coding, re-read issue #22 in full, then
-`docs/architecture/ARCHITECTURE.md` §3.2/§3.10 and this file, and confirm
-branch HEAD matches origin (push races possible). #22 must: live in
-`syntree/models/handle_head.py`, consume the ligand node representations
-+ union metadata exposed by `BackboneOutput` (never a second pocket
-encoder), cross-attend handle queries over handle invariant descriptors
-[B_k, 64] and handle positions relative to pocket centroids, and emit
-normalized logits over the active handle set P(handle_t | s_t) for H > 1
-exposed handles (acceptance: valid normalized distributions). The head's
-downstream consumer is now concrete: the discrete Assembly MDP of
-`syntree/engine/environment.py` already exposes `active_handles()` menus
-that the policy must score. Parallel-safe alternatives if #22 is taken:
-#8 MATH-02, #9 MATH-03, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
-#32 TEST-01. Note for #9: the backbone RBF is deliberately envelope-free
-(decision D-V2-007) — #9 owns the cosine envelope for ALL spatial RBF
-projections.
+Next session: implement #9 MATH-03 (continuous cosine cutoff envelopes) —
+it depends on #5 only and is now the CRITICAL PATH: it is the last open
+dependency of #23 MODEL-03 (#21 and #22 are closed), and per decision
+D-V2-007 #9 owns the cosine envelope for ALL spatial RBF projections —
+when integrating, it must cover both the backbone's edge-distance RBF
+(syntree/models/bipartite.py::GaussianRadialBasis consumers) and the
+handle head's centroid-distance RBF (syntree/models/handle_head.py,
+[0, 12] A basis). Last verified code state: the S-V2-04 commits on
+3d-synV2 (implementation `433d303`, pushed 589a843..433d303; suite
+301/301). #5, #6, #7,
+#21, #38, and #22 are implemented from scratch, locally verified, and
+CLOSED — do NOT redo the purge, the schema, the norms, the backbone, the
+GFlowNet state-space reconciliation, or the handle-selection head.
+Before coding, re-read issue #9 in full, then
+syntree/models/bipartite.py (the deliberately envelope-free RBF + the
+pinned test that at d = r_cut the last Gaussian still evaluates to 1.0),
+D-V2-007 in docs/agent/DECISIONS.md, and this file; confirm branch HEAD
+matches origin (push races possible). Parallel-safe alternatives if #9
+is taken: #8 MATH-02, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
+#32 TEST-01. After #9: #23 MODEL-03 becomes dependency-ready (it consumes
+HandleSelectionOutput.handle_embeddings / pooled_handle_context as its
+handle-side surface — see syntree/models/handle_head.py).
 ```
 
 ## 2. Binding context for every future session
@@ -51,6 +48,8 @@ projections.
 - Issue-scoped module paths and test file names pinned by issue bodies are
   binding (D-V2-002). New pinned names from #21: module
   `syntree/models/bipartite.py`, tests `tests/test_bipartite_painn.py`.
+  New pinned names from #22: module `syntree/models/handle_head.py`, tests
+  `tests/test_handle_selection.py`.
 - Backbone contract highlights (D-V2-007/D-V2-008): `GaussianRadialBasis`
   emits the raw 20-Gaussian expansion with NO cosine envelope (#9 owns the
   envelope); the backbone accepts FP32 (production) and FP64 (local
@@ -82,6 +81,19 @@ projections.
   ordering, three pair families, batching = single-graph, fail-closed
   dtype/atomic-number/pocket-coverage rules). Downstream heads consume
   `BackboneOutput` — no second pocket encoder.
+- The agency-enabled handle-selection head (#22, D-V2-010):
+  `syntree/models/handle_head.py` (`HandleSelectionHead`, two-stage
+  cross-attention over the active handle pool with the equivariant
+  directional invariant `<v_atom, x_handle − centroid>`, per-graph
+  segment log-softmax over exactly the active handle rows, `HandleSelectionOutput`
+  with the #23-facing `handle_embeddings` / `pooled_handle_context`,
+  fail-closed validation incl. the cross-field atom↔graph check and the
+  legacy 67-D descriptor ban; frozen profile = 224,896 params); 44 tests
+  in `tests/test_handle_selection.py` pin the contract, including the
+  real `AssemblyEnvironment.active_handles()` menu integration (rows map
+  1:1; argmax row ⇒ legal `AssemblyAction.handle_atom_idx`). The 64-D
+  descriptor *producer* is owned by #12/#40; sampling/greedy utilities by
+  #25. Do not reimplement or bypass it.
 - The reconciled two-level GFlowNet engine layer (#38 close, D-V2-009):
   `syntree/engine/environment.py` (discrete Assembly MDP with deterministic
   bin-centre geometry + terminal reward oracle: coarse-scan-seeded Brent
@@ -105,9 +117,10 @@ projections.
 | #42's T4 benchmarking acceptance item is unmeasured | #42/#43 gate | CPU-only sandbox; the refinement/relaxation timings need a T4 run |
 | Bit-for-bit determinism is per RDKit build, not cross-version | #24/#42 | Documented in D-V2-009 and MDP_STATE_SPACE.md §6 |
 | Dev environment not pinned in a lockfile | #26/#43 | `pyproject.toml` declares loose floors (torch≥2.1, PyG≥2.4); pin exact versions when the trainer lands |
-| Schema `handle_nodes` optional context | #22/#25 | Policy-side extension point, deliberately outside the 12-field core |
+| Schema `handle_nodes` optional context | #25 | Policy-side extension point, deliberately outside the 12-field core; #22 consumes the pool as explicit forward arguments (descriptors/pos/graph/atom) |
+| 64-D handle descriptor producer | #12/#40 | `HandleSelectionHead` consumes `[H, 64]` rows; tests use synthetic descriptors until catalog featurization lands |
 | Unstamped states pass field validation (interim) | #19 | Remove the interim rule when shard producers stamp |
-| Backbone RBF has no smooth cutoff envelope | #9 | Deliberate boundary (D-V2-007); #9 must apply the envelope to ALL spatial RBF projections |
+| Backbone RBF has no smooth cutoff envelope | #9 | Deliberate boundary (D-V2-007); #9 must apply the envelope to ALL spatial RBF projections — including the handle head's centroid-distance RBF (D-V2-010) |
 | Backbone ≥1-pocket-atom-per-graph rule is stricter than schema | #21 | Documented in-module; a schema-level per-graph pocket rule may be worth adopting at #18/#19 |
 | Activation-checkpointing T4 benefit unmeasured | #43 | Capability implemented + correctness-tested on CPU only |
 | `num_graphs` for non-Batch inputs is derived (max batch index + 1) | #21 | A Batch's `num_graphs` is trusted; index-range + pocket-coverage checks catch inconsistency |
@@ -125,8 +138,8 @@ requested; #36 gate). No V2 checkpoints exist. No HF artifacts synced.
    https://download.pytorch.org/whl/cpu && pip install -e ".[test]" &&
    pip install torch_geometric`.
 3. Baseline the suite: `python -m pytest tests/ -q` — expected results
-   recorded in §1 (257/257 as of S-V2-03; the engine adds rdkit, scipy,
-   numpy to the installed dependencies per `pyproject.toml`).
+   recorded in §1 (301/301 as of S-V2-04; the handle head adds 44 tests
+   to the 257 of S-V2-03).
 4. Work per the #45 §18 per-issue protocol; end with the mandatory git
    diff review, commit+push (report exact SHAs), issue update, and
    refreshed handoff.

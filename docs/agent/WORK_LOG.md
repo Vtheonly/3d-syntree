@@ -390,3 +390,135 @@ exposes the concrete `active_handles()` menu it must score). Parallel-safe:
 #8, #9 (owns the RBF envelope, D-V2-007), #10, #11, #14, #16, #32. #36
 requires user authorization. #42's T4 benchmarking item remains gated on
 #36/#43.
+
+## S-V2-04 — 2026-11-01 — #22 MODEL-02 closed: agency-enabled handle-selection head (D-V2-010)
+
+- **Agent/session:** autonomous lead-engineering session (Z.ai), UTC.
+- **Repository / branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `589a843` (S-V2-03 docs head; branch verified equal
+  to `origin/3d-synV2` before any change; working tree clean).
+
+### 1. State discovery (per #45 §25.1)
+
+- Read issue #45 in full; fetched the #22 body and re-read issues #5–#44
+  states from GitHub (clean-room closures confirmed: #5, #6, #7, #21, #38;
+  open PR #46 unrelated to this task). Read STATUS / DECISIONS /
+  DEPENDENCIES / HANDOFF / WORK_LOG / ARCHITECTURE / MDP_STATE_SPACE and
+  the code head (`schema.py`, `equivariant.py`, `bipartite.py`,
+  `environment.py`, `gflownet.py`, `rl.py`).
+- Dependency check for #22: both hard deps closed (#6 @ `0001087`, #21 @
+  `e76d955`); `BackboneOutput` and `AssemblyEnvironment.active_handles()`
+  inspected as the concrete upstream/downstream surfaces.
+- Baseline suite before any change (fresh sandbox install: torch 2.15.0+cpu,
+  torch_geometric 2.8.1, rdkit 2026.9.1, scipy 1.14.1, numpy 2.1.3,
+  pytest 9.0.2; Python 3.12.16): **257/257 green**, matching the S-V2-03
+  handoff record.
+
+### 2. Implemented (clean-room, from the issue + handoff specification)
+
+- `src/syntree/models/handle_head.py` (new, ~640 lines):
+  `HandleSelectionHead` — the two-stage cross-attention scorer of
+  `P(handle_t | s_t)` over the active handle pool (decision D-V2-010):
+  - per-handle invariant embedding = descriptor MLP ([H, 64] frozen schema
+    width) + backbone scalar of the attachment atom + raw envelope-free
+    Gaussian RBF of the handle-to-pocket-centroid distance (#9 owns the
+    envelope, D-V2-007) + **equivariant directional invariant**
+    `<v_atom, x_handle − centroid_g>` from the backbone vector channel;
+  - per-graph query = pooled ligand summary + pooled pocket context;
+  - stage 1: single-query-per-graph scaled dot-product attention over the
+    graph's handle keys (attention weights themselves a valid per-graph
+    law) with attention-weighted value pooling;
+  - stage 2: additive Bahdanau-style scoring (query + key + pooled handle
+    context) → per-graph `log_softmax` over **exactly the active handle
+    rows** (segment softmax via scatter: max-shifted, on-device, stable);
+  - `HandleSelectionOutput`: auditable logits / log_probs / probs /
+    attention / entropy / counts + the #23-facing `handle_embeddings` and
+    `pooled_handle_context`; `rows_for_graph` helper;
+  - fail-closed validation (FP32/FP64-only per D-V2-008 with dtype/device
+    matching, shapes, index ranges, legacy 67-D descriptor rejection,
+    cross-field atom↔graph consistency, non-finite inputs, empty pool,
+    pocket-only states) and post-forward finiteness assertions (#45 §16);
+  - `audit()` parameter/dimension/trainability report; frozen production
+    profile constants (backbone 256 / head 128 / 20 RBFs / 12 Å cutoff,
+    **224,896 parameters**).
+- `src/syntree/models/__init__.py`: exports grown accordingly.
+- `tests/test_handle_selection.py` (new, 44 tests): pinned #22 acceptance
+  (valid normalized laws for H > 1 in FP32 and FP64; H = 1 → P = 1
+  exactly; identical-handle uniform split, entropy ln 2; mixed batches;
+  far-handle tail stability), SE(3) invariance (rigid motions worst
+  8.3e-16 @ FP64 over 6 trials; 5.96e-08 @ FP32; translation-only;
+  coincident-centroid finiteness through the safe norm), permutation and
+  batch consistency (handle-row permutation equivariance; pocket-atom
+  permutation invariance end-to-end through the backbone; ligand-node
+  permutation with consistent remap; batch-composition invariance),
+  fail-closed contract matrix (13 cases), **real `AssemblyEnvironment`
+  integration** (t = 0 tri-chloro seed menu and a grown 2-block
+  intermediate: rows map 1:1 onto `active_handles()`, argmax row yields a
+  legal `AssemblyAction.handle_atom_idx`, and the log-probability feeds
+  `TrajectoryStep.action_log_prob` directly), gradient connectivity
+  (into the checkpointed backbone and to positions; no cross-graph
+  gradient leaks), frozen profile + audit + bit-for-bit determinism.
+- `docs/architecture/ARCHITECTURE.md`: §3.11 added (`[VERIFIED — #22]`),
+  module map + layout updated, header refreshed.
+- `docs/agent/DECISIONS.md`: decision **D-V2-010** recorded.
+- `README.md`: status table updated for #22 **and reconciled for the
+  stale S-V2-03 rows** (#38 closure, engine layer, repository structure,
+  limitations) — the S-V2-03 session had not refreshed the README (gap
+  found during §25.1 discovery; corrected here per the constitution's
+  reconcile-toward-verified-state rule).
+
+### 3. Extra verification beyond the suite (local CPU)
+
+- Hand-verified the frozen-profile parameter count (224,896) against the
+  module audit before pinning it in the test.
+- Debugged five initial test failures — all five were test-side bugs, none
+  module-side: (a) a fixture generator-state divergence (`randperm` of
+  different sizes desynchronised the descriptor draws between
+  single-graph and batched constructions — fixed with a dedicated
+  descriptor generator); (b) a pocket permutation that truncated the
+  pocket block (12-of-21 nodes → the backbone's ≥1-pocket-atom rule
+  correctly rejected it — fixed to permute the whole block); (c) a
+  nonsense assertion comparing pre/post-remap atom indices; (d) a
+  fail-closed test that tripped the wrong validator (descriptor dtype
+  before the backbone dtype check); (e) an env-growth fixture using
+  single-handle blocks that cannot grow the menu — replaced with
+  4-aminophenol blocks whose surviving alcohol handle genuinely enlarges
+  the active set. Each failure mode is now pinned by a corrected test.
+
+### 4. Verification summary (all local CPU; no GPU/T4 claims)
+
+- Environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric 2.8.1,
+  rdkit 2026.9.1, scipy 1.14.1, numpy 2.1.3, pytest 9.0.2.
+- `python -m pytest tests/test_handle_selection.py -q` → **44 passed,
+  0 warnings**.
+- `python -m pytest tests/ -q` → **301 passed** (257 baseline + 44 new).
+- Measured evidence: rigid-motion invariance worst |Δ| = **8.3e-16**
+  (float64, 6 random rotations + 10 Å-scale translations, over logits /
+  log_probs / probs / attention / entropy); **5.96e-08** (float32
+  production path); frozen profile = **224,896 parameters**.
+- Mandatory pre-commit review: `git diff --check` (clean), `git diff
+  --stat`, `git diff --unified=80` (reviewed), `git status --short`.
+
+### 5. Commits / pushes (session total)
+
+| Commit | Content | Push range |
+|---|---|---|
+| `433d303` | feat(model-02): agency-enabled handle-selection head P(handle\|s) (#22) — module + 44 tests + ARCHITECTURE §3.11 + D-V2-010 + README reconciliation | `589a843..433d303` |
+| (this docs commit) | docs(agent): S-V2-04 session record — #22 closed at `433d303`, statuses, dependency map, handoff to #9 | — |
+
+### 6. GitHub issues updated
+
+- **Closed with evidence comment: #22** (acceptance criterion verified —
+  see STATUS.md row and the issue comment for exact commands/results).
+- Updated: #23's status note (last open dep is #9).
+- Verified untouched and OPEN: #45 (permanent).
+- STATUS.md synchronized (6/40 closed: #5, #6, #7, #21, #38, #22).
+
+### 7. Next actions
+
+See `HANDOFF.md` §1: next dependency-ready critical-path task is **#9
+MATH-03** (continuous cosine cutoff envelopes — the last open dependency
+of #23 MODEL-03, and #9 owns the envelope for ALL spatial RBF projections
+per D-V2-007, including the head's centroid-distance RBF). Parallel-safe:
+#8 MATH-02, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01, #32
+TEST-01. #36 remains gated on user authorization (Colab SSH).

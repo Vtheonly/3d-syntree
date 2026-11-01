@@ -35,7 +35,7 @@
 | #19 DATA-04 | #18 | #26, #37 |
 | #20 DATA-05 | #19 | #26 |
 | #21 MODEL-01 | #6, #7 | #23, #24, #39 |
-| #22 MODEL-02 | #6, #21 | #23 |
+| #22 MODEL-02 | #6, #21 | #23 — **closed 2026-11-01**: `syntree/models/handle_head.py` + 44 tests (D-V2-010) |
 | #23 MODEL-03 | #9, #21, #22 | #24, #39 |
 | #24 MODEL-04 | #11, #8, #23 | #25, #29, #38, #42 |
 | #25 MODEL-05 | #21, #22, #23, #24, #39* | #26, #29 |
@@ -82,23 +82,27 @@ with the chemistry/data spur feeding in earlier:
 
 ## 3. Dependency-READY set (against the clean-room codebase)
 
-With #5 (foundation), #6 (schema), #7 (norms), #21 (backbone), and #38
-(state-space semantics) implemented and verified (sessions S-V2-01 /
-S-V2-02 / S-V2-03), the engine layer of the reconciled two-level GFlowNet
-framework also exists (`syntree/engine/`, D-V2-009):
+With #5 (foundation), #6 (schema), #7 (norms), #21 (backbone), #38
+(state-space semantics), and #22 (handle-selection head) implemented and
+verified (sessions S-V2-01 / S-V2-02 / S-V2-03 / S-V2-04), the engine
+layer of the reconciled two-level GFlowNet framework also exists
+(`syntree/engine/`, D-V2-009):
 
-- **#22 MODEL-02** (handle selection head) — both hard deps satisfied
-  (#6 schema at `0001087`, #21 backbone at `e76d955`); critical path;
-  recommended next. Consumes `BackboneOutput` ligand node representations.
-- **#8 MATH-02**, **#9 MATH-03**, **#10 MATH-04**, **#11 CHEM-01**,
-  **#14 CHEM-04**, **#16 DATA-01**, **#32 TEST-01** — depend on #5 only;
-  parallel-safe.
+- **#9 MATH-03** (continuous cosine cutoff envelopes) — depends on #5
+  only; **critical path: it is the last open dependency of #23
+  MODEL-03** (both #21 and #22 are closed), and per D-V2-007 it owns the
+  envelope for ALL spatial RBF projections (backbone RBF and the handle
+  head's centroid-distance RBF); recommended next.
+- **#8 MATH-02**, **#10 MATH-04**, **#11 CHEM-01**, **#14 CHEM-04**,
+  **#16 DATA-01**, **#32 TEST-01** — depend on #5 only; parallel-safe.
 - **#36 OPS-01** — no code dependency, but the remote-Colab part is gated
   on the **user's** authentication/authorization: prepare the workflow,
   never claim a connection.
 
-#23 MODEL-03 additionally needs #9 and #22 (both above); #24 MODEL-04
-additionally needs #11 and #8 (both above) plus #23.
+#23 MODEL-03 becomes ready as soon as #9 lands (it consumes
+`HandleSelectionOutput.handle_embeddings` / `pooled_handle_context` as its
+handle-side surface); #24 MODEL-04 additionally needs #11 and #8 plus
+#23.
 
 ## 4. External (non-issue) dependencies
 
