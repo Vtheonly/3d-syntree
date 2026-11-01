@@ -255,3 +255,138 @@ See `HANDOFF.md` §1: next dependency-ready task is #22 MODEL-02 (handle
 selection head; critical path; consumes `BackboneOutput`); parallel-safe:
 #8, #9 (owns the RBF envelope, D-V2-007), #10, #11, #14, #16, #32; #36
 requires user authorization.
+
+---
+
+## S-V2-03 — 2026-11-01 — Owner-directed GFlowNet reconciliation: engine layer + #38 close (D-V2-009)
+
+- **Agent/session:** autonomous lead-engineering session (Z.ai), UTC.
+- **Repository / branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `6828747` (S-V2-02 docs head; code head `e76d955`).
+- **Issues worked:** owner reconciliation task over #24, #29, #30, #38, #42
+  (the task that resolves the three backlog contradictions: discrete TB vs
+  continuous geometry optimisation, multi-parent backward semantics,
+  reward non-stationarity).
+
+### 1. State discovery (per #45 §25.1)
+
+- Read issue #45 in full (constitution §10.2/§12.3/§12.4/§18/§25 govern
+  this task); fetched #24, #29, #30, #38, #42, #45 bodies (all open);
+  read STATUS/DECISIONS/DEPENDENCIES/HANDOFF/WORK_LOG/ARCHITECTURE and the
+  existing code head. Confirmed: clean-room closures #5/#6/#7/#21; next
+  recommended task was #22; the owner's reconciliation task explicitly
+  overrides the queue for this session (direct instruction, #45 §25.3).
+- Baseline suite before any change: 207/207 green (re-cloned, `pip install
+  -e .`, rdkit 2025.09.4 + scipy 1.14.1 + numpy 2.1.3 + torch 2.15.0+cpu
+  installed in the sandbox).
+
+### 2. Implemented (clean-room, from the task specification only)
+
+- `src/syntree/engine/__init__.py`, `environment.py` (~1150 lines):
+  - **Level 1 MDP**: `AssemblyEnvironment` with `reset/step/stop`,
+    `AssemblyAction(h_t, r_t, B_t, c_t, k_t)`, `BuildingBlock` /
+    `HandleSpec` / `JunctionReaction` (generic registry with resonance
+    locks; #11 fills the certified taxonomy later), deterministic rigid
+    placement realising the exact bin centres
+    `phi_k = -pi + (k-0.5)*2*pi/36` with hybridisation angles and
+    covalent-radii bond lengths, chirality-branch placement, junction
+    history with index remapping, fail-closed validation everywhere.
+  - **Leaf semantics (#38)**: `get_removable_leaves` (fragment junction
+    graph, degree-1 non-seed fragments), `backward_leaf_probability` =
+    uniform leaf deletion `1/N_leaves`.
+  - **Level 2 oracle (#42/#13, terminal-only)**:
+    `finalize_terminal_molecule` — deep copy, coarse-scan-seeded bracketed
+    Brent sub-bin refinement (±5°, soft-core pocket objective,
+    `scipy.optimize.minimize_scalar(method='bounded')`), scaffold-constrained
+    MMFF94 with 50 kcal/mol/Å² position restraints on seed atoms,
+    full diagnostics (angles, objectives, evaluation counts, seed RMSD,
+    locked-dihedral drift). STOP-gated (fail-closed otherwise).
+  - `PocketDefinition` + documented oracle-internal soft-core
+    LJ/Coulomb surrogate (injection point for #14).
+- `src/syntree/engine/rl.py` (~330 lines): `ThreeDReward` — stationary
+  `R(x) = exp((S_dock + S_contact + S_key + S_props + S_vol)/T)`,
+  `R >= 1e-4`, **no batch parameter in the signature at all**; component
+  telemetry; fail-closed on non-finite physics and bad configuration.
+- `src/syntree/engine/gflownet.py` (~330 lines):
+  `TrajectoryBalanceEngine` — the exact pinned TB equation
+  `L = (log Z + Σ log P_F − Σ log P_B − log R)²` with the uniform-leaf
+  backward terms (`-log num_leaves` per assembly step; STOP term zero by
+  proof), learnable `log_z` (FP32 default / FP64 verification, mirroring
+  D-V2-008), batch loss (uncoupled mean), fail-closed contracts.
+- `tests/test_gflownet_reconciliation.py` (new, 50 tests): the four
+  pinned reconciliation tests (determinism bit-for-bit incl. fresh
+  catalogs; terminal-oracle isolation incl. counters/state immutability/
+  rigid covalent preservation; reward stationarity incl. 8-decimal
+  batch-composition invariance + signature inspection; backward leaf
+  probability incl. branched periphery + symmetric convergence +
+  renumbering) **plus** the enumerable toy-DAG flow accounting (19
+  quotient states / 31 trajectories: every TB residual < 1e-9 through
+  the real engine with `log Z` at the true total flow; terminal outcome
+  probabilities = `R(x)/Z` to 1e-9 relative; two-order mass split into
+  exact halves; `Σ R(x) = Z`), amide resonance snap + post-MMFF
+  planarity, Brent-vs-dense-200-point-scan on the same sequential
+  baseline, and the pinned TB-equation/STOP-zero/fail-closed contracts.
+- `docs/architecture/MDP_STATE_SPACE.md` (new, ~260 lines): the formal
+  #38 specification — two-level architecture, order-quotiented state
+  definition, the three backward-policy proofs (proper distribution,
+  backward path measure identity by induction, STOP uniqueness), the TB
+  theorem with proof, the worked multi-path example, adversarial-case
+  coverage, interface/scope boundaries.
+- `pyproject.toml`: dependencies grown per D-V2-003 (numpy, scipy, rdkit).
+- `docs/agent/DECISIONS.md`: decision **D-V2-009** (owner task label
+  "D21") — full rationale, alternatives, evidence, affected issues,
+  scope boundaries.
+
+### 3. Extra verification beyond the suite (local CPU)
+
+- Probed the RDKit API surface before writing the oracle (MMFF
+  position-constraint signature, covalent radii, dihedral accessors,
+  ETKDG same-seed bit-for-bit determinism, AddHs/RemoveHs prop
+  survival, QED/Volume) — all confirmed on the installed build.
+- Diagnosed and fixed during development (all test-side or
+  fixture-side; one module-side improvement): a broadcast error in the
+  test pocket generator; stale handle indices in two fixtures; a
+  2-vs-3-tuple unpack; an invalid naphthalene SMILES; the toy-DAG test
+  initially forgot to set `log Z` to the true total flow and re-stepped
+  an already-replayed env; the bond-length assertion moved from exact
+  equality to 1e-12 (Rodrigues composition costs ~1 ULP).  One genuine
+  module improvement: pure Brent over the full ±5° interval locked into
+  a local basin on the multimodal soft-core landscape → replaced by the
+  coarse-scan-seeded Brent hybrid (documented, and now *beats* the dense
+  reference scan).
+
+### 4. Verification summary (all local CPU; no GPU/T4 claims)
+
+- Environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric 2.8.1,
+  rdkit 2025.09.4, scipy 1.14.1, numpy 2.1.3, pytest 9.0.2.
+- `python -m pytest tests/test_gflownet_reconciliation.py -q` →
+  **50 passed, 0 warnings**.
+- `python -m pytest tests/ -q` → **257 passed, 0 warnings** (93 + 45 + 69
+  + 50).
+- Mandatory pre-commit review: `git diff --check` (clean), `git diff
+  --stat`, `git diff --unified=60` (reviewed), `git status --short`.
+
+### 5. Commits / pushes (session total)
+
+| Commit | Content | Push range |
+|---|---|---|
+| `d3d186a` | fix(gflownet): reconcile discrete TB flow balance with terminal geometry relaxation and stationary reward (engine layer + 50 tests + MDP_STATE_SPACE.md + D-V2-009 + deps) | `6828747..d3d186a` |
+| (this docs commit) | docs(agent): S-V2-03 session record — statuses, dependency cycle broken, handoff refreshed | — |
+
+### 6. GitHub issues updated
+
+- **Closed with evidence comment: #38** (all five acceptance criteria
+  verified — see STATUS.md row).
+- Updated with re-alignment addenda + evidence comments: #24, #29, #30,
+  #42 (all remain open with precise remaining scope).
+- Verified untouched and OPEN: #45 (permanent).
+- STATUS.md table synchronized (5/40 closed: #5, #6, #7, #21, #38).
+
+### 7. Next actions
+
+See `HANDOFF.md` §1: next dependency-ready task is #22 MODEL-02 (handle
+selection head; critical path; consumes `BackboneOutput`; the engine now
+exposes the concrete `active_handles()` menu it must score). Parallel-safe:
+#8, #9 (owns the RBF envelope, D-V2-007), #10, #11, #14, #16, #32. #36
+requires user authorization. #42's T4 benchmarking item remains gated on
+#36/#43.

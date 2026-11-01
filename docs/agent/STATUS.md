@@ -44,13 +44,13 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 21 | MODEL-01 | BipartitePaiNN backbone | **Closed** (2026-11-01) | `syntree/models/bipartite.py` | `e76d955` | `tests/test_bipartite_painn.py` 69/69 (both pinned acceptance criteria: scalar invariance + vector equivariance at ≤3e-13 over 36 rigid-motion trials; clean pocket-only N_l=0); full suite 207/207 | — |
 | 22 | MODEL-02 | Handle selection head | **Ready (next recommended)** (#6, #21 closed) | `syntree/models/handle_head.py` | — | — | Critical path; consumes `BackboneOutput` ligand node representations |
 | 23 | MODEL-03 | Cross-attention decoder | Blocked (needs #9, #22) | `syntree/models/policy.py` | — | — | #21 satisfied |
-| 24 | MODEL-04 | Hierarchical heads + torsion space | Blocked (needs #11, #8, #23) | `syntree/models/` | — | — | #21 satisfied |
+| 24 | MODEL-04 | Hierarchical heads + torsion space | Blocked (needs #11, #8, #23) | `syntree/models/` + `syntree/engine/environment.py` | — | Geometry contract (bin centres, resonance snap, determinism) verified in `tests/test_gflownet_reconciliation.py` (D-V2-009); policy heads still open | #21 satisfied |
 | 25 | MODEL-05 | SynTreePolicy assembly + audit | Blocked (needs #22–#24, #39 interface) | `syntree/models/policy.py` | — | — | #21 satisfied |
 | 26 | TRAIN-01 | Pure FP32 T4 trainer | Blocked (needs #10, #19, #20, #25) | `syntree/engine/` | — | — | T4 verification requires authorized Colab/Kaggle |
 | 27 | TRAIN-02 | Quantile curriculum (Approach C) | Blocked (needs #26) | `syntree/engine/` | — | — | |
 | 28 | TRAIN-03 | 2D→3D transfer pretraining | Blocked (needs #11, #12, #27) | `syntree/engine/` | — | — | Requires licensed reaction data |
-| 29 | FLOW-01 | GFlowNet TB engine | Blocked (needs #13, #25, #26, #38, #39) | `syntree/engine/` | — | — | #38 semantics must be resolved first |
-| 30 | FLOW-02 | Stationary multi-objective reward | Blocked (needs #14, #29) | `syntree/engine/` | — | — | |
+| 29 | FLOW-01 | GFlowNet TB engine | Blocked (needs #13, #25, #26, #39) | `syntree/engine/gflownet.py` | — | TB mathematics + uniform-leaf backward semantics implemented and flow-accounting-verified (D-V2-009); #38 closed; trainer + logZ conditioning remain | |
+| 30 | FLOW-02 | Stationary multi-objective reward | Blocked (needs #14, #29) | `syntree/engine/rl.py` | — | Stationary reward core implemented: batch-invariant signature + tests (D-V2-009); production physics + full closure remain | |
 | 31 | FLOW-03 | Stage-2 CLI + checkpoint state | Blocked (needs #29, #30) | `main.py` | — | — | |
 | 32 | TEST-01 | Suite A capability regression | Ready (deps: #5) | `tests/` | — | — | Aggregates per-issue capability tests as they land |
 | 33 | TEST-02 | Suite B invariant tests | Blocked (needs #7, #8, #21, #25, #26, #32) | `tests/` | — | — | |
@@ -58,22 +58,23 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 35 | EVAL-02 | Comparative SBDD benchmark | Blocked (needs #34, #44) | `scripts/` | — | — | |
 | 36 | OPS-01 | Colab SSH remote workflow | Pending (no code dep; **user authorization gate**) | `docs/`, notebook | — | — | Prepare workflow; do NOT claim any connection |
 | 37 | OPS-02 | Hugging Face artifact sync | Blocked (needs #19, #26, #31, #35, #36) — final milestone | `syntree/utils/` | — | — | |
-| 38 | FLOW-04 | MDP state / derivation DAG semantics | Pending (implied deps #15, #24 interfaces) | `docs/architecture/` + engine | — | — | Design-first work item |
+| 38 | FLOW-04 | MDP state / derivation DAG semantics | **Closed** (2026-11-01) | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` | (this session) | All 5 acceptance criteria: written spec distinguishing MDP vs DAG; proven + implemented uniform-leaf `P_B` (STOP term zero by proof); multi-path/symmetric flow tests; toy-DAG `P(x) = R(x)/Z` verification (19 states / 31 trajectories, residuals < 1e-9); #29 references #38's semantics | — |
 | 39 | MODEL-06 | Learned seed/anchor selection | Pending (implied deps #12, #21, #23, #25 interfaces) | `syntree/models/` | — | — | Design-first work item |
 | 40 | CHEM-06 | Chemoselectivity filters | Blocked (needs #11) | `syntree/chemistry/` | — | — | |
 | 41 | DATA-06 | Hashed inverted synthon index | Blocked (needs #11, #12) | `syntree/chemistry/` | — | — | |
-| 42 | CHEM-07 | Sub-bin torsion refinement | Blocked (needs #13, #14, #24) | `syntree/chemistry/` | — | — | |
+| 42 | CHEM-07 | Terminal Sub-Bin Geometry Refinement (re-scoped) | Implemented — Awaiting Verification of remaining scope | `syntree/engine/environment.py` (terminal oracle) | — | Core implemented: coarse-scan-seeded Brent ±5° + MMFF94 50 kcal/mol/Å² restraints, bin-containment + dense-scan comparison + covalent-geometry preservation tests (D-V2-009); T4 benchmarking + #11/#13/#14 production integration remain | |
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
 | 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: 4 (#5, #6, #7, #21 —
-clean-room era). #45 excluded by standing rule.
+**Progress denominator: 40 issues (#5–#44).** Closed: 5 (#5, #6, #7, #21,
+#38 — clean-room era). #45 excluded by standing rule.
 
 ## Pre-existing failures
 
-None. The clean-room suite started empty and is 207/207 green; there are
-no inherited failures (the pre-reset suite and its 12 documented failures
-were purged with the branch, decision D-V2-006).
+None. The clean-room suite is 257/257 green (207 + 50 reconciliation
+tests, session S-V2-03); there are no inherited failures (the pre-reset
+suite and its 12 documented failures were purged with the branch, decision
+D-V2-006).
 
 ## Session log pointer
 

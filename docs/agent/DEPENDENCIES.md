@@ -51,7 +51,7 @@
 | #35 EVAL-02 | #34, #44 | #37 |
 | #36 OPS-01 | — (user authorization required) | #37, #43 |
 | #37 OPS-02 | #19, #26, #31, #35, #36 | — (final milestone) |
-| #38 FLOW-04 | implied: #15, #24 (from their `Blocks` lists) | — |
+| #38 FLOW-04 | implied: #15, #24 (from their `Blocks` lists) | — (**closed 2026-11-01**: spec delivered ahead of the cycle via the owner-directed reconciliation, D-V2-009; its deliverables live in `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/`) |
 | #39 MODEL-06 | implied: #12, #21, #23, #25 | — |
 | #40 CHEM-06 | implied: #11 | — |
 | #41 DATA-06 | implied: #11, #12 | — |
@@ -61,13 +61,15 @@
 
 \* #25 lists #39 and #29 lists #39 among dependencies (seed/anchor
 selection feeds the policy assembly and the GFlowNet forward probability);
-#29 also lists #38. These added-issue edges make the graph **cyclic** as
-literally stated (#29 → #38 → #24 → … → #25 → #39 → #25). Resolution
-guidance: treat the *semantics formalization* (#38) and *seed/anchor head*
-(#39) as design-first work items unblocked once their *interface
-contracts* (#15 decompositions, #24 heads) exist, while their full
-*integration* into #25/#29 lands after the heads are stable. Re-verify
-edges in both directions before starting any of #38–#44 (#45 §17).
+#29 also listed #38. These added-issue edges made the graph **cyclic** as
+literally stated (#29 → #38 → #24 → … → #25 → #39 → #25). **The cycle is
+now broken:** #38 was closed on 2026-11-01 by the owner-directed
+reconciliation (D-V2-009) — its formal state-space specification, the
+uniform-leaf backward policy, and their proofs landed ahead of #15/#24 as
+design-first deliverables, so #29's #38 dependency is satisfied and #29's
+remaining blockers are #13, #25, #26, #39. The #39 seed/anchor head
+remains a design-first work item; re-verify edges in both directions
+before starting any of #39–#44 (#45 §17).
 
 ## 2. Critical path (longest dependency chain)
 
@@ -80,8 +82,10 @@ with the chemistry/data spur feeding in earlier:
 
 ## 3. Dependency-READY set (against the clean-room codebase)
 
-With #5 (foundation), #6 (schema), #7 (norms), #21 (backbone) implemented
-and verified (sessions S-V2-01 / S-V2-02):
+With #5 (foundation), #6 (schema), #7 (norms), #21 (backbone), and #38
+(state-space semantics) implemented and verified (sessions S-V2-01 /
+S-V2-02 / S-V2-03), the engine layer of the reconciled two-level GFlowNet
+framework also exists (`syntree/engine/`, D-V2-009):
 
 - **#22 MODEL-02** (handle selection head) — both hard deps satisfied
   (#6 schema at `0001087`, #21 backbone at `e76d955`); critical path;

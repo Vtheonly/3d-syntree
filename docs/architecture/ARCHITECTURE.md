@@ -152,21 +152,30 @@ pocket-cap settings; activation checkpointing where measured to help. T4
 profile targets (e.g. batch 12 × accum 6, pocket cap 700, peak reserved
 VRAM < 9.5 GB) must be **measured** on real T4 hardware, never assumed.
 
-### 3.6 Stage-2 algorithm `[VERIFIED as V2 policy — #45 §12.3]`
+### 3.6 Stage-2 algorithm `[VERIFIED — #38 semantics + #45 §12.3, D-V2-009]`
 
 Stage 2 is **GFlowNet Trajectory Balance only**; PPO/DPO are not V2
 production alternatives. The forward probability must include the seed,
 STOP, handle, reaction, synthon, stereo, and torsion actions belonging to
-the trajectory. The backward term is zero only if mathematically justified
-for the actual state space — #38 owns that proof; no assumption is baked in
-until then.
+the trajectory. The backward term is the **Uniform Leaf Deletion Policy**
+`P_B(s'|s) = 1/|RemovableLeafSynthons(s)|` over the order-quotiented
+discrete assembly states; the STOP step's backward term is zero *by proof*
+(absorbing uniqueness). The full specification, proofs, and the enumerable
+toy-DAG verification live in
+`docs/architecture/MDP_STATE_SPACE.md` (implemented in
+`syntree/engine/environment.py` + `syntree/engine/gflownet.py`).
 
-### 3.7 Reward stationarity `[TARGET — #30]`
+### 3.7 Reward stationarity `[VERIFIED core — #30 contract implemented, D-V2-009]`
 
 Terminal TB reward must be a **stationary, reproducible** positive function
 of the terminal object + fixed conditioning context. Batch-relative
 diversity terms inside R(x) are forbidden; population diversity lives in
 sampling / replay / archive monitoring outside the per-trajectory reward.
+The reconciled engine implements exactly this:
+`syntree/engine/rl.py::ThreeDReward.compute(relaxed_mol)` accepts no batch
+parameter at all (structurally stationary, tested across batch
+compositions), with a hard floor `R >= 1e-4`. Full closure of #30 still
+awaits its remaining deps (production soft-core #14, TB engine #29).
 
 ### 3.8 Data integrity & leakage prevention `[TARGET — #16–#19]`
 
@@ -179,14 +188,18 @@ exact forward-replay validation of every supervised step, SHA-256-checked
 compressed shards. Provenance of raw sources is pinned in
 `docs/data/RAW_SOURCE_PROVENANCE.yaml`.
 
-### 3.9 Torsion handling `[TARGET — #24, #42]`
+### 3.9 Torsion handling `[VERIFIED two-level contract — #24/#42 re-scoped, D-V2-009]`
 
 36-bin categorical torsion action over [-π, π); the bin selects a coarse
-rotamer region; environment-side bounded refinement (±5°, documented
-optimizer) over a soft-core pocket objective; scaffold-constrained MMFF94
-relaxation afterward. The refinement is a *geometry* operation attached to
-the categorical action — no unnormalized continuous density inside the TB
-log-probability.
+rotamer region. The reconciled **two-level** split: during rollout the
+environment realises the exact bin centres
+`φ_k = -π + (k-½)·2π/36` deterministically (resonance-locked amide/ester
+junctions snap planar trans), while the bounded refinement (±5°,
+coarse-scan-seeded bracketed Brent) and the scaffold-constrained MMFF94
+relaxation run **only at the terminal STOP as the reward oracle** — a
+deterministic geometry operation attached to the categorical action with no
+unnormalized continuous density inside the TB log-probability
+(`docs/architecture/MDP_STATE_SPACE.md` §1).
 
 ### 3.10 Reproducibility & artifacts `[TARGET — #37, #43]`
 
@@ -206,8 +219,14 @@ src/syntree/              # the V2 package (src-layout, decision D-V2-003)
                           # policy heads later
     equivariant.py        #   safe norms + PaiNN blocks (#7)
     bipartite.py          #   BipartitePaiNN + radius graph + RBF (#21)
+  engine/                 # the reconciled two-level GFlowNet framework
+                          # (D-V2-009; docs/architecture/MDP_STATE_SPACE.md)
+    environment.py        #   discrete Assembly MDP + terminal reward oracle
+                          #   (#24 geometry, #38 leaves, #42/#13 oracle)
+    rl.py                 #   stationary multi-objective terminal reward (#30)
+    gflownet.py           #   Trajectory Balance with uniform-leaf P_B (#29)
 docs/
-  architecture/           # this document
+  architecture/           # this document + MDP_STATE_SPACE.md (the #38 spec)
   data/RAW_SOURCE_PROVENANCE.yaml
   agent/                  # STATUS, WORK_LOG, DECISIONS, DEPENDENCIES, HANDOFF
 tests/                    # pytest suites, file names pinned by owning issues
@@ -218,8 +237,12 @@ pre-created speculatively.
 
 ## 5. Open architectural questions (tracked, not forgotten)
 
-1. **Derivation multiplicity** in TB backward semantics (#38) — canonical
-   derivations vs correction term vs graph-state backward policy.
+1. **Derivation multiplicity** in TB backward semantics (#38) —
+   **resolved by D-V2-009**: states are order-quotiented discrete assembly
+   objects (canonical derivations), the backward policy is the uniform leaf
+   deletion policy, and the enumerable toy-DAG verification proves
+   `P(x) = R(x)/Z` without multiplicity inflation
+   (`docs/architecture/MDP_STATE_SPACE.md` §3, §5).
 2. **Seed/anchor action** integration (#39) — where the pocket-anchor
    variables live in the state and their probability measure.
 3. **pharm3d projection versioning** (#12) — QR-projection seed/matrix

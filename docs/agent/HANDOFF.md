@@ -5,27 +5,33 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-01, session S-V2-02 close (#21 MODEL-01 —
-clean-room BipartitePaiNN backbone, verified and closed).
+**Last updated:** 2026-11-01, session S-V2-03 close (owner-directed
+GFlowNet reconciliation implemented — engine layer landed, #38 FLOW-04
+verified and closed; see D-V2-009).
 
 ## 1. Continuation instruction
 
 ```
 Next session: implement #22 MODEL-02 (HandleSelectionHead) — both hard
 deps are closed (#6 schema at commit 0001087, #21 backbone at commit
-e76d955). Last verified commit: e76d955 (head of 3d-synV2, pushed; code
-head; the S-V2-02 docs commit follows it). #5, #6, #7 and #21 are
-implemented from scratch, locally verified (207/207 tests), and CLOSED —
-do NOT redo the purge, the schema, the norms, or the backbone. Before
-coding, re-read issue #22 in full, then `docs/architecture/ARCHITECTURE.md`
-§3.2/§3.10 and this file, and confirm branch HEAD matches origin (push
-races possible). #22 must: live in `syntree/models/handle_head.py`,
-consume the ligand node representations + union metadata exposed by
-`BackboneOutput` (never a second pocket encoder), cross-attend handle
-queries over handle invariant descriptors [B_k, 64] and handle positions
-relative to pocket centroids, and emit normalized logits over the active
-handle set P(handle_t | s_t) for H > 1 exposed handles (acceptance: valid
-normalized distributions). Parallel-safe alternatives if #22 is taken:
+e76d955). Last verified code state: the S-V2-03 reconciliation commits on
+3d-synV2 (see WORK_LOG.md §5 for exact SHAs; suite 257/257). #5, #6, #7,
+#21, and #38 are implemented from scratch, locally verified, and CLOSED —
+do NOT redo the purge, the schema, the norms, the backbone, or the
+GFlowNet state-space reconciliation (engine layer: environment.py /
+rl.py / gflownet.py + docs/architecture/MDP_STATE_SPACE.md, D-V2-009).
+Before coding, re-read issue #22 in full, then
+`docs/architecture/ARCHITECTURE.md` §3.2/§3.10 and this file, and confirm
+branch HEAD matches origin (push races possible). #22 must: live in
+`syntree/models/handle_head.py`, consume the ligand node representations
++ union metadata exposed by `BackboneOutput` (never a second pocket
+encoder), cross-attend handle queries over handle invariant descriptors
+[B_k, 64] and handle positions relative to pocket centroids, and emit
+normalized logits over the active handle set P(handle_t | s_t) for H > 1
+exposed handles (acceptance: valid normalized distributions). The head's
+downstream consumer is now concrete: the discrete Assembly MDP of
+`syntree/engine/environment.py` already exposes `active_handles()` menus
+that the policy must score. Parallel-safe alternatives if #22 is taken:
 #8 MATH-02, #9 MATH-03, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
 #32 TEST-01. Note for #9: the backbone RBF is deliberately envelope-free
 (decision D-V2-007) — #9 owns the cosine envelope for ALL spatial RBF
@@ -76,6 +82,18 @@ projections.
   ordering, three pair families, batching = single-graph, fail-closed
   dtype/atomic-number/pocket-coverage rules). Downstream heads consume
   `BackboneOutput` — no second pocket encoder.
+- The reconciled two-level GFlowNet engine layer (#38 close, D-V2-009):
+  `syntree/engine/environment.py` (discrete Assembly MDP with deterministic
+  bin-centre geometry + terminal reward oracle: coarse-scan-seeded Brent
+  sub-bin refinement and 50 kcal/mol/Å² scaffold-constrained MMFF94),
+  `syntree/engine/rl.py` (stationary `ThreeDReward`, no batch parameter by
+  construction), `syntree/engine/gflownet.py` (Trajectory Balance with the
+  uniform leaf deletion backward policy, STOP backward term zero by
+  proof), and `docs/architecture/MDP_STATE_SPACE.md` (the formal #38
+  specification + proofs). 50 tests in
+  `tests/test_gflownet_reconciliation.py` pin the contracts, including the
+  enumerable toy-DAG flow accounting (P(x) = R(x)/Z, residuals < 1e-9).
+  Do NOT re-litigate the state-space debate — it is closed with proofs.
 - README / architecture / agent-docs structure — update in place.
 
 ## 4. Known debts / open risks
@@ -83,6 +101,9 @@ projections.
 | Item | Owner | Note |
 |---|---|---|
 | No GPU/T4 execution, training, or HF artifact sync has occurred for V2 | #36/#43 gate | CPU sandbox cannot establish GPU claims |
+| Engine soft-core LJ/Coulomb, generic junction reactions, docking score are documented *surrogate* implementations with injection points | #14/#11/eval stack | D-V2-009 scope boundaries; production modules must supersede without changing the MDP/TB contracts |
+| #42's T4 benchmarking acceptance item is unmeasured | #42/#43 gate | CPU-only sandbox; the refinement/relaxation timings need a T4 run |
+| Bit-for-bit determinism is per RDKit build, not cross-version | #24/#42 | Documented in D-V2-009 and MDP_STATE_SPACE.md §6 |
 | Dev environment not pinned in a lockfile | #26/#43 | `pyproject.toml` declares loose floors (torch≥2.1, PyG≥2.4); pin exact versions when the trainer lands |
 | Schema `handle_nodes` optional context | #22/#25 | Policy-side extension point, deliberately outside the 12-field core |
 | Unstamped states pass field validation (interim) | #19 | Remove the interim rule when shard producers stamp |
@@ -104,7 +125,8 @@ requested; #36 gate). No V2 checkpoints exist. No HF artifacts synced.
    https://download.pytorch.org/whl/cpu && pip install -e ".[test]" &&
    pip install torch_geometric`.
 3. Baseline the suite: `python -m pytest tests/ -q` — expected results
-   recorded in §1 (207/207 as of S-V2-02).
+   recorded in §1 (257/257 as of S-V2-03; the engine adds rdkit, scipy,
+   numpy to the installed dependencies per `pyproject.toml`).
 4. Work per the #45 §18 per-issue protocol; end with the mandatory git
    diff review, commit+push (report exact SHAs), issue update, and
    refreshed handoff.
