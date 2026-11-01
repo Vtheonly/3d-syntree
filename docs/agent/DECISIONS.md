@@ -535,3 +535,163 @@
   sampling utilities are #25); no T4 execution or memory measurement has
   occurred (arithmetic only; #43 owns measured profiling); the pinned
   dropout 0.1 is active in training mode only (eval is bit-deterministic).
+
+---
+
+## D-V2-013 — 2026-11-02 — `LogBesselI0` implements the issue-pinned branches with exact gating and fail-closed domain validation instead of the snippet's dead clamps (#8)
+
+- **Problem:** Issue #8 pins a reference snippet for
+  `LogBesselI0(torch.autograd.Function)` whose forward/backward contain
+  three defensive clamps (`k.clamp(min=1e-6)` twice, `tot.clamp(min=1e-30)`)
+  and no input validation.  On the valid domain (`kappa >= 0`) every one of
+  those clamps is provably dead code (the power-series total is `>= 1`; the
+  asymptotic branch is only evaluated at `kappa >= 12`; the Amos ratio
+  `k/(0.5 + sqrt(kappa^2 + 2.25))` has denominator `>= 2.0` and is exactly
+  `0` at `kappa = 0`).  The constitution (#45 §8) forbids arbitrary
+  clamping as a stability mechanism and demands fail-loud behaviour
+  (D-V2-004/D-V2-005 precedent).
+- **Decision:** Implement the pinned *mathematics* exactly (22-term power
+  series below `kappa = 12`, the pinned 3-term asymptotic expansion at and
+  above, float64 internals, dtype-preserving output; the analytic Amos
+  ratio backward) while replacing the dead clamps with (a) **exact
+  `torch.where` branch gating** — the inactive branch receives gated safe
+  inputs (zeros for the series, ones for the logarithm), so no infinity is
+  ever materialised — and (b) fail-closed domain validation in forward
+  (`kappa` must be finite, floating, `>= 0`; NaN/Inf/negative raise).
+  Values on the valid domain are identical to the pinned snippet; invalid
+  inputs are rejected instead of silently clamped.  Additionally the
+  public surface ships `log_bessel_i0`, `amos_ratio`, and the circular
+  objective (`von_mises_log_prob` / `von_mises_nll` / `von_mises_loss`)
+  that #24 MODEL-04 consumes — the head *architecture* remains #24's scope.
+- **Alternatives considered:** porting the snippet verbatim with its dead
+  clamps (rejected: violates the #45 §8 no-clamp policy and hides invalid
+  inputs); raising on negative `kappa` *and* healing masked targets in the
+  objective layer (out of #8 scope); wrapping the branches in try/except
+  (rejected: catch blocks are explicitly forbidden).
+- **Evidence:** `tests/test_von_mises_torsion.py` — 44 tests: forward vs
+  `scipy.special.i0e` measured max error **6.51e-6** over `[0, 100]`
+  (acceptance: `< 1e-5`), in both log-space and the scaled-space form the
+  criterion names literally; backward finite/non-negative/strictly `< 1`
+  everywhere incl. `kappa = 0` (exactly 0) and `kappa ∈ {1e3, 1e5}`;
+  Amos-vs-`i1e/i0e` deviation measured **3.30e-2** max at `kappa ≈ 2.5`
+  (7.9e-4 / 2.0e-4 / 7.4e-5 at 30/60/100) and pinned `< 4e-2`; seam tests
+  at `kappa ∈ {11.999, 12, 12.001}` prove the legacy NaN-leak failure mode
+  is structurally impossible; von Mises log-density vs
+  `scipy.stats.vonmises` `< 1e-4`, numeric normalisation ≈ 1; AST-level ban
+  on `clamp`/`nan_to_num`/`clip` inside the module.  Full suite 449/449.
+- **Affected:** #8 (closed), #24 (consumes the objective; its `#8`
+  dependency is satisfied — #11 CHEM-01 is the sole remaining blocker),
+  #32/#33 (suite aggregation).
+
+## D-V2-014 — 2026-11-02 — The hardware gate enforces pure FP32 everywhere and reports out-of-scope devices; simulated `DeviceInfo` inputs never touch global state (#10)
+
+- **Problem:** Issue #10 pins the literal gate "if `device.type == cuda`
+  and `compute_capability < 8.0`: force `mixed_precision = fp32`, disable
+  autocast, remove `GradScaler`", while the constitution (#45 §5/§29.2)
+  additionally restricts the *supported* hardware to Colab/Kaggle Tesla T4
+  and mandates pure FP32 for the whole production path — including what
+  happens on non-T4 CUDA devices (do not silently train).  The clean-room
+  contains no AMP machinery at all (D-V2-005), so "#10 removes GradScaler"
+  is enforced structurally rather than by deletion; the acceptance tests
+  must run on a CPU-only sandbox and must not mutate global `torch.backends`.
+- **Decision:** `configure_runtime_environment` resolves a device via real
+  probing (`probe_device`) or an explicit **simulated** `DeviceInfo` (the
+  acceptance-test path — never mutates global state); every non-`fp32`
+  request token (`fp16`/`bf16`/`amp`/`mixed`) is rejected with a logged
+  `FAIL-CLOSED` warning (cc < 8 cites the T4 GradScaler-collapse history;
+  cc >= 8 additionally records the out-of-scope-device warning; CPU cites
+  D-V2-005) and the frozen `RuntimeConfig` always carries
+  `precision="fp32"`, `autocast_enabled=False`, `grad_scaler=False`.
+  TF32 stays off by default, requires `tf32_justified=True` *and* cc >= 8
+  (structurally impossible on the supported T4), and global backends are
+  only written for *real* probed CUDA devices.  The issue-pinned logit-mask
+  constants (`LOGIT_MASK_FILL = -1e4`, `LOGIT_MASK_LEGAL_ABOVE = -1e3`)
+  ship with fail-closed `apply_logit_mask`, the pinned scatter
+  target-unmasking invariant as a pure function
+  (`unmask_target_actions`), and strict `validate_target_actions` for
+  callers that refuse to heal invalid supervised targets (#45 §9.6).  A
+  repo-wide AST regression test bans `GradScaler`/`autocast`/`torch.amp`
+  and reduced-precision dtypes from `src/syntree`.
+- **Alternatives considered:** honouring fp16 on cc >= 8 (rejected: the
+  constitution's pure-FP32 mandate is device-independent); raising instead
+  of warning on fp16 requests (rejected: the issue pins "logs a fail-closed
+  warning and executes in pure FP32"); mutating global backends for
+  simulated devices (rejected: test pollution).
+- **Evidence:** `tests/test_fp32_enforcement.py` — 35 tests: both pinned
+  acceptance criteria (simulated Tesla T4 cc 7.5 forces `fp32` + no
+  GradScaler; `mixed_precision="fp16"` on cc 7.5 logs the FAIL-CLOSED
+  warning and runs pure FP32); the gate over V100/K80/A100/H100/CPU;
+  TF32 policy incl. structural impossibility on T4; global-state
+  non-mutation for simulated infos; the pinned scatter verified
+  bit-identical against the literal in-place snippet; the AST bans.  Full
+  suite 484/484.
+- **Affected:** #10 (closed), #26 (consumes `RuntimeConfig`; its `#10`
+  dependency is satisfied — #19/#20/#25 remain), #24 (consumes the
+  logit-mask constants), #43 (reuses `DeviceInfo`/`probe_device` for
+  measured profiling).
+
+## D-V2-015 — 2026-11-02 — Soft-core role separation: #14's flat-bottom form owns the clash/torsion objective and the volume floors; the 12-6 surrogate keeps the docking role (#14)
+
+- **Problem:** D-V2-009 listed the engine's "soft-core LJ / Coulomb
+  surrogate" as an interim with injection points for #14, but the engine
+  surrogate served *two* distinct roles: (a) the sub-bin torsion
+  refinement objective of #42 (needs a bounded repulsive clash penalty —
+  exactly the issue #14 pinned flat-bottom form, per #14's follow-up
+  addendum) and (b) the reward's `S_dock`/`S_contact` energies (need an
+  *attractive* branch + Coulomb to express binding affinity).  The pinned
+  #14 form is repulsive-only with a flat bottom: using it as `ΔG_dock`
+  would delete the affinity semantics and identically zero the designed
+  `S_contact` component of the #30 reward formulation.
+- **Decision:** (1) `syntree/chemistry/conformer.py` owns the production
+  flat-bottom soft-core clash potential — the issue-pinned form with
+  `delta = 0.5 Å^6`, Bondi radii + D-V2-009 depths, Lorentz-Berthelot
+  mixing **capped by the 500 kcal/mol bounded-spike ceiling**
+  (`eps_ij = min(sqrt(eps_i eps_j), 500·delta/(4 sigma_ij^6))`), which
+  makes the #14 acceptance bound (`V(0.5) < 500`) hold for *every*
+  supported element pair by construction (measured: `V(0.5) = 484.85`,
+  `V(0) = 500.00` vs `1.58e9` for the rigid wall); analytic gradient + a
+  torch autograd mirror (the "differentiable potential"); a deterministic
+  grid cavity-volume estimator; the ratio floor (0.35) and the
+  heavy-atom floor (12, weight 2.0) penalties.  (2) The terminal sub-bin
+  torsion refinement objective in
+  `environment.py::finalize_terminal_molecule` now evaluates the
+  production clash potential (the addendum's demand).  (3)
+  `soft_core_pocket_energy` (12-6 + softened Coulomb) remains exported in
+  its *docking-surrogate* role for `S_dock`/`S_contact` — a different
+  injection point owned by #30 FLOW-02 / the evaluation stack.  (4)
+  `ThreeDReward.S_vol` now carries both #14 floors with the cavity volume
+  derived **once at construction** from the fixed pocket (stationarity
+  preserved — the compute signature still has no batch parameter);
+  explicit `volume_floor_angstrom3` overrides the derived floor; no
+  pocket + no floor keeps the graph-only reward.  The Brent-vs-dense-scan
+  engine test's dense reference was updated 1:1 to the production
+  potential (contract preserved, #45 §24.3).
+- **Alternatives considered:** using the flat-bottom form as `ΔG_dock`
+  (rejected: removes affinity semantics, zeros `S_contact`); removing the
+  12-6 surrogate entirely (rejected: the docking surrogate is a documented
+  separate injection point per D-V2-009); per-element uncapped epsilon
+  (rejected: the pinned `< 500` acceptance would fail for heavy pairs —
+  the cap is the documented design); deriving the cavity volume per
+  `compute()` call (rejected: would add work per trajectory and risk
+  stationarity questions — construction-time derivation is the fixed
+  pocket context).
+- **Evidence:** `tests/test_soft_core_chemistry.py` — 50 tests: the
+  pinned form (flat bottom bitwise zero, in-branch values to 1e-12,
+  monotone repulsion, documented bounded contact jump); the universal
+  bounded-spike bound over all element pairs; gradient vs finite
+  differences and vs torch autograd; atom-typing tables pinned; unknown
+  element policies; pair-matrix engine (totals, determinism,
+  fail-closed); cavity estimator (positive, deterministic, monotone,
+  resolution documented); both floor penalties' shapes/bounds; reward
+  integration (10-heavy-atom *assembled* molecule incurs the explicit
+  penalty `-0.3333`; 12-heavy dodecane does not; stationarity across
+  engine instances bit-equal; complete telemetry); refinement objective
+  proven equal to the production potential at the reproduced pose and
+  *different* from the 12-6 surrogate.  Full suite **534/534** including
+  all 50 engine contracts (toy-DAG flow accounting, batch-composition
+  invariance, bit-for-bit rollout determinism).
+- **Affected:** #14 (closed), #42 (its `#14` dependency is satisfied; the
+  refinement objective is now the production potential; #11/#24 remain),
+  #30 (its `#14` dependency is satisfied; #29 remains; the docking
+  surrogate's production closure stays #30's scope), #24 (no change),
+  #16 (cavity estimator calibration on real pockets arrives with DATA-01).

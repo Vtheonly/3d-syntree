@@ -9,9 +9,9 @@
 > #5–#44. Superseding decisions are recorded in
 > `docs/agent/DECISIONS.md`.
 >
-> Last updated: 2026-11-01 (sessions S-V2-02: #5, #6, #7, #21; S-V2-03:
+> Last updated: 2026-11-02 (sessions S-V2-02: #5, #6, #7, #21; S-V2-03:
 > #38 + the reconciled engine layer; S-V2-04: #22; S-V2-05: #9; S-V2-06:
-> #23).
+> #23; S-V2-07: #8, #10, #14).
 
 ## 1. System overview
 
@@ -331,7 +331,114 @@ validated (FP32/FP64-only dtype policy matching module parameters per
 D-V2-008, device, shapes, index ranges, cross-field backbone↔handle
 graph-count consistency, NaN/Inf fail loudly) and eval-mode forwards are
 bit-deterministic (dropout is training-mode only). Pinned by
-`tests/test_cross_attention_decoder.py` (58 tests; full suite 405/405).
+`tests/test_cross_attention_decoder.py` (58 tests; full suite 405/405
+at S-V2-06).
+
+### 3.14 Stable von Mises circular-torsion mathematics `[VERIFIED — #8, 2026-11-02]`
+
+`syntree/models/torsion_head.py` implements the numerically stable
+`log I_0(kappa)` primitive as the issue-pinned custom autograd Function
+`LogBesselI0` (decision D-V2-013): a float64 two-branch forward — the
+22-term power series below `kappa = 12` and the pinned three-term
+asymptotic expansion at/above (whose coefficients match the true `I_0`
+asymptotic series exactly through `O(kappa^-3)`, which is how the
+threshold meets the pinned 1e-5 tolerance at the seam) — selected by
+exact `torch.where` gating (no infinity is ever materialised in an
+inactive branch), and the **analytic Amos' ratio backward**
+`A(kappa) = kappa / (0.5 + sqrt(kappa^2 + 2.25))`, strictly bounded in
+`[0, 1)` for every `kappa >= 0` (proof in the module docstring) with
+`A(0) = 0` exactly and denominator bounded below by 2.0 — finite by
+mathematics, no clamps. Measured: forward vs `scipy.special.i0e`
+max error **6.51e-6** over `kappa ∈ [0, 100]`; Amos deviation vs the
+trusted ratio `I_1/I_0 = i1e/i0e` max **3.30e-2** at `kappa ≈ 2.5`
+(7.9e-4 / 2.0e-4 / 7.4e-5 at 30 / 60 / 100) — an approximation treated
+honestly per #45 §8.2, pinned by tests. The legacy "Singularity 2"
+(unrolled-series gradient divergence for `kappa > 10` plus NaN leakage
+through inactive `torch.where` branches during backward) is
+**structurally impossible**: the branch selection lives inside the
+untracked forward of the custom Function and the backward is one
+closed-form expression. The public surface ships the circular objective
+`von_mises_log_prob` / `von_mises_nll` / `von_mises_loss` (verified
+against `scipy.stats.vonmises`, numerically normalised over the circle)
+that #24 MODEL-04's torsion loss consumes. Fail-closed domain:
+finite, floating, `kappa >= 0`. Pinned by
+`tests/test_von_mises_torsion.py` (44 tests; full suite 449/449 at
+#8 close).
+
+### 3.15 Fail-closed FP32 hardware precision engine `[VERIFIED — #10, 2026-11-02]`
+
+`syntree/utils/hardware.py` implements the enforcement layer of the
+constitution's pure-FP32 policy (decision D-V2-014).
+`configure_runtime_environment` resolves the device by real probing
+(`probe_device` — live name/capability/VRAM per #45 §28.4) or from an
+explicit **simulated** `DeviceInfo` (the acceptance-test path, which
+never mutates global `torch.backends` state) and applies the strict
+gate: every non-`fp32` request token (`fp16`/`bf16`/`amp`/`mixed`) is
+rejected with a logged `FAIL-CLOSED` warning — on compute capability
+< 8 citing the pre-V2 T4 GradScaler collapse (scale `2^16 → 1.84e-40 →
+0.0`, weights → NaN, legacy "Singularity 3") — and the frozen,
+auditable `RuntimeConfig` always carries `precision="fp32"`,
+`autocast_enabled=False`, `grad_scaler=False`. Devices outside the
+supported Tesla T4 scope (cc ≠ 7.5) still enforce pure FP32 (the
+mandate is device-independent) *and* record an out-of-scope warning per
+#45 §29.2 so training never silently proceeds on unsupported hardware.
+TF32 is off by default, requires an explicit measured justification
+(`tf32_justified`) and compute capability ≥ 8 — structurally impossible
+on the supported T4 (cc 7.5 has no TF32 units). The issue-pinned
+logit-mask constants (`LOGIT_MASK_FILL = -1e4`,
+`LOGIT_MASK_LEGAL_ABOVE = -1e3` — a 9,000-nat masked/legal separation)
+ship with fail-closed `apply_logit_mask`, the pinned scatter
+**target-unmasking invariant** as a pure function
+(`unmask_target_actions`, bit-identical to the literal in-place snippet)
+and strict `validate_target_actions` for supervised targets that were
+illegal to begin with (#45 §9.6). The clean-room contains no AMP
+machinery at all (D-V2-005 — the legacy `resolve_amp_dtype` /
+auto-TF32 / `cudnn.benchmark` path and the older
+`scale_model_config()` / `autotune_batch_size()` helpers were never
+ported), and a **repo-wide AST regression test** bans
+`GradScaler`/`autocast`/`torch.amp` and reduced-precision dtypes from
+`src/syntree` — the "completely remove GradScaler" clause enforced as
+a permanent gate. Pinned by `tests/test_fp32_enforcement.py` (35 tests;
+full suite 484/484 at #10 close).
+
+### 3.16 Flat-bottom soft-core clash + cavity/heavy-atom volume floors `[VERIFIED — #14, 2026-11-02]`
+
+`syntree/chemistry/conformer.py` (the new `syntree/chemistry/` package)
+implements the production pocket clash physics and volume floors of
+issue #14 (decision D-V2-015). The **issue-pinned flat-bottom soft-core
+Lennard-Jones potential** is `V(r) = 0` for `r >= sigma_ij` (the flat
+bottom — bitwise zero; neutral geometry is never penalised) and
+`V(r) = 4 eps sigma^6 / (r^6 + delta)` for `r < sigma_ij` with
+`delta = 0.5 A^6` — bounded by construction. Atom typing: Bondi (1964)
+radii (re-adopted from the pre-reset conformer spec, D-V2-002) plus the
+D-V2-009 oracle well depths, mixed by Lorentz–Berthelot
+(`sigma_ij = r_i + r_j`, `eps_ij = sqrt(eps_i eps_j)`) and **capped by
+the bounded-spike ceiling** `eps_ij = min(sqrt(eps_i eps_j),
+500 * delta / (4 sigma_ij^6))`, which makes the #14 acceptance bound
+hold for *every* supported element pair by construction (measured:
+`V(0.5 A) = 484.85 kcal/mol < 500` and `V(0) = 500.00` exactly for the
+worst pair, versus `1.58e9 kcal/mol` for the rigid `r^-12` wall — the
+shrinking-ligand driver). The potential is differentiable in both
+senses: the analytic `dV/dr = -24 eps sigma^6 r^5 / (r^6 + delta)^2`
+(finite everywhere, zero at `r = 0`, analytic maximum at
+`r* = (5 delta/7)^{1/6}`) and a torch autograd mirror that matches it.
+The **role separation** is binding (D-V2-015): this flat-bottom
+repulsive-only form is the #42 sub-bin torsion refinement's local
+objective (wired into `finalize_terminal_molecule` per the #14
+follow-up addendum), while the attractive 12-6 + softened-Coulomb
+surrogate (`soft_core_pocket_energy`) keeps its *docking-surrogate* role
+for the reward's `S_dock`/`S_contact` — affinity semantics a clash
+penalty cannot express, owned by #30/eval. The **volume floors** — the
+second anti-shrinking flank — are the deterministic grid
+cavity-volume estimator (envelope sphere minus vdW spheres; derived
+once at reward construction from the fixed pocket, preserving
+stationarity), the cavity filling floor (penalty below
+`V_lig / V_poc = 0.35`, bounded `[-2, 0]`), and the explicit heavy-atom
+guard (penalty below 12 heavy atoms, weight 2.0) — both wired into
+`ThreeDReward.S_vol` with full telemetry, while the compute signature
+still carries no batch parameter (batch-composition invariance
+re-verified). Pinned by `tests/test_soft_core_chemistry.py` (50 tests;
+full suite 534/534 at #14 close, including all 50 engine contracts).
 
 ## 4. Repository layout (V2, growing with the roadmap)
 
@@ -348,11 +455,23 @@ src/syntree/              # the V2 package (src-layout, decision D-V2-003)
     policy.py             #   two-layer stacked cross-attention decoder
                           #   (#23; decision D-V2-012 — no new spatial RBF
                           #   site, dense padded memory, exact masking)
+    torsion_head.py       #   stable log I_0 + Amos backward + the von Mises
+                          #   circular objective (#8; D-V2-013)
+  utils/
+    hardware.py           #   fail-closed FP32 gate + standard logit masks
+                          #   (#10; D-V2-014 — RuntimeConfig, DeviceInfo,
+                          #   target-unmasking invariant, AMP AST ban)
+  chemistry/
+    conformer.py          #   flat-bottom soft-core LJ clash + atom typing +
+                          #   cavity/heavy-atom volume floors (#14; D-V2-015)
   engine/                 # the reconciled two-level GFlowNet framework
                           # (D-V2-009; docs/architecture/MDP_STATE_SPACE.md)
     environment.py        #   discrete Assembly MDP + terminal reward oracle
-                          #   (#24 geometry, #38 leaves, #42/#13 oracle)
+                          #   (#24 geometry, #38 leaves, #42/#13 oracle —
+                          #   refinement objective = production clash
+                          #   potential per #14/D-V2-015)
     rl.py                 #   stationary multi-objective terminal reward (#30)
+                          #   with the #14 volume floors in S_vol
     gflownet.py           #   Trajectory Balance with uniform-leaf P_B (#29)
 docs/
   architecture/           # this document + MDP_STATE_SPACE.md (the #38 spec)

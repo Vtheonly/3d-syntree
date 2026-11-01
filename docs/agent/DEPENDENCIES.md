@@ -21,13 +21,13 @@
 | #5 ARCH-01 | — | #6, #16, #21, #29 |
 | #6 ARCH-02 | #5 | #17, #21, #22 |
 | #7 MATH-01 | #5 | #21, #32 |
-| #8 MATH-02 | #5 | #24, #32 |
+| #8 MATH-02 | #5 | #24, #32 — **closed 2026-11-02**: `syntree/models/torsion_head.py` + 44 tests (D-V2-013) |
 | #9 MATH-03 | #5 | #23 |
-| #10 MATH-04 | #5 | #26 |
+| #10 MATH-04 | #5 | #26 — **closed 2026-11-02**: `syntree/utils/hardware.py` + 35 tests (D-V2-014) |
 | #11 CHEM-01 | #5 | #12, #18, #24, #40, #41 |
 | #12 CHEM-02 | #11, #40 | #18, #24, #39, #41, #44 |
 | #13 CHEM-03 | #11 | #29, #42 |
-| #14 CHEM-04 | #5 | #30, #42 |
+| #14 CHEM-04 | #5 | #30, #42 — **closed 2026-11-02**: `syntree/chemistry/conformer.py` + engine wiring + 50 tests (D-V2-015) |
 | #15 CHEM-05 | #11 | #18, #38 (×2) |
 | #16 DATA-01 | #5 | #17 |
 | #17 DATA-02 | #16 | #18 |
@@ -37,13 +37,13 @@
 | #21 MODEL-01 | #6, #7 | #23, #24, #39 |
 | #22 MODEL-02 | #6, #21 | #23 — **closed 2026-11-01**: `syntree/models/handle_head.py` + 44 tests (D-V2-010) |
 | #23 MODEL-03 | #9, #21, #22 — **closed 2026-11-01 (session S-V2-06)**: `syntree/models/policy.py` + 58 tests (D-V2-012); all three deps were closed and inspected before implementation | #24, #39 |
-| #24 MODEL-04 | #11, #8, #23 — **#23 closed 2026-11-01** (`syntree/models/policy.py`, D-V2-012); remaining open deps: #11, #8 | #25, #29, #38, #42 |
+| #24 MODEL-04 | #11, #8, #23 — **#23 closed 2026-11-01** (`syntree/models/policy.py`, D-V2-012); **#8 closed 2026-11-02** (`syntree/models/torsion_head.py`, D-V2-013); remaining open deps: **#11 only** | #25, #29, #38, #42 |
 | #25 MODEL-05 | #21, #22, #23, #24, #39* | #26, #29 |
-| #26 TRAIN-01 | #10, #19, #20, #25 | #27, #33, #43 |
+| #26 TRAIN-01 | #10, #19, #20, #25 — **#10 closed 2026-11-02** (`syntree/utils/hardware.py`, D-V2-014; `RuntimeConfig` ready); remaining open deps: #19, #20, #25 | #27, #33, #43 |
 | #27 TRAIN-02 | #26 | #28 |
 | #28 TRAIN-03 | #11, #12, #27 | #29 |
 | #29 FLOW-01 | #13, #25, #26, #38, #39* | #30, #31 |
-| #30 FLOW-02 | #14, #29 | #31 |
+| #30 FLOW-02 | #14, #29 — **#14 closed 2026-11-02** (`syntree/chemistry/conformer.py` + `rl.py` volume floors, D-V2-015); remaining open deps: #29 | #31 |
 | #31 FLOW-03 | #29, #30 | #37 |
 | #32 TEST-01 | #5 | #33 |
 | #33 TEST-02 | #7, #8, #21, #25, #26, #32 | #34 |
@@ -55,7 +55,7 @@
 | #39 MODEL-06 | implied: #12, #21, #23, #25 | — |
 | #40 CHEM-06 | implied: #11 | — |
 | #41 DATA-06 | implied: #11, #12 | — |
-| #42 CHEM-07 | implied: #13, #14, #24 | — |
+| #42 CHEM-07 | implied: #13, #14, #24 — **#14 closed 2026-11-02** (the refinement objective now evaluates the production flat-bottom clash potential, D-V2-015); remaining open deps: #13, #24 | — |
 | #43 OPS-03 | implied: #26, #36 | — |
 | #44 EVAL-03 | implied: #12, #34 | — |
 
@@ -84,25 +84,28 @@ with the chemistry/data spur feeding in earlier:
 
 With #5 (foundation), #6 (schema), #7 (norms), #9 (cosine cutoff
 envelope), #21 (backbone), #22 (handle-selection head), #23
-(cross-attention decoder) implemented and verified (sessions S-V2-01 /
-S-V2-02 / S-V2-03 / S-V2-04 / S-V2-05 / S-V2-06), and #38 closed with
-its state-space spec, the engine layer of the reconciled two-level
-GFlowNet framework also exists (`syntree/engine/`, D-V2-009):
+(cross-attention decoder), #8 (von Mises math), #10 (FP32 hardware
+gate), #14 (soft-core clash + volume floors) implemented and verified
+(sessions S-V2-01 … S-V2-07), and #38 closed with its state-space spec,
+the engine layer of the reconciled two-level GFlowNet framework also
+exists (`syntree/engine/`, D-V2-009/D-V2-015):
 
-- **#8 MATH-02** (analytic Amos-ratio autograd for the von Mises loss) —
-  **now the recommended next critical-path task**: depends on #5 only,
-  and together with #11 it is the last blocker of #24 MODEL-04 on the
-  critical path (#24 → #25 → #26 → …).
-- **#11 CHEM-01** (certified 32-reaction taxonomy) — the other #24
-  blocker; dependency-ready; a larger unit of work (reaction registry +
+- **#11 CHEM-01** (certified 32-reaction taxonomy) — **the recommended
+  next task and the sole remaining blocker of #24 MODEL-04** on the
+  critical path (#24 → #25 → #26 → …); it also unblocks the
+  #12/#13/#15/#40/#41 chain.  A larger unit of work (reaction registry +
   representative reagent/product tests per #45 §9.1).
-- **#10 MATH-04**, **#14 CHEM-04**, **#16 DATA-01**, **#32 TEST-01** —
-  depend on #5 only; parallel-safe.
+- **#16 DATA-01** (multi-source preprocessing) — depends on #5 only;
+  parallel-safe with #11; provenance record already exists
+  (`docs/data/RAW_SOURCE_PROVENANCE.yaml`).
+- **#32 TEST-01** (Suite A) — depends on #5 only; aggregates the
+  per-issue capability tests (now 129 of them across eight closed
+  issues) as they land.
 - **#36 OPS-01** — no code dependency, but the remote-Colab part is gated
   on the **user's** authentication/authorization: prepare the workflow,
   never claim a connection.
 
-#24 MODEL-04 becomes ready once #11 and #8 land (#23 is done).
+#24 MODEL-04 becomes ready the moment #11 lands (#23 and #8 are done).
 
 ## 4. External (non-issue) dependencies
 

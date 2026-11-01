@@ -827,3 +827,215 @@ only) — together with #11 CHEM-01 it is the last blocker of #24
 MODEL-04. Parallel-safe: #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16
 DATA-01, #32 TEST-01. #36 remains gated on user authorization (Colab
 SSH).
+
+---
+
+## S-V2-07 — 2026-11-02 — #8 MATH-02, #10 MATH-04, #14 CHEM-04 closed: von Mises math, FP32 gate, soft-core clash + volume floors (D-V2-013/014/015)
+
+- **Agent/session:** autonomous lead-engineering session (Z.ai), UTC.
+- **Repository / branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `8bd3e94` (S-V2-06 docs head; branch verified equal
+  to `origin/3d-synV2`; working tree clean).
+
+### 1. State discovery (per #45 §25.1)
+
+- Read issue #45 in full (1370 lines); read STATUS / DECISIONS /
+  DEPENDENCIES / HANDOFF / WORK_LOG and the code head; fetched the live
+  #5–#44 issue states from the GitHub API — closed = {5, 6, 7, 9, 21, 22,
+  23, 38}, exactly matching the recorded status (no reconciliation gap).
+- The S-V2-06 handoff was unambiguous: next task **#8 MATH-02** (deps: #5;
+  the smallest remaining blocker of #24); parallel-safe alternatives #10
+  / #11 / #14 / #16 / #32.  Session goal: solve at least three issues →
+  **#8, #10, #14** chosen (all dependency-ready, all CPU-verifiable;
+  #11 CHEM-01 deliberately left as the next session's focused unit — it
+  is a large registry and deserves a full session).
+- Spec archaeology per D-V2-002 (pre-reset files read as *specification*
+  only, never code): legacy `syntree/models/torsion_head.py`
+  (`log_bessel_i0` two-branch form, threshold 10, von Mises log_prob),
+  legacy `syntree/utils/hardware.py` (the AMP machinery the issue orders
+  removed: `resolve_amp_dtype`, auto-TF32, `cudnn.benchmark=True`), legacy
+  `syntree/chemistry/conformer.py` (Bondi radii table, uniform
+  `LJ_EPSILON = 0.10`, C¹-linear LJ continuation below 0.8σ — superseded
+  by #14's pinned δ-form), and the legacy boundedness test
+  (~650ε at full overlap).
+- Dev environment rebuilt in the recycled sandbox: `pip install torch
+  --index-url .../whl/cpu`, `pip install -e ".[test]"`,
+  `pip install torch_geometric`, `pip install scipy`.  Baseline before
+  any change: `python -m pytest tests/ -q` → **405/405 passed** (matches
+  the S-V2-06 record).
+- **Operational note:** the sandbox shell recycles between tool calls, so
+  `GH_TOKEN` had to be re-exported per command; the initial clone had
+  silently embedded an *empty* credential (the repo is public, so the
+  anonymous clone succeeded and the first push failed with "Invalid
+  username or token").  Fixed by `git remote set-url` with the token;
+  pushes then succeeded.  Recorded here so a future session recognises
+  the symptom immediately.
+
+### 2. #8 MATH-02 — stable von Mises backward (commit `ae2c615`)
+
+- **New module `src/syntree/models/torsion_head.py`** (issue-pinned path):
+  `LogBesselI0(torch.autograd.Function)` — float64 two-branch forward
+  (22-term power series below κ=12 with early exit; the pinned 3-term
+  asymptotic expansion `κ − 0.5(log 2π + log κ) + log1p(u(1+u(4.5+37.5u)))`
+  at/above), exact `torch.where` branch gating (no infinity ever
+  materialised in an inactive branch), dtype-preserving output; backward =
+  the **analytic Amos' ratio** `A(κ)=κ/(0.5+√(κ²+2.25))` (proven strictly
+  in [0,1) ∀κ≥0; denominator ≥ 2; A(0)=0 exactly).  Public surface:
+  `log_bessel_i0`, `amos_ratio`, `von_mises_log_prob`, `von_mises_nll`,
+  `von_mises_loss`, constants.  The legacy "Singularity 2"
+  (unrolled-series gradient divergence + `torch.where` NaN leakage) is
+  structurally impossible: branch selection lives inside the untracked
+  forward; the backward is one closed-form expression.
+- **Decision D-V2-013 recorded:** the issue snippet's three defensive
+  clamps are provably dead on κ≥0 — replaced by exact gating + fail-closed
+  domain validation (finite/floating/κ≥0 else raise); identical values on
+  the valid domain.
+- **Measured evidence:** forward vs `scipy.special.i0e` over 20001 points
+  on [0,100]: max error **6.51e-6** (< the pinned 1e-5, both in log-space
+  and the literal scaled-space form); Amos backward vs the trusted
+  reference ratio `i1e/i0e`: max **3.30e-2** at κ≈2.5 (7.9e-4/2.0e-4/
+  7.4e-5 at 30/60/100 — O(κ⁻²) decay) — measured, documented, pinned.
+- **Tests `tests/test_von_mises_torsion.py` — 44 tests / 4 classes:**
+  forward accuracy (both acceptance forms, fp32-output floor documented),
+  seam continuity, zero/small/large-κ behaviour, dtype/determinism,
+  fail-closed matrix; backward boundedness (finite, ≥0, strictly <1 incl.
+  κ=0→0 and κ∈{1e3,1e5}), monotonicity, trusted-reference deviation
+  pinned < 4e-2, seam-gradient NaN-safety, batching/decomposition,
+  `amos_ratio` helper consistency; the von Mises objective vs
+  `scipy.stats.vonmises` (<1e-4), numeric normalisation ≈ 1 over
+  [−π,π), peak-at-mean, κ=0 uniform exactly, gradient finiteness, an
+  FD cross-check quantifying the pinned forward-exact/backward-approx
+  design; AST-level ban on clamp/nan_to_num/clip in the module.
+- Suite after #8: **449/449**.  Issue #8 closed with the evidence comment
+  (GitHub issue comment 6561596269).
+
+### 3. #10 MATH-04 — fail-closed FP32 precision engine (commit `5ce4f5e`)
+
+- **New package `src/syntree/utils/` with `hardware.py`:**
+  `configure_runtime_environment(device, *, mixed_precision="fp32",
+  tf32=False, tf32_justified=False, device_info=None)` → frozen auditable
+  `RuntimeConfig` (`precision` always "fp32"; `autocast_enabled`/
+  `grad_scaler` always False; `warnings` tuple carries the verbatim
+  FAIL-CLOSED rejections).  `DeviceInfo` + `probe_device()` serve both the
+  real runtime and **simulated** hardware (the acceptance-test path —
+  never mutates global `torch.backends`).  Gate semantics: cc<8 non-FP32
+  request → FAIL-CLOSED warning citing the T4 GradScaler collapse
+  (2^16→1.84e-40→0.0, weights→NaN); cc≥8 → pure FP32 still enforced *and*
+  an out-of-scope-device warning per #45 §29.2; CPU → same rejection.
+  TF32: off by default, needs `tf32_justified` AND cc≥8 (structurally
+  impossible on the supported T4).  Issue-pinned logit-mask constants
+  `LOGIT_MASK_FILL=-1e4` / `LOGIT_MASK_LEGAL_ABOVE=-1e3` with fail-closed
+  `apply_logit_mask`; the pinned scatter target-unmasking invariant as a
+  pure `unmask_target_actions` + strict `validate_target_actions`
+  (#45 §9.6).  Legacy `scale_model_config`/`autotune_batch_size`/
+  `resolve_amp_dtype` absent by construction (D-V2-005).
+- **Decision D-V2-014 recorded** (see DECISIONS.md for the full
+  alternatives/reasoning).
+- **Tests `tests/test_fp32_enforcement.py` (issue-pinned name) — 35
+  tests / 5 classes:** both acceptance criteria (simulated Tesla T4 cc
+  7.5 forces fp32 + no GradScaler; fp16-on-cc7.5 logs the FAIL-CLOSED
+  warning via caplog and executes pure FP32); the gate across
+  V100/K80/A100/H100/CPU; every AMP token rejected; TF32 policy; global
+  backends untouched by simulated infos; pinned constants; mask
+  enforcement (masked logits never survive softmax; poisoned legal logits
+  fail loudly); the pinned scatter verified bit-identical against the
+  literal in-place snippet; strict target validation; **AST ban on
+  GradScaler/autocast/torch.amp and fp16/bf16/half across `src/syntree`**
+  (the "completely remove GradScaler" clause as a regression gate);
+  legacy-helper absence.
+- Suite after #10: **484/484**.  Issue #10 closed
+  (comment 6561681322).
+
+### 4. #14 CHEM-04 — soft-core LJ + volume floors (commit `d61a7fc`)
+
+- **New package `src/syntree/chemistry/` with `conformer.py`:** the
+  issue-pinned flat-bottom soft-core LJ `V=0` for `r≥σ`,
+  `4εσ⁶/(r⁶+δ)` for `r<σ`, `δ=0.5 Å⁶`; atom typing = Bondi (1964)
+  radii (re-adopted from the pre-reset spec, D-V2-002) + the D-V2-009
+  oracle depths, Lorentz–Berthelot mixing **capped by the 500 kcal/mol
+  bounded-spike ceiling** `ε_ij=min(√(ε_iε_j), 500δ/(4σ_ij⁶))` — the
+  acceptance bound holds for every supported element pair by construction;
+  analytic gradient (+ torch autograd mirror = the "differentiable
+  potential"); `SoftCoreClashPotential` pair-matrix engine
+  (fallback/raise unknown-element policies); deterministic grid
+  `pocket_cavity_volume`; `volume_floor_penalty` (ratio 0.35, bounded
+  [−2,0]) + `heavy_atom_floor_penalty` (floor 12, weight 2.0).
+- **Engine wiring (decision D-V2-015):**
+  `finalize_terminal_molecule`'s #42 sub-bin torsion objective now
+  evaluates the production `soft_core_clash_energy` (the #14 addendum's
+  demand); `soft_core_pocket_energy` keeps its **docking-surrogate** role
+  for `S_dock`/`S_contact` (repulsive-only cannot express affinity; that
+  injection point is #30/eval's); `ThreeDReward.S_vol` now carries both
+  floors with `V_poc` derived once at construction (stationarity
+  preserved — still no batch parameter; explicit
+  `volume_floor_angstrom3` overrides; no pocket → graph-only reward);
+  full telemetry (`volume_ratio`, `pocket_cavity_volume_angstrom3`,
+  `heavy_atom_count`, `heavy_atom_penalty`, `ratio_penalty`).
+- **Measured evidence:** C–C σ=3.40 Å, LB ε=0.086 → capped ε=0.0405;
+  **V(0.5)=484.85 kcal/mol < 500** (acceptance 1) vs **1.58e9** for the
+  rigid wall; max over all 10×10 supported element pairs = 484.85 (the
+  ceiling construction makes the bound universal); V(0)=500.00 exactly;
+  shell-pocket cavity 2325.4 Å³ (0.5 Å grid, deterministic); the
+  engine-assembled two-step target (10 heavy atoms after both chlorides
+  leave) incurs `heavy_atom_penalty = −0.3333` (acceptance 2 on a real
+  synthesized molecule); `S_vol = −2.046`, `R = 0.0245 ≥ 1e-4`.
+- **Tests `tests/test_soft_core_chemistry.py` — 50 tests / 6 classes**
+  (reusing the verified engine-suite fixtures `_shell_pocket` /
+  `_fresh_two_step_env` / `_rollout` by import): pinned form, universal
+  bound, monotone repulsion, documented contact jump; gradient vs FD and
+  vs torch autograd; analytic gradient maximum at r*=(5δ/7)^{1/6}; atom
+  tables + mixing + ceiling; unknown-element policies; pair-matrix engine
+  + fail-closed; cavity estimator (deterministic/monotone/resolution);
+  both floor penalties' shapes; reward integration (stationarity across
+  instances bit-equal, telemetry completeness, explicit-floor override,
+  disabled-volume configuration); refinement-objective provenance (the
+  oracle's `objective_before` equals the production potential at the
+  reproduced pose and differs from the 12-6 surrogate).  The
+  Brent-vs-dense-scan engine test's dense reference updated 1:1 to the
+  production potential (contract unchanged, #45 §24.3).
+- Suite after #14: **534/534** including all 50 engine contracts
+  (toy-DAG flow accounting P(x)=R(x)/Z < 1e-9 residuals,
+  batch-composition invariance, bit-for-bit determinism).  Issue #14
+  closed (comment 6561847197).
+
+### 5. Commits, pushes, issue updates
+
+- `ae2c615` feat(math-02) — pushed; issue #8 closed with evidence.
+- `5ce4f5e` feat(math-04) — pushed; issue #10 closed with evidence.
+- `d61a7fc` feat(chem-04) — pushed; issue #14 closed with evidence.
+- (this commit) docs(agent): S-V2-07 session record.
+- All pushes verified against `origin/3d-synV2`; every commit was
+  preceded by `git diff --check` / `git status --short` /
+  `git diff --stat` review per #45 §3.
+
+### 6. Verification summary
+
+- `python -m pytest tests/ -q` → **534/534 passed** (CPU sandbox: Python
+  3.12.16, torch 2.15.0+cpu, PyG 2.8.1, rdkit 2026.9.1, scipy 1.14.1,
+  pytest 9.0.2).  No skipped, no xfail, no warnings beyond the ignored
+  deprecation filters.
+- Everything above is **tested locally** on CPU only — no GPU/T4
+  execution, no training, no HF sync (unchanged gates: #36/#43).
+
+### 7. Blockers / open risks (delta vs S-V2-06)
+
+- #11 CHEM-01 is now the sole blocker of #24 MODEL-04 (critical path) and
+  of the #12/#13/#15/#40/#41 chain — the recommended next session's task.
+- The engine's generic junction-reaction registry and the docking
+  surrogate remain documented interim implementations (D-V2-009/D-V2-015)
+  pending #11 and #30 respectively.
+- #42's T4 benchmarking acceptance item remains unmeasured (CPU sandbox).
+- No new risks introduced: the three modules are pure additions plus two
+  surgical engine integrations, all fail-closed, all pinned by tests.
+
+### 8. Exact next actions
+
+1. Next session: **#11 CHEM-01** (read the issue in full; module path
+   `syntree/chemistry/`; 32 certified reactions + 9 coarse families +
+   representative reagent/product tests per #45 §9.1; supersedes the
+   generic junction registry without changing the MDP/TB contracts).
+   Parallel-safe: #16 DATA-01, #32 TEST-01.
+2. After #11: #24 MODEL-04 becomes dependency-ready (consumes
+   `DecoderOutput.context` + `handle_embeddings` + `von_mises_loss` +
+   `apply_logit_mask`/`unmask_target_actions`).
+3. Do not redo #8/#10/#14 — their contracts are pinned by 129 tests.

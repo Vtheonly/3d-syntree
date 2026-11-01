@@ -283,11 +283,18 @@ src/syntree/            # the V2 package
   models/               # equivariant math kernels (#7), cosine cutoff
                         # envelope (#9), union-graph backbone (#21),
                         # handle-selection head (#22), cross-attention
-                        # decoder (#23); remaining policy heads (later
-                        # issues)
+                        # decoder (#23), von Mises torsion mathematics
+                        # (#8); remaining policy heads (later issues)
+  utils/                # fail-closed FP32 hardware precision engine +
+                        # standard logit masks (#10)
+  chemistry/            # production pocket physics: flat-bottom soft-core
+                        # LJ clash + cavity/heavy-atom volume floors (#14);
+                        # reaction registry/catalog arrive with #11/#12
   engine/               # reconciled two-level GFlowNet framework (#24
                         # geometry / #38 semantics / #42+#13 terminal
-                        # oracle / #30 stationary reward / #29 TB core)
+                        # oracle (production clash objective per #14) /
+                        # #30 stationary reward with #14 volume floors /
+                        # #29 TB core)
 docs/
   architecture/         # global architecture specification + MDP state space
   data/                 # verified raw-source provenance
@@ -302,7 +309,7 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-01, session S-V2-06):
+tracker; last updated 2026-11-02, session S-V2-07):
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -315,8 +322,11 @@ tracker; last updated 2026-11-01, session S-V2-06):
 | Agency-enabled handle-selection head | **Done, verified, closed** | `syntree/models/handle_head.py` @ `433d303` (S-V2-04), 44/44 tests — valid normalized laws on real `AssemblyEnvironment` menus, rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32), 224,896-param frozen profile (#22, D-V2-010) |
 | Discrete assembly MDP + terminal reward oracle + TB engine (engine layer) | **Implemented, tested locally** — engine layer of the reconciled design; trainer/CLI integration open | `syntree/engine/environment.py` / `rl.py` / `gflownet.py` @ `d3d186a`, 50/50 tests (D-V2-009); #24/#29/#30/#42 remain open for their full scope |
 | Two-layer stacked cross-attention decoder | **Done, verified, closed** | `syntree/models/policy.py` @ `dc4921e` (S-V2-06), 58/58 tests — `[B, 1, 256]` × `[B, N, 256]` → `[B, 256]` acceptance shapes, padded atoms masked exactly (bit-identical under pad junk), SE(3) invariance 8.882e-16 (FP64) / 4.768e-07 (FP32), 1,219,328-param frozen profile, no new spatial-RBF site (#23, D-V2-012) |
-| Remaining policy heads, policy assembly, seed/anchor selection | Not started | #24 (needs #11, #8), #25, #39 |
-| Reaction registry, catalog, chemistry engines | Not started | #11–#15, #40–#42 |
+| Stable von Mises circular-torsion mathematics | **Done, verified, closed** | `syntree/models/torsion_head.py` @ `ae2c615` (S-V2-07), 44/44 tests — `log I_0` matches `scipy.special.i0e` to a measured 6.51e-6 over κ∈[0,100] (< 1e-5 acceptance); analytic Amos' ratio backward finite, ≥ 0, strictly < 1 everywhere (measured deviation vs `I₁/I₀`: 3.30e-2 max, O(κ⁻²) decay); the legacy NaN-leak/series-divergence failure is structurally eliminated (#8, D-V2-013) |
+| Fail-closed FP32 hardware precision engine | **Done, verified, closed** | `syntree/utils/hardware.py` @ `5ce4f5e` (S-V2-07), 35/35 tests — simulated Tesla T4 (cc 7.5) forces `precision="fp32"` with no GradScaler/autocast; `mixed_precision="fp16"` requests log a FAIL-CLOSED warning and execute pure FP32; TF32 structurally off on supported hardware; repo-wide AST ban on AMP machinery (#10, D-V2-014) |
+| Flat-bottom soft-core LJ clash + cavity/heavy-atom volume floors | **Done, verified, closed** | `syntree/chemistry/conformer.py` + engine wiring @ `d61a7fc` (S-V2-07), 50/50 tests — V(0.5 Å) = 484.85 kcal/mol < 500 for **every** supported element pair (bounded-spike ceiling by construction) vs 1.58×10⁹ for the rigid wall; the #42 torsion-refinement objective and the reward's `S_vol` (0.35 cavity ratio + 12-heavy-atom floors, stationary) consume it (#14, D-V2-015) |
+| Remaining policy heads, policy assembly, seed/anchor selection | Not started | #24 (needs #11 only now), #25, #39 |
+| Reaction registry, catalog, chemistry engines | Partially started — the production clash/volume physics is done (#14); the certified reaction taxonomy, catalog, relaxation, decomposition, chemoselectivity, and index are open | #11–#13, #15, #40–#42 |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
 | Test suites A/B (full scope) | Not started (only issue-scoped tests exist) | #32, #33 |
@@ -331,8 +341,9 @@ repository.
 ## 15. Limitations
 
 - The system is an early-stage rebuild: the foundation, the backbone, the
-  handle-selection head, the cross-attention decoder, and the reconciled
-  GFlowNet engine layer are
+  handle-selection head, the cross-attention decoder, the von Mises
+  torsion mathematics, the FP32 hardware gate, the soft-core clash and
+  volume-floor physics, and the reconciled GFlowNet engine layer are
   implemented; everything else in this README describes the *target*
   design, clearly marked as such.
 - The MDP/derivation-DAG semantics and the TB backward term are resolved
