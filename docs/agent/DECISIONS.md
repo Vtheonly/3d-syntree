@@ -139,3 +139,51 @@
   comment must state exact test commands and pass counts. No test may be
   deleted to make a run green; failures are fixed or the issue stays open.
 - **Affected:** #32 (Suite A aggregation), #33 (Suite B), all issues.
+
+## D-V2-007 — 2026-11-01 — Backbone RBF carries no smooth cutoff envelope (owned by #9)
+
+- **Problem:** Issue #21 specifies "8 equivariant layers with 20 Gaussian
+  RBFs" without an envelope, while #45 §8.3 and the debt table assign
+  "cutoff envelope maths" to #9 MATH-03 ("Multiply all spatial distance RBF
+  projections by this envelope"). Implementing the envelope inside #21 would
+  duplicate #9's acceptance-tested mathematics and blur the issue boundary.
+- **Decision:** `GaussianRadialBasis` (`syntree/models/bipartite.py`) emits
+  the raw Gaussian expansion over centers `[0, r_cut]` with
+  `sigma = r_cut / (num_radial - 1)` and **no** cosine envelope. When #9
+  lands, it must apply `continuous_cosine_envelope` to *all* spatial RBF
+  projections — the backbone's `GaussianRadialBasis` **and** the
+  cross-attention RBF — in one authoritative place. Until then, edge
+  truncation at `r_cut` is the hard graph-construction threshold (pinned by
+  test: at `d = r_cut` the last Gaussian channel is exactly 1.0).
+- **Alternatives considered:** implementing the envelope now inside the
+  backbone (rejected: duplicates #9's mandate and its acceptance criteria);
+  a smooth distance-weighted graph cut-off on edges (rejected: not pinned by
+  any issue; changes the radius-graph semantics).
+- **Evidence:** issue #21 body ("20 Gaussian RBFs", no envelope wording);
+  issue #9 body (envelope formula + "multiply all spatial distance RBF
+  projections"); `tests/test_bipartite_painn.py::
+  TestGaussianRadialBasis::test_at_cutoff_last_channel_is_one`.
+- **Affected:** #21, #9, #23, #32.
+
+## D-V2-008 — 2026-11-01 — Backbone accepts FP32 (production) and FP64 (local verification) only
+
+- **Problem:** The schema and production path are strictly FP32 (D-V2-005),
+  but equivariance verification at float64 precision is standard numerical
+  practice and was already used by the #7 block tests. The backbone needed
+  an explicit dtype policy rather than an implicit one.
+- **Decision:** `BipartitePaiNN` parameters default to FP32 (the production
+  path on Colab/Kaggle T4). `forward` accepts exactly two input dtypes:
+  `float32` (production) and `float64` (local numerical verification only),
+  and the input dtype must **match the module parameter dtype** (cast the
+  module with `.to(torch.float64)` to verify locally). FP16/BF16 and every
+  other dtype raise `TensorContractError` fail-closed. No float64 training
+  claim exists anywhere; the T4 production path remains pure FP32.
+- **Alternatives considered:** accepting any dtype with silent casting
+  (rejected: silent precision changes violate the fail-closed constitution);
+  strictly FP32-only inputs (rejected: would weaken local equivariance
+  verification to float32 tolerances).
+- **Evidence:** `tests/test_bipartite_painn.py::TestFailClosed` (dtype
+  matrix), `TestSE3InvarianceEquivariance` (float64 tolerances 1e-9;
+  measured worst errors 2.98e-13 / 4.62e-14 over 36 rigid-motion trials).
+- **Affected:** #21, #10 (the fail-closed precision engine enforces the
+  production side), #26.

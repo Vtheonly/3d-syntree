@@ -9,7 +9,7 @@
 > #5–#44. Superseding decisions are recorded in
 > `docs/agent/DECISIONS.md`.
 >
-> Last updated: 2026-11-01 (session S-V2-01: #5, #6, #7).
+> Last updated: 2026-11-01 (session S-V2-02: #5, #6, #7, #21).
 
 ## 1. System overview
 
@@ -106,7 +106,37 @@ invariance / vector equivariance under random rotations, translation
 invariance, and coincident-coordinate finiteness are pinned by
 `tests/test_mathematical_singularities.py`.
 
-### 3.3 Precision `[TARGET — #10]`
+### 3.3 Union interaction graph & backbone `[VERIFIED — #21, 2026-11-01]`
+
+`syntree/models/bipartite.py::BipartitePaiNN` is the single authoritative
+molecular encoder over the union pocket∪ligand node set (ordering:
+`[pocket nodes, ligand nodes]`, per-graph-major inside each block for
+collated batches). 8 PaiNN message-then-update layers (d = 256, vector
+3×256, 20 Gaussian RBFs, r_cut = 5.0 Å — frozen `BACKBONE_*` constants;
+5,999,104 parameters pinned by test) compose the #7 blocks. Node features
+are strictly invariant chemistry (shared z-embedding 1..100, node-type
+embedding, bias-free charge MLP, handle-flag embedding); vector features
+start at zero and acquire geometry only through message passing.
+`build_union_radius_graph` is the **one** authoritative edge construction
+(#45 §7.2): exact radius graph emitting pocket–pocket, ligand–ligand and
+pocket–ligand pairs of the same state (both directions, no self-loops, no
+cross-graph edges), `safe_norm` threshold, differentiable `edge_vec` /
+`edge_dist` only. `GaussianRadialBasis` emits the raw 20-Gaussian expansion
+with **no** cosine envelope — the envelope for all spatial RBF projections
+is owned by #9 (decision D-V2-007). Every layer is wrapped in non-reentrant
+activation checkpointing while gradients are enabled (T4 capability;
+measured benefit deferred to #43). Inputs are fail-closed validated (FP32
+production / FP64 local verification only, decision D-V2-008; atomic-number
+bounds; ≥1 pocket atom per graph) and consume the canonical
+`collate_state_batch` output. `BackboneOutput` exposes invariant scalars,
+equivariant vectors, union metadata and per-graph pooled contexts — the
+#39-facing surface; downstream heads must consume it, never introduce a
+second pocket encoder. Verified: scalar invariance / vector equivariance
+(worst errors ≤3e-13 over 36 rigid-motion trials), clean pocket-only
+operation at N_l = 0, batching ≡ single-graph runs. Pinned by
+`tests/test_bipartite_painn.py`.
+
+### 3.4 Precision `[TARGET — #10]`
 
 Production path on Colab/Kaggle Tesla T4: **pure FP32**. No FP16, no BF16,
 no autocast, no `GradScaler`, no silent fallback. V2 contains no
@@ -114,7 +144,7 @@ mixed-precision machinery by construction (decision D-V2-005); #10 adds the
 fail-closed enforcement layer (device/dtype guards, config validation,
 runtime assertions) before the T4 trainer is certified (#26).
 
-### 3.4 Memory policy `[TARGET — #43]`
+### 3.5 Memory policy `[TARGET — #43]`
 
 Architecture dimensions are frozen in version-controlled configuration (no
 VRAM-probing mutation). Explicit micro-batch / gradient-accumulation /
@@ -122,7 +152,7 @@ pocket-cap settings; activation checkpointing where measured to help. T4
 profile targets (e.g. batch 12 × accum 6, pocket cap 700, peak reserved
 VRAM < 9.5 GB) must be **measured** on real T4 hardware, never assumed.
 
-### 3.5 Stage-2 algorithm `[VERIFIED as V2 policy — #45 §12.3]`
+### 3.6 Stage-2 algorithm `[VERIFIED as V2 policy — #45 §12.3]`
 
 Stage 2 is **GFlowNet Trajectory Balance only**; PPO/DPO are not V2
 production alternatives. The forward probability must include the seed,
@@ -131,14 +161,14 @@ the trajectory. The backward term is zero only if mathematically justified
 for the actual state space — #38 owns that proof; no assumption is baked in
 until then.
 
-### 3.6 Reward stationarity `[TARGET — #30]`
+### 3.7 Reward stationarity `[TARGET — #30]`
 
 Terminal TB reward must be a **stationary, reproducible** positive function
 of the terminal object + fixed conditioning context. Batch-relative
 diversity terms inside R(x) are forbidden; population diversity lives in
 sampling / replay / archive monitoring outside the per-trajectory reward.
 
-### 3.7 Data integrity & leakage prevention `[TARGET — #16–#19]`
+### 3.8 Data integrity & leakage prevention `[TARGET — #16–#19]`
 
 Full multi-source ingestion (CrossDocked2020 Pocket10 with the RMSD
 criterion, PDBbind refined, BindingMOAD), 10 Å pocket standardization
@@ -149,7 +179,7 @@ exact forward-replay validation of every supervised step, SHA-256-checked
 compressed shards. Provenance of raw sources is pinned in
 `docs/data/RAW_SOURCE_PROVENANCE.yaml`.
 
-### 3.8 Torsion handling `[TARGET — #24, #42]`
+### 3.9 Torsion handling `[TARGET — #24, #42]`
 
 36-bin categorical torsion action over [-π, π); the bin selects a coarse
 rotamer region; environment-side bounded refinement (±5°, documented
@@ -158,7 +188,7 @@ relaxation afterward. The refinement is a *geometry* operation attached to
 the categorical action — no unnormalized continuous density inside the TB
 log-probability.
 
-### 3.9 Reproducibility & artifacts `[TARGET — #37, #43]`
+### 3.10 Reproducibility & artifacts `[TARGET — #37, #43]`
 
 Checkpoints persist model/optimizer/scheduler/global step/epoch/RNG
 states/sampler-curriculum/data-progress/GFlowNet `log_Z` atomically with
@@ -172,7 +202,10 @@ only via environment variables.
 ```
 src/syntree/              # the V2 package (src-layout, decision D-V2-003)
   core/                   # schema: frozen state contract & canonical batch path
-  models/                 # equivariant math kernels; backbone & heads later
+  models/                 # equivariant math kernels; union-graph backbone;
+                          # policy heads later
+    equivariant.py        #   safe norms + PaiNN blocks (#7)
+    bipartite.py          #   BipartitePaiNN + radius graph + RBF (#21)
 docs/
   architecture/           # this document
   data/RAW_SOURCE_PROVENANCE.yaml
@@ -191,6 +224,7 @@ pre-created speculatively.
    variables live in the state and their probability measure.
 3. **pharm3d projection versioning** (#12) — QR-projection seed/matrix
    persistence contract.
-4. **Empty-ligand interaction graphs** at t=0 for the backbone (#21) — the
-   schema supports empty ligand sub-graphs explicitly; the backbone must
-   run cleanly as a pocket-only encoder when `N_l = 0`.
+4. **Empty-ligand interaction graphs** at t=0 for the backbone —
+   **resolved by #21**: the schema supports empty ligand sub-graphs
+   explicitly and `BipartitePaiNN` runs cleanly as a pocket-only encoder
+   when `N_l = 0` (pinned by `tests/test_bipartite_painn.py`).

@@ -258,7 +258,8 @@ never hardcoded or logged.
 ```
 src/syntree/            # the V2 package
   core/                 # frozen state tensor contract & batch path (#6)
-  models/               # equivariant math kernels (#7+), backbone & heads (later issues)
+  models/               # equivariant math kernels (#7), union-graph
+                        # backbone (#21); policy heads (later issues)
 docs/
   architecture/         # global architecture specification
   data/                 # verified raw-source provenance
@@ -273,16 +274,17 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-01):
+tracker; last updated 2026-11-01, session S-V2-02):
 
 | Capability | Status | Evidence |
 |---|---|---|
 | Branch clean-room reset (purge of all legacy content) | **Done, verified, closed** | commit `075f86d` — branch tree verified empty on origin; foundation `0f5d74a` (#5) |
 | Frozen state tensor contract & PyG batch path | **Done, verified, closed** | `syntree/core/schema.py` @ `0001087`, 93/93 tests (#6) |
 | Non-singular PaiNN norms & bounded unit vectors | **Done, verified, closed** | `syntree/models/equivariant.py` @ `00ec653`, 45/45 tests (#7) |
+| Bipartite union-graph backbone (`BipartitePaiNN`) | **Done, verified, closed** | `syntree/models/bipartite.py` @ `e76d955`, 69/69 tests — SE(3) invariance/equivariance ≤3e-13 over 36 rigid-motion trials, clean pocket-only N_l=0, 5,999,104-param frozen profile (#21) |
+| Decoder, policy heads, policy assembly | Not started | #22–#25, #39 (deps #21 closed; #23 additionally needs #9/#22) |
 | Reaction registry, catalog, chemistry engines | Not started | #11–#15, #40–#42 |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
-| Backbone, decoder, policy heads, policy assembly | Not started | #21–#25, #39 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
 | GFlowNet TB engine, reward, CLI | Not started | #29–#31, #38 |
 | Test suites A/B (full scope) | Not started (only issue-scoped tests exist) | #32, #33 |

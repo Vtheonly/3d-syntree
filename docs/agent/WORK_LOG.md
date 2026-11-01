@@ -146,3 +146,112 @@
 See `HANDOFF.md` §1: next dependency-ready task is #21 MODEL-01
 (BipartitePaiNN backbone) on the critical path; parallel-safe:
 #8, #9, #10, #11, #14, #16, #32; #36 requires user authorization.
+
+---
+
+## S-V2-02 — 2026-11-01 — BipartitePaiNN union-graph backbone (#21)
+
+### 1. Session opening state discovery
+
+- Read #45 in full; inspected branch `3d-synV2` (clean at `0692c23`, in
+  sync with origin), `git status --short` empty; read STATUS /
+  DEPENDENCIES / DECISIONS / HANDOFF / ARCHITECTURE / WORK_LOG; re-fetched
+  issues #5–#44 states from the GitHub API (#5/#6/#7 closed, #8–#44 open,
+  #45 open-permanent).
+- Handoff S-V2-01 §1 directed: next task #21 MODEL-01 (both hard deps
+  closed). Verified the deps' deliverables exist in the clean-room tree
+  (`syntree/core/schema.py`, `syntree/models/equivariant.py`); re-read
+  issue #21 in full plus boundary issues #9, #22, #23, #39 (interface
+  consumers).
+- Fresh dev environment installed (sandbox): Python 3.12.16,
+  torch 2.15.0+cpu, torch_geometric 2.8.1, pytest 9.0.2; baseline
+  reproduced **138/138 passed** before any change.
+
+### 2. #21 MODEL-01 — implemented, tested locally, closed
+
+- `src/syntree/models/bipartite.py` (new, 864 lines):
+  - `BipartitePaiNN`: 8 PaiNN message-then-update layers composing the #7
+    blocks (D-V2-004 equations), d=256 (vector 3×256), 20 Gaussian RBFs,
+    r_cut=5.0 Å frozen as `BACKBONE_*` constants; shared atomic-number
+    embedding (z∈[1,100], bound-matched to `schema.MAX_ATOMIC_NUMBER`,
+    row 0 reserved), node-type embedding (0 pocket / 1 ligand), bias-free
+    charge MLP, handle-flag embedding; vector features start at zero;
+    union node ordering [pocket, ligand] (per-graph-major inside each
+    block for collated batches); non-reentrant
+    `torch.utils.checkpoint` per layer while gradients are enabled.
+  - `build_union_radius_graph`: the one authoritative exact radius graph
+    (both directions, no self-loops, no cross-graph edges, all three pair
+    families); `safe_norm` threshold (ε-inclusive boundary, no_grad
+    structure, differentiable `edge_vec`/`edge_dist` only); O(N²)
+    transient memory documented.
+  - `GaussianRadialBasis`: fixed buffer-only 20-Gaussian expansion on
+    [0, r_cut], NO envelope (D-V2-007).
+  - `BackboneOutput`: invariant scalars, equivariant vectors, union
+    metadata, per-graph `graph_context`/`pocket_context` + slice
+    properties — the #39-facing surface.
+  - Fail-closed validation of the 8 consumed node fields: dtype
+    (FP32/FP64 only, D-V2-008), device, atomic-number bounds, shapes,
+    finiteness, batch ranges, ≥1 pocket atom per graph, handle flags.
+- `src/syntree/models/__init__.py`: re-exports the backbone API.
+- `tests/test_bipartite_painn.py` (new, 69 tests): both pinned acceptance
+  criteria — scalar invariance / vector equivariance under random proper
+  rotations (+translations, pooled contexts, handle flags, pocket-only,
+  batched) at 1e-9 tolerances in float64, and clean N_l=0 pocket-only
+  operation — plus frozen-profile pinning (exactly 5,999,104 parameters),
+  default-profile FP32 smoke, brute-force graph equivalence, three pair
+  families, cross-graph exclusion, coincident-atom safety, rigid-motion
+  graph invariance, batched-equals-single-graph runs, pooling vs manual
+  means, handle-flag union ordering, checkpointing math-equivalence
+  (outputs & gradients identical with/without), inference under no_grad,
+  determinism, input non-mutation, encoder decoupling from policy fields,
+  and the fail-closed contract matrix.
+- Two test-authoring mistakes found and fixed during development (both
+  test-side, no module change): a "batch index out of range" case that
+  legitimately derived B=2, and a handle-flag propagation assertion that
+  ignored message passing.
+- Commit `e76d955`, pushed (`0692c23..e76d955`). Issue #21 closed with
+  evidence comment (id 6551179046).
+
+### 3. Extra verification beyond the suite (local CPU)
+
+- 36 rigid-motion trials across 12 independently seeded models (d=16,
+  L=3): worst scalar invariance error **2.98e-13**, worst vector
+  equivariance error **4.62e-14**.
+- Empty-edge graph (isolated dimer > r_cut apart) through the full model:
+  finite outputs. Default 256/8 profile end-to-end on a canonical
+  `collate_state_batch` FP32 batch: forward + backward, finite grads.
+- Default profile parameter audit: **5,999,104** (embeddings 25,856 +
+  512 + 65,792 + 512; per layer 278,528 interaction + 459,776 mixing;
+  × 8 layers) — hand-derived and measured, equal.
+
+### 4. Verification summary (all local CPU; no GPU/T4 claims)
+
+- Environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric 2.8.1,
+  pytest 9.0.2.
+- `python -m pytest tests/ -q` → **207 passed, 0 failed** (93 + 45 + 69).
+- #21 acceptance 1 (invariance/equivariance): 8/8 SE(3) class tests +
+  sweep above. #21 acceptance 2 (N_l=0): 3/3 + in-batch empty-ligand
+  graphs.
+- Mandatory pre-commit review executed: `git diff --check` (clean),
+  `git diff --stat` (3 files, +1848/−2), `git diff --unified=80`
+  (reviewed), `git status --short` (clean after commit).
+
+### 5. Commits / pushes (session total)
+
+| Commit | Content | Push range |
+|---|---|---|
+| `e76d955` | feat(model-01): BipartitePaiNN backbone, radius graph, RBF (#21) | `0692c23..e76d955` |
+| (this docs commit) | docs(agent): S-V2-02 session record — statuses, decisions D-V2-007/008, handoff, README/architecture | — |
+
+### 6. GitHub issues updated
+
+- Closed with evidence comment: #21 (this session).
+- Verified untouched and OPEN: #45 (permanent).
+- STATUS.md table synchronized (4/40 closed: #5, #6, #7, #21).
+
+### 7. Next actions
+
+See `HANDOFF.md` §1: next dependency-ready task is #22 MODEL-02 (handle
+selection head; critical path; consumes `BackboneOutput`); parallel-safe:
+#8, #9 (owns the RBF envelope, D-V2-007), #10, #11, #14, #16, #32; #36
+requires user authorization.

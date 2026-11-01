@@ -5,29 +5,31 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-01, session S-V2-01 close (#5, #6, #7 —
-clean-room rebuild, verified and closed).
+**Last updated:** 2026-11-01, session S-V2-02 close (#21 MODEL-01 —
+clean-room BipartitePaiNN backbone, verified and closed).
 
 ## 1. Continuation instruction
 
 ```
-Next session: implement #21 MODEL-01 (BipartitePaiNN backbone) — both
-hard deps are closed against the NEW codebase (#6 schema at commit
-0001087, #7 norms/blocks at commit 00ec653). Last verified commit: the
-head of 3d-synV2 after the S-V2-01 docs commit (see `git log -1`; code
-head is 00ec653). #5, #6 and #7 are implemented from scratch, locally
-verified (138/138 tests), and CLOSED — do NOT redo the purge, the
-schema, or the norms. Before coding, re-read issue #21 in full, then
-`docs/architecture/ARCHITECTURE.md` §3.1/§3.2 and this file, and
-confirm branch HEAD matches origin (push races possible). #21 must:
-compose PaiNNInteraction+PaiNNMixing (message-then-update) into 8
-equivariant layers (d=256, 20 Gaussian RBFs, r_cut=5.0 Å) over the
-union pocket∪ligand radius graph (pocket–pocket, ligand–ligand,
-pocket–ligand), run cleanly at N_l=0, route every norm/unit vector
-through safe_norm/safe_unit_vector, and satisfy
-tests/test_bipartite_painn.py (rotation invariance/equivariance).
-Parallel-safe alternatives if #21 is taken: #8 MATH-02, #9 MATH-03,
-#10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01, #32 TEST-01.
+Next session: implement #22 MODEL-02 (HandleSelectionHead) — both hard
+deps are closed (#6 schema at commit 0001087, #21 backbone at commit
+e76d955). Last verified commit: e76d955 (head of 3d-synV2, pushed; code
+head; the S-V2-02 docs commit follows it). #5, #6, #7 and #21 are
+implemented from scratch, locally verified (207/207 tests), and CLOSED —
+do NOT redo the purge, the schema, the norms, or the backbone. Before
+coding, re-read issue #22 in full, then `docs/architecture/ARCHITECTURE.md`
+§3.2/§3.10 and this file, and confirm branch HEAD matches origin (push
+races possible). #22 must: live in `syntree/models/handle_head.py`,
+consume the ligand node representations + union metadata exposed by
+`BackboneOutput` (never a second pocket encoder), cross-attend handle
+queries over handle invariant descriptors [B_k, 64] and handle positions
+relative to pocket centroids, and emit normalized logits over the active
+handle set P(handle_t | s_t) for H > 1 exposed handles (acceptance: valid
+normalized distributions). Parallel-safe alternatives if #22 is taken:
+#8 MATH-02, #9 MATH-03, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
+#32 TEST-01. Note for #9: the backbone RBF is deliberately envelope-free
+(decision D-V2-007) — #9 owns the cosine envelope for ALL spatial RBF
+projections.
 ```
 
 ## 2. Binding context for every future session
@@ -41,7 +43,14 @@ Parallel-safe alternatives if #21 is taken: #8 MATH-02, #9 MATH-03,
 - Pure FP32 on Colab/Kaggle Tesla T4 only; the dev sandbox is CPU-only
   and can never establish GPU claims (#45 §5–§6).
 - Issue-scoped module paths and test file names pinned by issue bodies are
-  binding (D-V2-002).
+  binding (D-V2-002). New pinned names from #21: module
+  `syntree/models/bipartite.py`, tests `tests/test_bipartite_painn.py`.
+- Backbone contract highlights (D-V2-007/D-V2-008): `GaussianRadialBasis`
+  emits the raw 20-Gaussian expansion with NO cosine envelope (#9 owns the
+  envelope); the backbone accepts FP32 (production) and FP64 (local
+  verification only, must match module dtype); `build_union_radius_graph`
+  is the one authoritative edge construction — downstream heads must
+  reuse it, not re-implement it.
 
 ## 3. What the next agent must NOT redo
 
@@ -56,9 +65,17 @@ Parallel-safe alternatives if #21 is taken: #8 MATH-02, #9 MATH-03,
 - The non-singular primitives and PaiNN blocks (#7):
   `syntree/models/equivariant.py` (`safe_norm`, `safe_unit_vector`,
   `PaiNNInteraction`, `PaiNNMixing`, published-equation form per
-  D-V2-004); 45 tests in `tests/test_mathematical_singularities.py`
-  pin the singularities and equivariance. #21 composes these blocks —
+  D-V2-004); 45 tests in `tests/test_mathematical_singularities.py` pin
+  the singularities and equivariance. #21 composes these blocks —
   do not reimplement them.
+- The union-graph backbone (#21): `syntree/models/bipartite.py`
+  (`BipartitePaiNN` 8×d256, `GaussianRadialBasis`, exact
+  `build_union_radius_graph`, `BackboneOutput` with the #39-facing pooled
+  contexts, activation checkpointing, frozen profile = 5,999,104 params);
+  69 tests in `tests/test_bipartite_painn.py` pin the contract (union
+  ordering, three pair families, batching = single-graph, fail-closed
+  dtype/atomic-number/pocket-coverage rules). Downstream heads consume
+  `BackboneOutput` — no second pocket encoder.
 - README / architecture / agent-docs structure — update in place.
 
 ## 4. Known debts / open risks
@@ -69,7 +86,10 @@ Parallel-safe alternatives if #21 is taken: #8 MATH-02, #9 MATH-03,
 | Dev environment not pinned in a lockfile | #26/#43 | `pyproject.toml` declares loose floors (torch≥2.1, PyG≥2.4); pin exact versions when the trainer lands |
 | Schema `handle_nodes` optional context | #22/#25 | Policy-side extension point, deliberately outside the 12-field core |
 | Unstamped states pass field validation (interim) | #19 | Remove the interim rule when shard producers stamp |
-| Radial basis / cosine cutoff construction not yet implemented | #9/#21 | `PaiNNInteraction` consumes `edge_rbf` as an input; the RBF producer is #21 (cutoff envelope maths is #9) |
+| Backbone RBF has no smooth cutoff envelope | #9 | Deliberate boundary (D-V2-007); #9 must apply the envelope to ALL spatial RBF projections |
+| Backbone ≥1-pocket-atom-per-graph rule is stricter than schema | #21 | Documented in-module; a schema-level per-graph pocket rule may be worth adopting at #18/#19 |
+| Activation-checkpointing T4 benefit unmeasured | #43 | Capability implemented + correctness-tested on CPU only |
+| `num_graphs` for non-Batch inputs is derived (max batch index + 1) | #21 | A Batch's `num_graphs` is trusted; index-range + pocket-coverage checks catch inconsistency |
 
 ## 5. Remote runtime / checkpoint state
 
@@ -78,12 +98,13 @@ requested; #36 gate). No V2 checkpoints exist. No HF artifacts synced.
 
 ## 6. Session mechanics
 
-1. `git clone --branch 3d-syntree... ` → confirm HEAD matches §1's
-   recorded commit; `git fetch` first if in doubt (push races possible).
+1. `git clone --branch 3d-synV2 ...` → confirm HEAD matches §1's recorded
+   commit; `git fetch` first if in doubt (push races possible).
 2. Dev env: Python ≥ 3.10; `pip install torch --index-url
-   https://download.pytorch.org/whl/cpu && pip install -e ".[test]"`.
+   https://download.pytorch.org/whl/cpu && pip install -e ".[test]" &&
+   pip install torch_geometric`.
 3. Baseline the suite: `python -m pytest tests/ -q` — expected results
-   recorded in §1.
+   recorded in §1 (207/207 as of S-V2-02).
 4. Work per the #45 §18 per-issue protocol; end with the mandatory git
    diff review, commit+push (report exact SHAs), issue update, and
    refreshed handoff.

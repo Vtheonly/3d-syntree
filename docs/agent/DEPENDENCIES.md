@@ -80,17 +80,21 @@ with the chemistry/data spur feeding in earlier:
 
 ## 3. Dependency-READY set (against the clean-room codebase)
 
-With #5 (foundation), #6 (schema), #7 (norms) implemented and verified in
-session S-V2-01:
+With #5 (foundation), #6 (schema), #7 (norms), #21 (backbone) implemented
+and verified (sessions S-V2-01 / S-V2-02):
 
-- **#21 MODEL-01** (BipartitePaiNN) — both hard deps satisfied; critical
-  path; recommended next.
+- **#22 MODEL-02** (handle selection head) — both hard deps satisfied
+  (#6 schema at `0001087`, #21 backbone at `e76d955`); critical path;
+  recommended next. Consumes `BackboneOutput` ligand node representations.
 - **#8 MATH-02**, **#9 MATH-03**, **#10 MATH-04**, **#11 CHEM-01**,
   **#14 CHEM-04**, **#16 DATA-01**, **#32 TEST-01** — depend on #5 only;
   parallel-safe.
 - **#36 OPS-01** — no code dependency, but the remote-Colab part is gated
   on the **user's** authentication/authorization: prepare the workflow,
   never claim a connection.
+
+#23 MODEL-03 additionally needs #9 and #22 (both above); #24 MODEL-04
+additionally needs #11 and #8 (both above) plus #23.
 
 ## 4. External (non-issue) dependencies
 

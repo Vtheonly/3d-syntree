@@ -12,8 +12,8 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-01 (session S-V2-01 close: #5, #6, #7 verified
-> and closed in the clean-room era).
+> Last synchronized: 2026-11-01 (session S-V2-02 close: #21 verified and
+> closed in the clean-room era; clean-room closures now #5, #6, #7, #21).
 
 ## Legend
 
@@ -41,11 +41,11 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 18 | DATA-03 | Trajectory extraction + exact replay | Blocked (needs #11, #12, #15, #17, #41) | `syntree/data/` | — | — | |
 | 19 | DATA-04 | Compressed sharding engine | Blocked (needs #18) | `syntree/data/` | — | — | |
 | 20 | DATA-05 | Coordinate/dihedral augmentation | Blocked (needs #19) | `syntree/data/` | — | — | Train split only |
-| 21 | MODEL-01 | BipartitePaiNN backbone | **Ready (next recommended)** (#6, #7 closed) | `syntree/models/bipartite.py` | — | — | Critical path; consumes schema (#6) + safe primitives + PaiNN blocks (#7) |
-| 22 | MODEL-02 | Handle selection head | Blocked (needs #21) | `syntree/models/` | — | — | |
-| 23 | MODEL-03 | Cross-attention decoder | Blocked (needs #9, #21, #22) | `syntree/models/` | — | — | |
-| 24 | MODEL-04 | Hierarchical heads + torsion space | Blocked (needs #11, #8, #23) | `syntree/models/` | — | — | |
-| 25 | MODEL-05 | SynTreePolicy assembly + audit | Blocked (needs #21–#24, #39 interface) | `syntree/models/` | — | — | |
+| 21 | MODEL-01 | BipartitePaiNN backbone | **Closed** (2026-11-01) | `syntree/models/bipartite.py` | `e76d955` | `tests/test_bipartite_painn.py` 69/69 (both pinned acceptance criteria: scalar invariance + vector equivariance at ≤3e-13 over 36 rigid-motion trials; clean pocket-only N_l=0); full suite 207/207 | — |
+| 22 | MODEL-02 | Handle selection head | **Ready (next recommended)** (#6, #21 closed) | `syntree/models/handle_head.py` | — | — | Critical path; consumes `BackboneOutput` ligand node representations |
+| 23 | MODEL-03 | Cross-attention decoder | Blocked (needs #9, #22) | `syntree/models/policy.py` | — | — | #21 satisfied |
+| 24 | MODEL-04 | Hierarchical heads + torsion space | Blocked (needs #11, #8, #23) | `syntree/models/` | — | — | #21 satisfied |
+| 25 | MODEL-05 | SynTreePolicy assembly + audit | Blocked (needs #22–#24, #39 interface) | `syntree/models/policy.py` | — | — | #21 satisfied |
 | 26 | TRAIN-01 | Pure FP32 T4 trainer | Blocked (needs #10, #19, #20, #25) | `syntree/engine/` | — | — | T4 verification requires authorized Colab/Kaggle |
 | 27 | TRAIN-02 | Quantile curriculum (Approach C) | Blocked (needs #26) | `syntree/engine/` | — | — | |
 | 28 | TRAIN-03 | 2D→3D transfer pretraining | Blocked (needs #11, #12, #27) | `syntree/engine/` | — | — | Requires licensed reaction data |
@@ -66,12 +66,12 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
 | 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: 3 (#5, #6, #7 —
+**Progress denominator: 40 issues (#5–#44).** Closed: 4 (#5, #6, #7, #21 —
 clean-room era). #45 excluded by standing rule.
 
 ## Pre-existing failures
 
-None. The clean-room suite started empty and is 138/138 green; there are
+None. The clean-room suite started empty and is 207/207 green; there are
 no inherited failures (the pre-reset suite and its 12 documented failures
 were purged with the branch, decision D-V2-006).
 
