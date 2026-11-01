@@ -309,7 +309,7 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-02, session S-V2-08):
+tracker; last updated 2026-11-02, session S-V2-09):
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -328,8 +328,11 @@ tracker; last updated 2026-11-02, session S-V2-08):
 | Certified 32-reaction taxonomy + 9-family coarse mapping + deterministic deprotections | **Done, verified, closed** | `syntree/chemistry/reactions.py` @ `0e296b0` (S-V2-08), 82/82 tests — 100% round-trip forward-replay certification on 48 standardized reagent pairs (16 stereo pairs with CIP retention); `DEFAULT_REACTION_REGISTRY` is the certified taxonomy (the generic interim was superseded and removed) while all 50 pinned MDP/TB contracts stay green (#11, D-V2-016) |
 | Junction torsion stages + scaffold-constrained MMFF94 in the static pocket vdW field | **Done, verified, closed** | `syntree/chemistry/conformer.py` (extended) + `finalize_terminal_molecule` opt-in flags @ `472f4df` (S-V2-08), 18/18 tests — amide planarity ≤ 1.0° (restored exactly post-MMFF: MMFF94's amide torsions sit ~3.7–11.6° off planar at their minimum, a measured finding), seed-scaffold RMSD < 0.15 Å, junction bond settles < 0.02 Å of its MMFF equilibrium, pocket static within 0.05 Å behind D-V2-017 opt-in flags whose defaults preserve the legacy behaviour bit-for-bit (#13) |
 | Canonical assembly ordering + seed-conditioned decompositions | **Done, verified, closed** | new package `syntree/data/fragmenter.py` @ `864530d` (S-V2-08), 21/21 tests — identical retrosynthetic trajectories under 12–20 random atom renumberings per ligand (the #15 acceptance criterion); the pinned seed rule (max ring system → highest degree → canonical SMILES) and periphery→core peeling with permanent rejection of atom-isolating cuts (#15) |
-| Remaining policy heads, policy assembly, seed/anchor selection | Not started | #24 (dependency-ready — #11 landed), #25, #39 |
-| Reaction catalog, chemoselectivity, geometry index | Not started (the taxonomy/relaxation/decomposition layers above are done) | #12 (needs #40), #40 (dependency-ready), #41 (needs #12) |
+| Decoupled hierarchical policy heads + discrete 36-bin SO(2) torsion space | **Done, verified, closed** | `syntree/models/policy.py` + `syntree/models/torsion_head.py` @ `74133c8` (S-V2-09), 100/100 tests — STOP-isolation pinned by forward hooks (no continuation head executes for terminating rows); every action component a pure dimensionless categorical whose logs compose in TB (κ/μ-invariance pinned); the exact family→reaction factorization; the tied 50k catalog embedding table; the asymmetric resonance-lock torsion gating; the three pre-V2 policy bugs pinned dead (#24, D-V2-018) |
+| Complete policy assembly (`SynTreePolicy`) + parameter audit | **Implemented, CPU-verified** — the CUDA forward-pass criterion awaits the authorized T4 runtime | `syntree/models/policy.py` @ `84fd3e7` (S-V2-09), 48/48 tests — one registered module with the full frozen stack (checkpointed backbone, handle head, decoder, #24 heads, #39 seed/anchor component); 10,880,719 params = 43.5 MB FP32 < the 50 MB bound (D-V2-019); full-profile forward zero-NaN/Inf on CPU; the tied table shared and counted once (#25) |
+| Learnable seed-fragment & pocket-anchor selection (policy side) | **Implemented** (via #25): deterministic rotation-equivariant anchor generator, factorized `P(anchor\|pocket)·P(seed\|anchor,pocket)` head, masks, TB log-prob contribution | `syntree/models/policy.py` @ `84fd3e7`, pinned in `tests/test_policy_assembly.py` — generator determinism/equivariance, subpocket separation, law validity, gradients through the checkpointed backbone into the tied table; the environment-side candidate-state rewiring and supervised seed labels remain #39's open scope (blocked on #12) |
+| Reaction-aware chemoselectivity & competing-handle curation screen | **Done, verified, closed** | `syntree/chemistry/chemoselectivity.py` @ `044adca` (S-V2-09), 111/111 tests — the free-group vocabulary with orthogonal protection passing by construction; the per-class exclusion matrix (self-reactive pairs, organometallic quenching, competing handles/electrophiles/SNAr positions, catalyst poisons); the asymmetric 2,4-dihalo-1,3-azine exemption; the catalog manifest with per-rule impact counts/percentages (#40, D-V2-020) |
+| Reaction catalog, geometry index | Not started (the taxonomy, relaxation, decomposition, and chemoselectivity layers above are done) | #12 (chemoselectivity satisfied — remaining blocker: licensed catalog access), #41 (needs #12) |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
 | Test suites A/B (full scope) | Not started (only issue-scoped tests exist) | #32, #33 |
@@ -347,10 +350,12 @@ repository.
   handle-selection head, the cross-attention decoder, the von Mises
   torsion mathematics, the FP32 hardware gate, the soft-core clash and
   volume-floor physics, the reconciled GFlowNet engine layer, the certified
-  32-reaction taxonomy, the #13 junction-torsion/MMFF stages, and the
-  canonical decomposer are
-  implemented; everything else in this README describes the *target*
-  design, clearly marked as such.
+  32-reaction taxonomy, the #13 junction-torsion/MMFF stages, the
+  canonical decomposer, the decoupled hierarchical policy heads with the
+  discrete torsion space, the complete `SynTreePolicy` assembly with the
+  seed/anchor selection component (CPU-verified; CUDA pending), and the
+  chemoselectivity curation screen are implemented; everything else in
+  this README describes the *target* design, clearly marked as such.
 - The MDP/derivation-DAG semantics and the TB backward term are resolved
   (#38 closed with proofs and toy-DAG verification); the *trainer*
   integration of Stage 2 (#29 full scope) is still open.

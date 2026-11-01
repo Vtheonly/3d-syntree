@@ -25,7 +25,7 @@
 | #9 MATH-03 | #5 | #23 |
 | #10 MATH-04 | #5 | #26 — **closed 2026-11-02**: `syntree/utils/hardware.py` + 35 tests (D-V2-014) |
 | #11 CHEM-01 | #5 | #12, #18, #24, #40, #41 — **closed 2026-11-02**: `syntree/chemistry/reactions.py` + 82 tests (D-V2-016) |
-| #12 CHEM-02 | #11, #40 — **#11 closed 2026-11-02**; remaining: #40 + catalog access | #18, #24, #39, #41, #44 |
+| #12 CHEM-02 | #11, #40 — **both closed** (#11 2026-11-02, #40 2026-11-02 `044adca`); remaining: licensed catalog access only — `screen_catalog` + `CurationManifest` are ready to consume | #18, #24 (satisfied), #39, #41, #44 |
 | #13 CHEM-03 | #11 — **closed 2026-11-02**: `conformer.py` stages + opt-in flags, 18 tests (D-V2-017) | #29, #42 |
 | #14 CHEM-04 | #5 | #30, #42 — **closed 2026-11-02**: `syntree/chemistry/conformer.py` + engine wiring + 50 tests (D-V2-015) |
 | #15 CHEM-05 | #11 — **closed 2026-11-02**: `syntree/data/fragmenter.py` + 21 tests | #18 (its #38 dependency was already satisfied by the reconciliation, D-V2-009) |
@@ -37,8 +37,8 @@
 | #21 MODEL-01 | #6, #7 | #23, #24, #39 |
 | #22 MODEL-02 | #6, #21 | #23 — **closed 2026-11-01**: `syntree/models/handle_head.py` + 44 tests (D-V2-010) |
 | #23 MODEL-03 | #9, #21, #22 — **closed 2026-11-01 (session S-V2-06)**: `syntree/models/policy.py` + 58 tests (D-V2-012); all three deps were closed and inspected before implementation | #24, #39 |
-| #24 MODEL-04 | #11, #8, #23 — **all three closed** (#11 2026-11-02, D-V2-016; #8 2026-11-02, D-V2-013; #23 2026-11-01, D-V2-012) — **dependency-READY** | #25, #29, #38, #42 |
-| #25 MODEL-05 | #21, #22, #23, #24, #39* | #26, #29 |
+| #24 MODEL-04 | #11, #8, #23 — **closed 2026-11-02** (`74133c8`, 100 tests, D-V2-018): `syntree/models/policy.py` hierarchical heads + `torsion_head.py` 36-bin categorical | #25 (satisfied), #29, #38 (satisfied), #42 |
+| #25 MODEL-05 | #21, #22, #23, #24, #39* — **implemented 2026-11-02** (`84fd3e7`, 48 tests, D-V2-019; the #39 dependency satisfied by the integrated seed/anchor component); **remaining: the CUDA acceptance criterion (#36 gate)** | #26, #29 |
 | #26 TRAIN-01 | #10, #19, #20, #25 — **#10 closed 2026-11-02** (`syntree/utils/hardware.py`, D-V2-014; `RuntimeConfig` ready); remaining open deps: #19, #20, #25 | #27, #33, #43 |
 | #27 TRAIN-02 | #26 | #28 |
 | #28 TRAIN-03 | #11, #12, #27 | #29 |
@@ -52,10 +52,10 @@
 | #36 OPS-01 | — (user authorization required) | #37, #43 |
 | #37 OPS-02 | #19, #26, #31, #35, #36 | — (final milestone) |
 | #38 FLOW-04 | implied: #15, #24 (from their `Blocks` lists) | — (**closed 2026-11-01**: spec delivered ahead of the cycle via the owner-directed reconciliation, D-V2-009; its deliverables live in `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/`) |
-| #39 MODEL-06 | implied: #12, #21, #23, #25 | — |
-| #40 CHEM-06 | implied: #11 — **closed 2026-11-02** (D-V2-016) — **dependency-READY** | #12, #44 |
+| #39 MODEL-06 | implied: #12, #21, #23, #25 — the **policy-side component is implemented** (2026-11-02 via #25: generator + factorized head + tied table + log-prob, `84fd3e7`); remaining: environment-side candidate-state rewiring + supervised labels + TB accounting, blocked on #12 | — |
+| #40 CHEM-06 | implied: #11 — **closed 2026-11-02** (`044adca`, 111 tests, D-V2-020) | #12 (satisfied), #44 |
 | #41 DATA-06 | implied: #11, #12 — **#11 closed 2026-11-02**; remaining: #12 | — |
-| #42 CHEM-07 | implied: #13, #14, #24 — **#14 closed 2026-11-02** (D-V2-015); **#13 closed 2026-11-02** (D-V2-017, the opt-in stages exist); remaining open dep: **#24 only** | — |
+| #42 CHEM-07 | implied: #13, #14, #24 — **all satisfied 2026-11-02** (#24 closed `74133c8`); remaining scope: T4 benchmarking + integrated-generation wiring | — |
 | #43 OPS-03 | implied: #26, #36 | — |
 | #44 EVAL-03 | implied: #12, #34 | — |
 
@@ -94,27 +94,27 @@ S-V2-08), and #38 closed with its state-space spec, the engine layer of
 the reconciled two-level GFlowNet framework also exists
 (`syntree/engine/`, D-V2-009/D-V2-015):
 
-- **#24 MODEL-04** (hierarchical policy heads + discrete SO(2) torsion
-  space) — **the recommended next task**: all three of its dependencies
-  (#11, #8, #23) are closed; it is the next node of the critical path
-  (#24 → #25 → #26 → …) and its landing unblocks #25 and retires #42's
-  last open dependency. Consume `DecoderOutput.context` [B, 256] +
-  per-row `handle_embeddings`, `von_mises_loss`, the logit-mask
-  constants, and the certified registry's per-family handle metadata
-  (see HANDOFF for the binding consumption notes).
-- **#40 CHEM-06** (reaction-aware chemoselectivity) — its only dependency
-  #11 is closed; the registry exposes the handle metadata and junction
-  patterns the rules require (D-V2-016 addendum). Parallel-safe with
-  #24 (different module: `syntree/chemistry/`); unblocks #12.
-- **#16 DATA-01** (multi-source preprocessing) — depends on #5 only;
-  provenance record already exists
+With #24 and #40 closed and #25 implemented (CUDA-gated), the model
+side of the critical path is complete through the policy assembly; the
+critical path now runs through DATA: #16 → #17 → #18 → #19 → #20 → #26.
+Dependency-READY set (verified against the clean-room codebase):
+
+- **#16 DATA-01** (multi-source preprocessing) — **the recommended next
+  task**: depends on #5 only (closed and verified); it unblocks the
+  entire data chain feeding #26 TRAIN-01. Provenance record exists
   (`docs/data/RAW_SOURCE_PROVENANCE.yaml`).
 - **#32 TEST-01** (Suite A) — depends on #5 only; aggregates the
-  per-issue capability tests (the suite is 655/655 across the thirteen
-  test-carrying closed issues) as they land.
-- **#36 OPS-01** — no code dependency, but the remote-Colab part is gated
-  on the **user's** authentication/authorization: prepare the workflow,
-  never claim a connection.
+  per-issue capability tests (914/914 across the test-carrying closed
+  issues) into the Suite A runner; parallel-safe with #16.
+- **#36 OPS-01** — prepare-only (notebook + workflow docs); the remote
+  session is user-authorization-gated. An authorized T4 session would
+  ALSO close #25's remaining CUDA criterion — run the full-profile
+  forward first.
+- **#12 CHEM-02** — unblocked on #40 (closed); remaining blocker is
+  licensed catalog access. If the mirror is reachable, consume
+  `syntree/chemistry/chemoselectivity.py::screen_catalog` after basic
+  molecular validation and embed the `CurationManifest` in the catalog
+  manifest.
 
 ## 4. External (non-issue) dependencies
 

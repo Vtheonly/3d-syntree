@@ -1172,3 +1172,204 @@ SSH).
   critical-path node; unblocks #25 and retires #42's last open dep).
   Parallel-safe alternatives: #40 CHEM-06 (unblocks #12), #16 DATA-01,
   #32 TEST-01.
+
+---
+
+# Session S-V2-09 — 2026-11-02 — #24 closed, #25 implemented (CUDA-gated), #40 closed
+
+## 1. Session parameters
+
+- Agent session identifier: S-V2-09 (autonomous continuation from the
+  S-V2-08 handoff; entry prompt = the permanent #45 pointer).
+- Repository: `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- Starting commit: `6495485` (S-V2-08 close; clean tree verified with
+  `git status --short`).
+- Baseline suite: `python -m pytest tests/ -q` → **655 passed, 16
+  skipped** (matches the handoff exactly; the 16 skips are the
+  #11-designed stereo-pair gaps).
+- Issues targeted (per the S-V2-08 handoff's continuation instruction):
+  #24 MODEL-04 (primary, critical path), then #25 MODEL-05 (unblocked
+  by #24), and #40 CHEM-06 (the parallel-safe alternative).
+- Environment: CPU-only dev sandbox (Python 3.12.16, torch 2.15.0+cpu,
+  torch_geometric 2.8.1, rdkit 2026.09.1, numpy 2.1.3, scipy 1.14.1).
+  No GPU/T4 execution (per #45 §5–§6 the sandbox can never establish
+  GPU claims).
+
+## 2. Work performed
+
+### 2.1 #24 MODEL-04 — decoupled hierarchical heads + discrete SO(2) torsion space
+
+**Implemented** in `syntree/models/policy.py` (+~1,800 lines) and
+`syntree/models/torsion_head.py` (+~530 lines):
+
+- `TerminationHead` — binary `P(STOP|s)`; forced termination for states
+  without legal continuation (mask-filled CONTINUE logit → `P(STOP)=1`
+  exactly); structurally separate from every continuation head.
+- `ReactionFamilyHead` (9-way) + `ReactionHead` (27-way) — the exact
+  hierarchical factorization by support restriction over the certified
+  registry metadata.
+- `SynthonRetrievalHead` — K=50,000 tied catalog embeddings
+  (`nn.Embedding(50_000, 64)`), scaled dot-product retrieval,
+  block-class legality prefilter.
+- `ChiralParityHead` — discrete `c_t ∈ {R,S}` scored exactly on junction
+  stereocenters, conditioned on (context, synthon embedding).
+- `TorsionHead` — strictly categorical 36-bin law `P(k|s,B)`; auxiliary
+  (mu, kappa) via `safe_unit_vector`-routed atan2 + softplus, consumed
+  only by `torsion_circular_loss` (von Mises NLL at bin centres).
+- Mask factories consuming the environment `active_handles()` menu and
+  the registry handle-class metadata; `HierarchicalPolicyHeads`
+  container with the two-stage API + teacher-forced
+  `forward_continue` (CONTINUE rows only).
+- Frozen production profile: 3,272,975 parameters
+  (`HIERARCHICAL_HEADS_PARAMETER_PROFILE`).
+
+**Tests** — new `tests/test_hierarchical_heads.py`: **100 tests**.
+Acceptance 1 (STOP isolation) pinned by forward-hook instrumentation,
+stop-law invariance under synthon-table/torsion-parameter perturbation,
+and the teacher-forced flow excluding STOP rows. Acceptance 2 (discrete
+measures, clean TB) pinned by law-validity assertions, exact
+`step_log_prob` decomposition, kappa/mu invariance, and a composed
+trajectory through `TrajectoryBalanceEngine.trajectory_residual`.
+Plus: registry metadata contracts, mask-factory semantics against real
+`AssemblyEnvironment` menus + brute-force references, the exact
+factorization identity, forced-STOP exactness, bin-centre identity with
+the engine's pinned `bin_center(k)` for all 36 bins (cross-module
+contract by test), circular-loss floor/antipode/seam-circularity,
+fail-closed contracts, the frozen profile, gradient connectivity
+(incl. the tied catalog table), determinism, end-to-end SE(3)
+invariance through the real backbone+handle+decoder stack, and a real
+`environment.step` proving the head indices map onto `AssemblyAction`
+fields.
+
+**Verification:** `python -m pytest tests/test_hierarchical_heads.py -q`
+→ 100 passed; full suite 755 passed, 16 skipped. Diff reviewed
+(`git diff --check/stat`), committed `74133c8`, pushed to origin
+`3d-synV2` (verified).
+
+**Issue action:** implementation report with both acceptance criteria
+evidence posted to #24; **closed as completed** (all criteria verified;
+no GPU dependency in scope).
+
+### 2.2 #25 MODEL-05 — SynTreePolicy assembly + parameter audit (+ the #39 component)
+
+**Implemented** in `syntree/models/policy.py` (+~1,100 lines):
+
+- `SynTreePolicy` — one registered module with the full frozen
+  production stack: `BipartitePaiNN` (activation checkpointing ON),
+  `HandleSelectionHead`, `CrossAttentionDecoder`, the #24
+  `HierarchicalPolicyHeads`, and the #39 seed/anchor component;
+  `forward_state` composes backbone → handle head → decoder exactly;
+  stages 0/1/2 delegate to the components.
+- The **#39 seed/anchor component** (per #25's addendum):
+  `pocket_anchor_candidates` — deterministic rotation-equivariant
+  farthest-point anchor decomposition (invariant tie-breaks; separated
+  subpockets get separate anchors); `aggregate_anchor_features` —
+  invariant per-anchor means of the backbone pocket scalars;
+  `SeedAnchorHead` — the factorized `P(anchor|pocket)·P(seed|anchor,pocket)`
+  with the seed stage scoring through the SAME tied catalog embedding
+  table (identical module instance, parameters counted once);
+  `SeedAnchorOutput.step_log_prob` is the seed action's TB forward
+  contribution.
+- `audit()` — component breakdown, tied-table sharing, mask interfaces,
+  the full action contract, memory arithmetic.
+
+**Parameter-budget reconciliation (D-V2-019):** 10,880,719 parameters
+= 43.5 MB FP32 < the 50 MB acceptance bound; the issue's ~4.8M estimate
+is superseded by the closed per-issue frozen profiles (recorded as a
+decision, not a silent deviation).
+
+**Tests** — new `tests/test_policy_assembly.py`: **48 tests** —
+assembly structure and per-issue frozen profiles, tied-table sharing
+(identity, counted once), audit totals and memory, anchor generator
+determinism/rigid-motion equivariance/subpocket separation/caps/
+fail-closed domain, aggregation exactness and invariance (incl. a
+cross-graph wiring error case), seed/anchor law validity and step
+composition, exact `forward_state` equality with the manual composition,
+stage delegation equality, the full frozen-profile end-to-end forward
+with zero NaN/Infs (CPU; catalog K=50,000), gradients through the
+checkpointed backbone, end-to-end SE(3) invariance of the seed/anchor
+laws, fail-closed inputs, and an environment integration test.
+
+**Verification:** 48 passed; full suite 803 passed, 16 skipped.
+Committed `84fd3e7`, pushed (verified).
+
+**Issue action:** report posted to #25 with the parameter-budget
+reconciliation and the precise CUDA blocker; title updated to
+"[MODEL-05] ... — Implemented, Awaiting CUDA Verification"; **left
+OPEN** — the CUDA execution criterion is genuinely unverified in this
+CPU sandbox and #45 §18 forbids closing on unverified criteria
+(#36 authorization gate; never manufactured evidence).
+
+### 2.3 #40 CHEM-06 — reaction-aware chemoselectivity filters
+
+**Implemented** in `syntree/chemistry/chemoselectivity.py` (new, ~900
+lines): the free-group vocabulary (orthogonal protection passes by
+SMARTS construction), handle-class detection for all 19 registry block
+classes (heteroaryl halides by ring classification with
+pyrazine/pyridazine negative controls; boronic acids subclassed
+programmatically), the documented per-class exclusion matrix (R1
+self-reactive pairs, R1b competing nucleophiles, R2 organometallic
+quenching, R3 competing identical handles, R4 competing SNAr positions
+with the asymmetric differentiated 2,4-dihalo-1,3-azine exemption, R5
+competing uncatalyzed electrophiles, R6 catalyst poisons), per-compound
+records with named reason codes + detected groups + applicable registry
+reactions, `screen_catalog` → `CurationManifest` with per-rule exclusion
+counts/percentages, and `chemoselectivity_rule_report()`.
+
+**Tests** — new `tests/test_chemoselectivity.py`: **111 tests** covering
+all five acceptance criteria: the layer-after-validation pipeline,
+reason-code traceability, the protected-substrate battery (Boc, silyl,
+ester, thioether, benzyl ether, acetamide — all pass), Suzuki-tolerant
+substrates, every rule positive/negative, the exemption in both declared
+directions (2,4-dichloropyrimidine passes with the handle at the
+amine-labile C4, excluded declared at C2; 4,6-dichloro excluded),
+registry coverage of all 19 block classes, manifest impact reporting,
+and fail-closed contracts.
+
+**Verification:** 111 passed; full suite 914 passed, 16 skipped.
+Committed `044adca`, pushed (verified). **Issue #40 closed** (all
+criteria CPU-verifiable and verified).
+
+## 3. Commits and pushes (this session)
+
+| Commit | Content | Pushed |
+|---|---|---|
+| `74133c8` | #24 MODEL-04 implementation + tests | ✓ origin `3d-synV2` |
+| `84fd3e7` | #25 MODEL-05 implementation + tests | ✓ origin `3d-synV2` |
+| `044adca` | #40 CHEM-06 implementation + tests | ✓ origin `3d-synV2` |
+| (this commit) | agent docs: DECISIONS D-V2-018/019/020, STATUS, WORK_LOG, DEPENDENCIES, HANDOFF, README | ✓ |
+
+## 4. GitHub issue updates
+
+- #24: implementation report comment; closed as completed.
+- #25: implementation report comment; title annotated "Implemented,
+  Awaiting CUDA Verification"; left open (precise blocker: the CUDA
+  forward-pass criterion requires the authorized Colab/Kaggle T4
+  runtime — #36 gate).
+- #40: implementation report comment; closed as completed.
+- #45: untouched (permanent constitution; never closed).
+
+## 5. Final state and next actions
+
+- Suite: **914 passed, 16 skipped** (was 655 at session start).
+- Clean-room closures: 16 of 40 (+1 implemented-awaiting-CUDA).
+- Next dependency-ready tasks (see the refreshed HANDOFF for the full
+  analysis): #16 DATA-01 (deps: #5 only), #32 TEST-01 (deps: #5 only),
+  #36 OPS-01 (prepare-only; user authorization gate), #12 CHEM-02
+  (catalog access blocker), #26 TRAIN-01 (needs #19/#20 — data
+  pipeline), #39's environment side (blocked on #12).
+- Blockers unchanged: no GPU/T4 execution, no licensed catalog access,
+  no HF artifact sync (all gated on authorization/access).
+
+## 6. Honest verification ledger
+
+- Attempted: all three issues.
+- Implemented: all three (complete requirement scope, not placeholders).
+- Tested locally: all three (259 new tests, all green; full suite
+  914/914).
+- Tested on T4: **none** — impossible in this sandbox (CPU-only); no
+  GPU claim is made anywhere.
+- Scientifically validated: chemistry-level (#40's rule matrix against
+  the documented selectivity literature; #24's registry-mask
+  cardinalities against the certified taxonomy). Training/validation
+  on real data: not yet (data pipeline issues #16–#19 pending).

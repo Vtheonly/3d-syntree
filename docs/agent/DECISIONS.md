@@ -811,3 +811,127 @@
 - **Affected:** #13 (closed), #42 (its #13 dependency is satisfied; #24
   remains), #29 (its #13 dependency is satisfied; #25/#26/#39 remain),
   #30 (production physics closure unchanged in scope).
+
+## D-V2-018 — 2026-11-02 — #24's hierarchical heads: reaction conditioning by support restriction; torsion conditioned on the tied synthon embedding; kappa by softplus with the MLE anchor; synthon masks as class prefilters (#24)
+
+- **Problem:** (1) How should the 27-way reaction law be conditioned on
+  the 9-way family selection?  (2) Which inputs condition the parity and
+  torsion heads?  (3) How can the von Mises concentration be
+  non-negative without clamping, and does its NLE growth risk the
+  pre-V2 kappa-to-infinity failure?  (4) What does the synthon mask
+  guarantee?
+- **Decision:**
+  1. **Support restriction realizes the hierarchy**: the reaction head
+     produces 27 logits from the decoder context and its law is
+     normalized over exactly the legal reactions *of the selected
+     family* (`reaction_support_mask`).  This makes
+     ``P(f, r | s) = P(f | s) · P(r | f, s)`` an exact factorization
+     (pinned by test: summing the joint over all legal pairs recovers
+     1) without a second representation path or a family-embedding
+     plumbing that would duplicate the conditioning the context already
+     carries.
+  2. **Parity and torsion are conditioned on (context, selected-synthon
+     embedding)** — the issue pins the torsion conditioning on ``B_t``
+     explicitly; the parity head follows the same junction-level
+     conditioning for interface symmetry.  Both consume the tied catalog
+     embedding of the selection (`SynthonOutput.retrieved_embedding`),
+     so gradients from both heads flow into the single catalog table.
+  3. **kappa = softplus(raw)** — a smooth parameterization of the
+     non-negative domain (mirroring the issue-pinned Amos form), not a
+     clamp.  The pre-V2 "incentivizing kappa to infinity" failure was a
+     *Trajectory-Balance measure-theory* violation (a rad^-1 density
+     summed with dimensionless probabilities); in V2 the categorical is
+     the only TB measure (pinned: step log-prob invariant under
+     kappa/mu perturbation) and the supervised NLL anchors kappa at
+     ``A^{-1}(cos Delta)`` for residual ``Delta`` — finite unless mu
+     hits the target exactly, with #20's coordinate jitter keeping
+     supervised angles non-degenerate.  ``mu`` is the atan2 of a 2D
+     vector routed through the certified ``safe_unit_vector``
+     primitive (#7) — bounded gradients at the zero vector.
+  4. **The synthon legality mask is a class-level prefilter**
+     (`synthon_legality_mask`: catalog handle-class vs the selected
+     reaction's block class); the environment enforces the exact
+     one-handle chemistry at execution and #40's curation guarantees
+     curated blocks expose exactly one coupling handle.  Reaction-level
+     availability must be consistent with the catalog (fail-closed
+     otherwise).
+- **Evidence:** `tests/test_hierarchical_heads.py` 100/100 — the exact
+  factorization identity, STOP-isolation by forward hooks, TB
+  composition through the real engine, kappa/mu invariance of the step
+  log-prob, registry-mask cardinalities against real environment menus,
+  the bin-centre identity with the engine's pinned geometry, and the
+  end-to-end SE(3) invariance through the real stack.
+- **Affected modules/issues:** `syntree/models/policy.py`,
+  `syntree/models/torsion_head.py` (#24 closed at `74133c8`; #25/#26/#29
+  consume the contracts).
+
+## D-V2-019 — 2026-11-02 — The assembly's 10.88M frozen profile supersedes #25's ~4.8M estimate; the binding criterion is the < 50 MB memory bound (#25)
+
+- **Problem:** issue #25 pins "total parameter count must settle at
+  ~4.8M (~19.2 MB FP32)" but also "< 50 MB" — while the closed, frozen,
+  and verified per-issue profiles already sum far above 4.8M
+  (#21 backbone 5,999,104 + #22 handle head 224,896 + #23 decoder
+  1,219,328 + #24 heads 3,272,975 incl. the 3.2M tied catalog table +
+  #25's own seed/anchor head 164,416 = 10,880,719).
+- **Decision:** the frozen per-issue profiles are authoritative
+  (constitution #45 §5.2: architecture dimensions are frozen in
+  version-controlled configuration, never re-derived to hit an
+  estimate; re-shrinking the backbone/decoder to chase 4.8M would
+  violate four closed issues' pinned contracts).  The **binding**
+  acceptance criterion is the memory bound: 10,880,719 parameters =
+  43,522,876 bytes FP32 = **43.5 MB < 50 MB** (87% of budget), pinned
+  by test against the version-controlled
+  ``SYNTREE_POLICY_PARAMETER_PROFILE`` and reported in the assembly
+  audit.  The ~4.8M figure is recorded as a pre-implementation estimate
+  superseded by the frozen dimensions.
+- **Evidence:** `tests/test_policy_assembly.py` — profile equality,
+  component-sum equality, tied-table counted once (identity), the
+  memory arithmetic, and the audit fields.
+- **Affected modules/issues:** `syntree/models/policy.py` (#25, commit
+  `84fd3e7`); #26's trainer consumes the audit's memory numbers.
+
+## D-V2-020 — 2026-11-02 — #40's exclusion matrix is per handle class (derived from the registry's consumers), orthogonal protection passes by SMARTS construction, and the 2,4-dihaloazine exemption is asymmetric (#40)
+
+- **Problem:** (1) At what granularity are the chemoselectivity rules
+  defined — per family, per reaction, or per handle class?  (2) How are
+  protected multifunctional substrates distinguished from
+  self-reactive ones without a protected-group whitelist bureaucracy?
+  (3) When is a dihalo heteroarine a valid mono-coupling block rather
+  than a regioisomer mixture?
+- **Decision:**
+  1. **Per block-side handle class** (the 19 registry classes), with the
+     exclusion set derived from the union of the class's consuming
+     reactions and their reagent natures (amine/alcohol/thiol
+     nucleophiles, organozinc/acetylide bases, Pd/Sn couplings).  This
+     is finer than the issue's "per family" phrasing and consistent
+     with it (a family's rules are exactly its block classes' rules);
+     the class is the curation unit and the environment's coupling unit.
+  2. **Orthogonal protection is honoured by construction**: the
+     free-group SMARTS match only free forms (acyl/carbamate/sulfonamide
+     N, ester/silyl/benzyl O, thioether S, aromatic [nH] never match),
+     so a Boc-protected diamine or silyl-protected bromoalcohol passes
+     without any whitelist — pinned by the protected-substrate battery.
+     Suzuki-tolerant functionality (free amines/alcohols/COOH on
+     boronic acids — common real substrates) passes; only thiols are
+     excluded there (catalyst poison).
+  3. **The 2,4-dihalo-1,3-azine exemption is asymmetric**: a spectator
+     ring halide is exempt only when it is separated from the handle by
+     exactly one ring nitrogen AND flanked by *more* adjacent ring
+     nitrogens than the handle (the less amine-labile position — the 2-
+     vs 4-position of pyrimidines).  2,4-dichloropyrimidine passes with
+     the handle declared at the amine-labile C4 and is excluded if
+     declared at C2 (the amine reagent would attack C4 first); the
+     equivalent 4,6-dichloro pattern never passes.  Undeclared
+     multi-instance candidates resolve to the most amine-labile
+     instance (fewest adjacent ring N) with ties excluded as ambiguous.
+  4. **Competing electrophiles are uncatalyzed ones only**: aryl halides
+     never compete under rxn_01-type amine conditions (no Pd present) —
+     a bromo-aryl acyl chloride passes R5 (pinned by test).
+- **Evidence:** `tests/test_chemoselectivity.py` 111/111 — vocabulary
+  battery with negative controls, all 19 registry block classes with
+  representative molecules, every rule positive/negative, the exemption
+  in both declared directions, manifest impact counts/percentages,
+  reason-code traceability.
+- **Affected modules/issues:** `syntree/chemistry/chemoselectivity.py`
+  (#40 closed at `044adca`; #12 consumes the screen + manifest inside
+  catalog curation; #41 may reuse the handle detectors).
