@@ -63,9 +63,12 @@ A molecular graph can have multiple valid construction histories. Uniqueness
 of a derivation-tree parent does not by itself prove that molecule-level
 samples follow P(x) ∝ R(x); derivation multiplicity must be handled
 explicitly (canonical derivations, a mathematically justified correction, or
-a graph-state / backward-policy formulation). This is a tracked,
-*unresolved* design item — issue #38 — and no claim about the sampling
-guarantee is made until it is proven and tested.
+a graph-state / backward-policy formulation). This design item — issue #38 —
+**is resolved in V2**: states are order-quotiented discrete assembly
+objects, the backward policy is the uniform leaf deletion policy, the STOP
+backward term is zero by proof, and the identities are verified on an
+enumerable toy DAG through the real Trajectory Balance engine
+(`docs/architecture/MDP_STATE_SPACE.md`, decision D-V2-009).
 
 ## 3. Architecture overview
 
@@ -78,7 +81,8 @@ The target V2 system (issue numbers mark ownership; see
 | Non-singular equivariant math kernels | `syntree.models.equivariant` | #7, #8, #9 |
 | Fail-closed pure-FP32 precision engine | `syntree.utils` | #10 |
 | Bipartite SE(3) backbone over pocket ∪ ligand (`BipartitePaiNN`) | `syntree.models` | #21 |
-| Cross-attention decoder + hierarchical policy heads | `syntree.models` | #22–#24 |
+| Agency-enabled handle-selection head (`P(handle \| s)`) | `syntree.models` | #22 |
+| Cross-attention decoder + hierarchical policy heads | `syntree.models` | #23, #24 |
 | Certified 32-reaction taxonomy (9 coarse families) | `syntree.chemistry` | #11 |
 | Enamine REAL synthon catalog + `pharm3d` descriptors | `syntree.chemistry` | #12, #40 |
 | MMFF94 relaxation, soft-core LJ, torsion refinement | `syntree.chemistry` | #13, #14, #42 |
@@ -259,9 +263,13 @@ never hardcoded or logged.
 src/syntree/            # the V2 package
   core/                 # frozen state tensor contract & batch path (#6)
   models/               # equivariant math kernels (#7), union-graph
-                        # backbone (#21); policy heads (later issues)
+                        # backbone (#21), handle-selection head (#22);
+                        # remaining policy heads (later issues)
+  engine/               # reconciled two-level GFlowNet framework (#24
+                        # geometry / #38 semantics / #42+#13 terminal
+                        # oracle / #30 stationary reward / #29 TB core)
 docs/
-  architecture/         # global architecture specification
+  architecture/         # global architecture specification + MDP state space
   data/                 # verified raw-source provenance
   agent/                # STATUS, WORK_LOG, DECISIONS, DEPENDENCIES, HANDOFF
 tests/                  # pytest suites (Suite A/B grow with #32/#33)
@@ -274,7 +282,7 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-01, session S-V2-02):
+tracker; last updated 2026-11-01, session S-V2-04):
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -282,11 +290,13 @@ tracker; last updated 2026-11-01, session S-V2-02):
 | Frozen state tensor contract & PyG batch path | **Done, verified, closed** | `syntree/core/schema.py` @ `0001087`, 93/93 tests (#6) |
 | Non-singular PaiNN norms & bounded unit vectors | **Done, verified, closed** | `syntree/models/equivariant.py` @ `00ec653`, 45/45 tests (#7) |
 | Bipartite union-graph backbone (`BipartitePaiNN`) | **Done, verified, closed** | `syntree/models/bipartite.py` @ `e76d955`, 69/69 tests — SE(3) invariance/equivariance ≤3e-13 over 36 rigid-motion trials, clean pocket-only N_l=0, 5,999,104-param frozen profile (#21) |
-| Decoder, policy heads, policy assembly | Not started | #22–#25, #39 (deps #21 closed; #23 additionally needs #9/#22) |
+| MDP / derivation-DAG semantics + TB backward policy | **Done, verified, closed** | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` @ `d3d186a`, 50/50 tests — toy-DAG `P(x)=R(x)/Z` residuals < 1e-9 (#38, D-V2-009) |
+| Agency-enabled handle-selection head | **Done, verified, closed** | `syntree/models/handle_head.py` (this session), 44/44 tests — valid normalized laws on real `AssemblyEnvironment` menus, rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32), 224,896-param frozen profile (#22, D-V2-010) |
+| Discrete assembly MDP + terminal reward oracle + TB engine (engine layer) | **Implemented, tested locally** — engine layer of the reconciled design; trainer/CLI integration open | `syntree/engine/environment.py` / `rl.py` / `gflownet.py` @ `d3d186a`, 50/50 tests (D-V2-009); #24/#29/#30/#42 remain open for their full scope |
+| Decoder, remaining policy heads, policy assembly | Not started | #23 (ready after #9), #24, #25, #39 |
 | Reaction registry, catalog, chemistry engines | Not started | #11–#15, #40–#42 |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
-| GFlowNet TB engine, reward, CLI | Not started | #29–#31, #38 |
 | Test suites A/B (full scope) | Not started (only issue-scoped tests exist) | #32, #33 |
 | Evaluation pipelines | Not started | #34, #35, #44 |
 | T4 GPU execution / training | **Never attempted** — requires authorized runtime | #36, #43 |
@@ -298,11 +308,13 @@ repository.
 
 ## 15. Limitations
 
-- The system is an early-stage rebuild: only the foundation issues are
+- The system is an early-stage rebuild: the foundation, the backbone, the
+  handle-selection head, and the reconciled GFlowNet engine layer are
   implemented; everything else in this README describes the *target*
   design, clearly marked as such.
-- The MDP/derivation-DAG semantics and the TB backward term are unresolved
-  (#38); until then no proportional-sampling claim is made.
+- The MDP/derivation-DAG semantics and the TB backward term are resolved
+  (#38 closed with proofs and toy-DAG verification); the *trainer*
+  integration of Stage 2 (#29 full scope) is still open.
 - GPU behaviour (T4 memory profile, throughput) is unmeasured by design —
   it requires the authorized remote workflow.
 - Data licensing and catalog access (Enamine REAL terms, PDBbind

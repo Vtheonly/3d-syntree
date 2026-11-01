@@ -270,3 +270,81 @@
   points*; #11/#13/#14 own the production chemistry and must supersede
   them without changing the MDP/TB contracts above.  Bit-for-bit
   determinism is claimed per RDKit build, not across versions.
+
+## D-V2-010 — 2026-11-01 — Handle-selection head architecture: two-stage cross-attention over the active handle pool with equivariant directional invariants
+
+- **Problem:** Issue #22 MODEL-02 requires `P(handle_t | s_t)` over the
+  active handle pool — closing legacy "Vulnerability 3" (the pre-V2
+  environment hardcoded `handles[0]`, so the agent had no spatial agency
+  over where to grow). The head must consume the #21 backbone without a
+  second pocket encoder, use handle invariant descriptors `[H, 64]` and
+  positions relative to pocket centroids, and normalize over the *actually
+  active* handle set. The open design question was how to make the
+  centroid-relative Cartesian positions SE(3)-safe while keeping genuine
+  3D directional agency (not just a radial distance).
+- **Decision:** `HandleSelectionHead` (in
+  `syntree/models/handle_head.py`, frozen profile: backbone d = 256, head
+  width 128, 20 raw RBFs on [0, 12] Å, 224,896 parameters) builds a
+  per-handle invariant embedding from four additive contributions: the
+  64-D descriptor MLP, the backbone scalar of the attachment atom, the
+  raw Gaussian RBF of the handle's distance to its graph's pocket
+  centroid, and — the key architectural choice — the invariant
+  directional features `<v_atom, x_handle − centroid_g>` obtained by
+  contracting the **equivariant backbone vector channel** with the
+  centroid-relative offset. A per-graph query (pooled ligand summary +
+  pooled pocket context) then (stage 1) cross-attends over that graph's
+  handle keys — the attention weights are themselves a valid per-graph
+  distribution — pooling an attention-weighted handle context, and
+  (stage 2) an additive Bahdanau-style scorer (query + key + pooled
+  context) produces logits that are normalized by a per-graph
+  `log_softmax` over exactly the active handle rows. The output exposes
+  the auditable interface (logits / log_probs / probs / attention /
+  entropy / counts) plus the handle embeddings and pooled handle context
+  as the #23 decoder-facing surface. Inputs are fail-closed validated
+  (FP32/FP64-only dtype policy per D-V2-008, device, shapes, index
+  ranges, legacy 67-D rejection, and a cross-field check that each
+  handle's attachment atom belongs to the handle's own graph).
+- **Alternatives considered:** feeding the raw centroid-relative offset
+  through ordinary linear layers (rejected: a Cartesian vector in scalar
+  channels breaks invariance — the exact Franken-tensor mistake of #6);
+  radial distance only (rejected: no directional agency — "open cavity vs
+  wall" is precisely a direction question); pooling the equivariant
+  vectors then contracting (rejected: pooled vector semantics are
+  ill-motivated; the per-atom contraction is exact and local);
+  softmax-attention-weights as the *final* law (rejected: a rank-1
+  query·key score is too weak for competing handles; the two-stage design
+  keeps the cross-attention character while letting every score see the
+  competitor context); per-graph Python loops for normalization (rejected:
+  the scatter-based segment log-softmax is vectorized, on-device, and
+  numerically stable).
+- **Evidence:** `tests/test_handle_selection.py` — 44 tests: the pinned
+  #22 acceptance (valid normalized laws for H > 1, single-handle P = 1
+  exactly, identical-handle uniform split with entropy ln 2, FP32 and
+  FP64 paths); rigid-motion invariance worst error 8.3e-16 (float64, 6
+  random rotations+translations of pocket+ligand+handle) and 5.96e-08
+  (float32 production path); coincident-centroid finiteness (safe norm at
+  r = 0); handle-row permutation equivariance, pocket-atom permutation
+  invariance (end-to-end through the backbone), ligand-node permutation
+  with consistent remap, batch-composition invariance; real
+  `AssemblyEnvironment` integration at t = 0 (3-handle tri-chloro seed)
+  and on grown intermediates — rows map 1:1 onto `active_handles()` and
+  the argmax row's atom index is a legal `AssemblyAction.handle_atom_idx`;
+  the log-probability feeds `TrajectoryStep.action_log_prob` directly;
+  gradient connectivity into the checkpointed backbone and to positions;
+  no gradient leaks across graphs; frozen profile pinned at 224,896
+  parameters; audit interface; bit-for-bit determinism. Full suite:
+  301/301.
+- **Affected:** #22 (closed — all acceptance criteria verified), #23
+  (consumes `HandleSelectionOutput.handle_embeddings` /
+  `pooled_handle_context` as its handle-side surface), #24/#25 (the
+  handle component of `log P_F` is now available for the hierarchical
+  heads and the policy assembly), #12/#40 (own the 64-D descriptor
+  *producer* consumed here), #9 (still owns the cosine envelope for the
+  head's centroid-distance RBF, as for all spatial RBF projections).
+- **Scope boundaries recorded:** the descriptor featurization (64-D) is
+  not implemented here — synthetic descriptors are used in tests and the
+  catalog issues own production featurization; `handle_pos` is documented
+  (and integration-tested) as the reacting atom's conformer position but
+  is deliberately *not* hard-equal-checked against the node position, so a
+  future directional growth-point offset remains possible; sampling /
+  greedy selection utilities are deferred to #25.

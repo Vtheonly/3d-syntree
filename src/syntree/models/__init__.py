@@ -1,5 +1,6 @@
 """Model components: equivariant math kernels (#7+), the union-graph
-backbone (#21) and policy heads (later issues)."""
+backbone (#21), the handle-selection head (#22) and the remaining policy
+heads (later issues)."""
 
 from __future__ import annotations
 
@@ -20,6 +21,13 @@ from syntree.models.equivariant import (
     safe_norm,
     safe_unit_vector,
 )
+from syntree.models.handle_head import (
+    HANDLE_GEOM_CUTOFF,
+    HANDLE_HEAD_HIDDEN_DIM,
+    HANDLE_HEAD_NUM_RADIAL,
+    HandleSelectionHead,
+    HandleSelectionOutput,
+)
 
 __all__ = [
     "BACKBONE_CUTOFF",
@@ -35,4 +43,9 @@ __all__ = [
     "PaiNNMixing",
     "safe_norm",
     "safe_unit_vector",
+    "HANDLE_GEOM_CUTOFF",
+    "HANDLE_HEAD_HIDDEN_DIM",
+    "HANDLE_HEAD_NUM_RADIAL",
+    "HandleSelectionHead",
+    "HandleSelectionOutput",
 ]

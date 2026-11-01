@@ -9,7 +9,8 @@
 > #5–#44. Superseding decisions are recorded in
 > `docs/agent/DECISIONS.md`.
 >
-> Last updated: 2026-11-01 (session S-V2-02: #5, #6, #7, #21).
+> Last updated: 2026-11-01 (sessions S-V2-02: #5, #6, #7, #21; S-V2-03:
+> #38 + the reconciled engine layer; S-V2-04: #22).
 
 ## 1. System overview
 
@@ -57,7 +58,7 @@ policy) — the exact formulation is #38 FLOW-04 `[TARGET]`.
 | Sharding + integrity | `syntree/data/` + `scripts/` | #19 |
 | Augmentation (train split only) | `syntree/data/` | #20 |
 | Backbone `BipartitePaiNN` | `syntree/models/bipartite.py` | #21 |
-| Handle selection head | `syntree/models/` | #22 |
+| Handle selection head | `syntree/models/handle_head.py` | #22 |
 | Cross-attention decoder | `syntree/models/` | #23 |
 | Hierarchical policy heads + torsion space | `syntree/models/` | #24 |
 | Policy assembly + audit | `syntree/models/policy.py` | #25, #39 |
@@ -210,15 +211,57 @@ continuation. Artifacts (datasets, manifests, catalog HDF5, index,
 checkpoints, logs) sync to Hugging Face Hub with checksums; credentials
 only via environment variables.
 
+### 3.11 Handle-selection head `[VERIFIED — #22, 2026-11-01]`
+
+`syntree/models/handle_head.py::HandleSelectionHead` implements the
+agency-enabled handle action `P(handle_t | s_t)` (legacy "Vulnerability 3":
+the pre-V2 environment hardcoded `handles[0]`, leaving the agent unable to
+choose *where* to grow). It consumes the `BackboneOutput` of the single
+authoritative encoder — never a second pocket encoder — plus the flattened
+active-handle pool: invariant descriptors `[H, 64]` (the frozen schema
+width; legacy 67-D Franken rows fail closed), reacting-atom positions
+`[H, 3]` supplied separately from chemistry (#45 §7.1), graph assignment
+`[H]`, and ligand-sub-graph attachment indices `[H]` that map 1:1 onto the
+`AssemblyEnvironment.active_handles()` menu rows.
+
+Per handle, the invariant embedding combines the 64-D descriptor MLP, the
+backbone scalar of the attachment atom, the raw (envelope-free, #9-owned)
+Gaussian RBF of the handle's distance to its graph's pocket centroid, and
+the SE(3)-invariant directional features `<v_atom, x_handle − centroid>`
+built from the *equivariant* backbone vector channel — so the head is
+genuinely 3D-aware ("open cavity vs wall") while every scalar it produces
+is rigid-motion invariant. A per-graph query (pooled ligand summary +
+pocket context) cross-attends over that graph's handle keys (stage 1,
+attention weights themselves a valid per-graph distribution), and an
+additive Bahdanau-style scorer (query + key + pooled handle context)
+produces the logits (stage 2). The final law is a per-graph `log_softmax`
+over **exactly the active handle set** (#45 §7.3/§8.4 — normalization over
+the actually valid alternatives; H = 1 degenerates to P = 1; graphs without
+handles contribute no rows and zero entropy). The output exposes the
+auditable tensor/log-probability interface (logits, log_probs, probs,
+attention weights, entropies, counts) plus the handle embeddings and
+pooled handle context for the #23 decoder. Frozen production profile:
+backbone d = 256, head width 128, 20 raw RBFs on [0, 12] Å, 224,896
+parameters (pinned by test). Verified: valid normalized distributions on
+real `AssemblyEnvironment` menus at t = 0 and on grown intermediates
+(argmax row ⇒ legal `AssemblyAction.handle_atom_idx`); rigid-motion
+invariance worst error 8.3e-16 (float64, 6 random trials) / 5.96e-08
+(float32); handle-row/pocket-atom/ligand-node permutation and batch-
+composition invariance; gradient connectivity through the checkpointed
+backbone; fail-closed validation (dtype/device/shape/index ranges,
+cross-field graph consistency, legacy 67-D rejection). Pinned by
+`tests/test_handle_selection.py`.
+
 ## 4. Repository layout (V2, growing with the roadmap)
 
 ```
 src/syntree/              # the V2 package (src-layout, decision D-V2-003)
   core/                   # schema: frozen state contract & canonical batch path
   models/                 # equivariant math kernels; union-graph backbone;
-                          # policy heads later
+                          # policy heads
     equivariant.py        #   safe norms + PaiNN blocks (#7)
     bipartite.py          #   BipartitePaiNN + radius graph + RBF (#21)
+    handle_head.py        #   agency-enabled handle selection P(handle|s) (#22)
   engine/                 # the reconciled two-level GFlowNet framework
                           # (D-V2-009; docs/architecture/MDP_STATE_SPACE.md)
     environment.py        #   discrete Assembly MDP + terminal reward oracle
