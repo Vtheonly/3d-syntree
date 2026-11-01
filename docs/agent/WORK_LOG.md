@@ -522,3 +522,152 @@ of #23 MODEL-03, and #9 owns the envelope for ALL spatial RBF projections
 per D-V2-007, including the head's centroid-distance RBF). Parallel-safe:
 #8 MATH-02, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01, #32
 TEST-01. #36 remains gated on user authorization (Colab SSH).
+
+## S-V2-05 — 2026-11-01 — #9 MATH-03 closed: continuous cosine cutoff envelope integrated inside GaussianRadialBasis (D-V2-011)
+
+- **Agent/session:** autonomous lead-engineering session (Z.ai), UTC.
+- **Repository / branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `52849e9` (S-V2-04 docs head; branch verified equal
+  to `origin/3d-synV2` before any change; working tree clean).
+
+### 1. State discovery (per #45 §25.1)
+
+- Read issue #45 in full; fetched the #9 body from GitHub; re-read the
+  #5–#44 issue states (clean-room closures confirmed: #5, #6, #7, #21,
+  #38, #22). Read STATUS / DECISIONS / DEPENDENCIES / HANDOFF /
+  WORK_LOG / ARCHITECTURE and the code head (`schema.py`,
+  `equivariant.py`, `bipartite.py`, `handle_head.py`).
+- The S-V2-04 handoff was unambiguous: next task **#9 MATH-03**
+  (continuous cosine cutoff envelopes) — depends on #5 only, is the last
+  open dependency of #23 MODEL-03, and per D-V2-007 owns the cosine
+  envelope for ALL spatial RBF projections (the backbone's edge-distance
+  RBF and the handle head's [0, 12] Å centroid-distance RBF).
+- Baseline before any change: `python -m pytest tests/ -q` → **301/301
+  passed** (matches the S-V2-04 record; environment Python 3.12.16,
+  torch 2.15.0+cpu, torch_geometric 2.8.1, rdkit 2026.09.1, scipy 1.14.1,
+  numpy 2.1.3, pytest 9.0.2).
+- Pre-implementation numerical probe of the issue's pinned envelope
+  formula on this platform: `f_cut(r_cut)` is exactly `0.0` in float32
+  and float64 for cutoffs 5.0/12.0/3.7; beyond-cutoff values are bitwise
+  `0.0` with bitwise-zero gradients; the derivative decays linearly
+  (`f'(r_cut-δ) ≈ -0.5 (π/r_cut)² δ`: measured -1.97e-2/-1.97e-3/
+  -1.97e-4/-1.97e-5 at δ = 1e-1/1e-2/1e-3/1e-4); the reflection identity
+  `f(d)+f(r_cut-d)=1` holds to 2.2e-16 (machine epsilon).
+
+### 2. Work performed (implementation)
+
+- **New module `src/syntree/models/cutoff.py`** (the one authoritative
+  envelope implementation): `continuous_cosine_envelope(dist, cutoff)` in
+  the issue-#9 pinned form — `0.5 (cos(π d / r_cut) + 1)` for
+  `d ≤ r_cut`, exact zeros beyond (`torch.where`), `clamp(min=0)`
+  negative-roundoff semantics — with fail-closed validation
+  (non-tensor / non-floating-dtype / NaN-Inf distances raise
+  `TensorContractError`; non-finite-or-non-positive cutoffs raise
+  `ValueError`).
+- **Integration inside `GaussianRadialBasis`** (`bipartite.py`):
+  `forward` now returns `Gaussian(d) ⊙ f_cut(d)` — unconditional, no
+  opt-out flag, so every spatial RBF projection site (backbone
+  edge-distance expansion; handle-head centroid-distance expansion over
+  [0, 12] Å; the future #23 decoder, which must route through the same
+  producer) is enveloped by construction. Module/class docstrings and
+  the `handle_head.py` envelope references updated; the envelope is
+  parameter-free so both frozen profiles are unchanged (re-pinned:
+  backbone 5,999,104; handle head 224,896).
+- **New test file `tests/test_cosine_cutoff.py`** — 46 tests in four
+  classes: the two pinned issue acceptance criteria; the envelope
+  primitive's analytic properties (closed-form value/derivative match,
+  reflection identity, monotonicity, quadratic near-cutoff decay, linear
+  derivative decay, bitwise determinism, dtype preservation, rank
+  agnosticism, fail-closed matrix); the enveloped-RBF integration
+  (peaks carry the envelope, sup-norm ≤ envelope, product-rule analytic
+  radial-derivative match in fp64, no parameters added, state-dict
+  roundtrip); downstream integration (handle-head basis beyond-cutoff
+  bitwise zeros — the legacy "Vulnerability 7" regime dead; backbone
+  smoke; compact fp64 scalar-invariance/vector-equivariance check
+  through the enveloped backbone).
+- **Test-contract migration (sanctioned by #45 §24.3 + D-V2-007's
+  "until #9 lands" clause; D-V2-006 respected — nothing deleted, all
+  rewritten 1:1):** `test_at_cutoff_last_channel_is_one` →
+  `test_at_cutoff_features_vanish_and_beyond_is_bitwise_zero`,
+  `test_values_bounded` → `test_values_bounded_and_nonnegative`,
+  `test_peaks_at_centers` → `test_peaks_at_centers_carry_the_envelope`
+  (all in `tests/test_bipartite_painn.py`);
+  `test_radial_basis_is_the_raw_gaussian_expansion` →
+  `test_radial_basis_is_enveloped` (`tests/test_handle_selection.py`).
+- **Docs:** `docs/architecture/ARCHITECTURE.md` — new §3.12
+  (`[VERIFIED — #9]`), §3.3/§3.11 raw-RBF wording updated, module map +
+  repository layout updated; `docs/agent/DECISIONS.md` — **D-V2-011**
+  recorded (envelope-inside-the-producer rationale, alternatives
+  rejected, test-contract consequences, numerical facts, evidence);
+  `README.md` — new "Continuous cosine cutoff envelope" paragraph in the
+  mathematics section, planned-list pruned, module table row, repository
+  structure, status table row + "last updated S-V2-05";
+  `docs/agent/STATUS.md` / `DEPENDENCIES.md` / `HANDOFF.md` synchronized.
+
+### 3. Extra verification beyond the suite (local CPU)
+
+- Debugging notes for the record: three initial new-test failures were
+  all test-side precision artifacts, none module-side — (a) the analytic
+  reference re-derived `σ = r_cut/(R-1)` in full float64 while the
+  module's `_scale`/`centers` buffers carry construction-dtype (float32)
+  rounding before `.to(float64)` (a pre-existing #21 buffer property,
+  not an envelope defect) — fixed by deriving the analytic reference
+  from the module's own buffers so the pinned quantity is the envelope
+  product-rule mathematics; (b) the quadratic near-cutoff bound needed
+  the documented `0.5·(cos+1)` cancellation floor (≤ ~1e-15 fp64 /
+  ~6e-8 fp32 near the seam — physically negligible, values there are
+  ~1e-10); (c) a `BackboneOutput` attribute-name mistake
+  (`scalar`/`vector`, not `node_scalar`) in the compact invariance test.
+- Confirmed the four failing legacy tests after integration were exactly
+  the four pre-#9 raw-RBF pins (no collateral damage: 297/301 green
+  before the 1:1 rewrites).
+- Confirmed the envelope cannot affect SE(3) contracts: it is a radial
+  (distance-only) function; the full #21/#22 suites (equivariance ≤
+  3e-13 over 36 trials, handle-head invariance 8.3e-16/5.96e-08) re-ran
+  green against the enveloped path unchanged.
+
+### 4. Verification summary (all local CPU; no GPU/T4 claims)
+
+- Environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric 2.8.1,
+  rdkit 2026.09.1, scipy 1.14.1, numpy 2.1.3, pytest 9.0.2.
+- `python -m pytest tests/test_cosine_cutoff.py -q` → **46 passed**.
+- `python -m pytest tests/ -q` → **347 passed** (301 baseline + 46 new;
+  four legacy pins rewritten 1:1, none deleted).
+- pyflakes clean on all touched files.
+- Measured evidence: at `d = r_cut + 1e-4` (and 5.5, 50.0, 1e6) the
+  radial feature vector is **bitwise zero** in both dtypes (issue
+  acceptance criterion 1); at `d = r_cut` the features are exactly `0.0`
+  on this platform (≤ 1e-12 pinned elsewhere); summed radial-gradient
+  decay toward the boundary 4.3e-2 → 3.6e-3 → 3.5e-4 → 3.5e-5 for
+  offsets 1e-1 → 1e-4, matching the analytic linear rate
+  `0.5 (π/r_cut)² δ` (issue acceptance criterion 2); `f_cut(0) = 1`
+  exactly (first channel exactly 1.0 at `d = 0`); frozen profiles
+  unchanged.
+- Mandatory pre-commit review: `git diff --check` (clean), `git diff
+  --stat`, `git diff --unified=80` (reviewed), `git status --short`.
+
+### 5. Commits / pushes (session total)
+
+| Commit | Content | Push range |
+|---|---|---|
+| `bf735a6` | feat(math-03): continuous cosine cutoff envelope + integration inside GaussianRadialBasis (#9) — cutoff.py + 46 tests + 4 legacy-pin rewrites + ARCHITECTURE §3.12 + D-V2-011 + README | `52849e9..bf735a6` |
+| (this docs commit) | docs(agent): S-V2-05 session record — #9 closed at `bf735a6`, statuses, dependency map, handoff to #23 | — |
+
+### 6. GitHub issues updated
+
+- **Closed with evidence comment: #9** (both acceptance criteria
+  verified — see STATUS.md row and the issue comment for exact
+  commands/results; D-V2-011 referenced).
+- Updated: #23's status note (all dependencies closed — #23 is now
+  dependency-ready and the next critical-path task).
+- Verified untouched and OPEN: #45 (permanent).
+
+### 7. Next actions
+
+See `HANDOFF.md` §1: next dependency-ready critical-path task is **#23
+MODEL-03** (two-layer stacked cross-attention decoder — consumes
+`HandleSelectionOutput.handle_embeddings` / `pooled_handle_context` and
+`BackboneOutput`; must route its spatial RBF through the enveloped
+`GaussianRadialBasis`). Parallel-safe: #8 MATH-02, #10 MATH-04, #11
+CHEM-01, #14 CHEM-04, #16 DATA-01, #32 TEST-01. #36 remains gated on
+user authorization (Colab SSH).
