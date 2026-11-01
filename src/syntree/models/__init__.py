@@ -1,7 +1,7 @@
 """Model components: equivariant math kernels (#7+), the union-graph
 backbone (#21), the handle-selection head (#22), the cosine cutoff envelope
-(#9), the cross-attention decoder (#23) and the remaining policy heads
-(later issues)."""
+(#9), the cross-attention decoder (#23), the von Mises torsion mathematics
+(#8) and the remaining policy heads (later issues)."""
 
 from __future__ import annotations
 
@@ -40,6 +40,17 @@ from syntree.models.policy import (
     CrossAttentionDecoderLayer,
     DecoderOutput,
 )
+from syntree.models.torsion_head import (
+    AMOS_RATIO_CONSTANT,
+    LOG_2PI,
+    VON_MISES_SERIES_THRESHOLD,
+    LogBesselI0,
+    amos_ratio,
+    log_bessel_i0,
+    von_mises_log_prob,
+    von_mises_loss,
+    von_mises_nll,
+)
 
 __all__ = [
     "BACKBONE_CUTOFF",
@@ -69,4 +80,13 @@ __all__ = [
     "CrossAttentionDecoder",
     "CrossAttentionDecoderLayer",
     "DecoderOutput",
+    "AMOS_RATIO_CONSTANT",
+    "LOG_2PI",
+    "VON_MISES_SERIES_THRESHOLD",
+    "LogBesselI0",
+    "amos_ratio",
+    "log_bessel_i0",
+    "von_mises_log_prob",
+    "von_mises_loss",
+    "von_mises_nll",
 ]
