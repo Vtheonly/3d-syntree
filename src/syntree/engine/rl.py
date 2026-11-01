@@ -41,14 +41,24 @@ into the per-trajectory loss.
   pharmacophore validation).
 * ``S_props`` — ``0.5 * QED + 0.5 * tanh(max(0, Fsp3 - 0.40) / 0.20)``
   (the #30-specified physicochemical balance, anti-"grease-ball").
-* ``S_vol`` — volume floor: ``-2.0 * max(0, (V_floor - V) / V_floor)``
-  penalises under-filling of the pocket cavity; ``0`` when the ligand
-  reaches the floor.  (Replaces the earlier clash term per the owner
-  reconciliation: steric clash already enters through the soft-core
+* ``S_vol`` — the #14 CHEM-04 production volume floors (two parts, both
+  stationary — the pocket cavity volume is derived **once at construction**
+  from the fixed pocket context):
+  the cavity-volume filling floor ``-2 * max(0, 1 - (V_lig / V_poc) /
+  0.35)`` (penalises under-filling of the pocket cavity; ``0`` when the
+  ligand reaches the 0.35 fill ratio) **plus** the explicit heavy-atom
+  guard ``-2 * max(0, (12 - N_heavy) / 12)`` (penalises ``< 12`` heavy
+  atoms — the anti-shrinking defence that is independent of pocket
+  size).  An explicit ``volume_floor_angstrom3`` overrides the derived
+  cavity floor (legacy configuration escape hatch); without a pocket and
+  without an explicit floor the volume evaluation is inactive (``S_vol =
+  0``, the graph-only reward).  (Replaces the earlier clash term per the
+  owner reconciliation: steric clash already enters through the soft-core
   ``ΔG_dock`` surrogate with the correct sign.)
 
 Bounds: the component sum lies in ``(-inf, +11]`` (each term bounded
-above: 5 + 1 + 4 + 1 + 0), so ``R`` is finite; the hard floor
+above: 5 + 1 + 4 + 1 + 0; ``S_vol`` is bounded below by ``-4`` — two
+floor terms of ``-2`` each), so ``R`` is finite; the hard floor
 ``R_min = 1e-4`` keeps ``log R`` finite (issue #30 acceptance).
 
 **Positivity and fail-closed behaviour.**  Non-finite component inputs
@@ -70,6 +80,15 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.QED import qed
 
+from syntree.chemistry.conformer import (
+    HEAVY_ATOM_FLOOR,
+    HEAVY_ATOM_FLOOR_WEIGHT,
+    VOLUME_RATIO_FLOOR,
+    heavy_atom_floor_penalty,
+    pocket_cavity_volume,
+    volume_fill_ratio,
+    volume_floor_penalty,
+)
 from syntree.engine.environment import (
     AssemblyError,
     PocketDefinition,
@@ -85,6 +104,9 @@ __all__ = [
     "HBOND_CUTOFF",
     "MAX_SALT_BRIDGES",
     "MAX_HBONDS",
+    "VOLUME_RATIO_FLOOR",
+    "HEAVY_ATOM_FLOOR",
+    "HEAVY_ATOM_FLOOR_WEIGHT",
 ]
 
 #: Hard reward floor: ``R(x) >= 1e-4`` so ``log R(x)`` stays finite (#30).
@@ -133,6 +155,10 @@ class ThreeDReward:
         temperature: float = 1.0,
         reward_floor: float = REWARD_FLOOR,
         volume_floor_angstrom3: Optional[float] = None,
+        volume_ratio_floor: Optional[float] = VOLUME_RATIO_FLOOR,
+        heavy_atom_floor: int = HEAVY_ATOM_FLOOR,
+        heavy_atom_floor_weight: float = HEAVY_ATOM_FLOOR_WEIGHT,
+        cavity_grid_spacing: float = 0.5,
     ) -> None:
         if temperature <= 0.0 or not math.isfinite(temperature):
             raise RewardError(f"temperature must be finite and > 0, got {temperature}")
@@ -142,11 +168,54 @@ class ThreeDReward:
             raise RewardError(
                 f"volume_floor_angstrom3 must be > 0 or None, got {volume_floor_angstrom3}"
             )
+        if volume_ratio_floor is not None and not (
+            0.0 < volume_ratio_floor <= 1.0 and math.isfinite(volume_ratio_floor)
+        ):
+            raise RewardError(
+                f"volume_ratio_floor must be in (0, 1] or None, got {volume_ratio_floor}"
+            )
+        if int(heavy_atom_floor) < 1:
+            raise RewardError(
+                f"heavy_atom_floor must be >= 1, got {heavy_atom_floor}"
+            )
+        if not (math.isfinite(heavy_atom_floor_weight) and heavy_atom_floor_weight >= 0.0):
+            raise RewardError(
+                f"heavy_atom_floor_weight must be finite and >= 0, got {heavy_atom_floor_weight}"
+            )
+        if not (math.isfinite(cavity_grid_spacing) and cavity_grid_spacing > 0.0):
+            raise RewardError(
+                f"cavity_grid_spacing must be finite and > 0, got {cavity_grid_spacing}"
+            )
         self._pocket = pocket
         self._temperature = float(temperature)
         self._reward_floor = float(reward_floor)
+        self._volume_ratio_floor = (
+            float(volume_ratio_floor) if volume_ratio_floor is not None else None
+        )
+        self._heavy_atom_floor = int(heavy_atom_floor)
+        self._heavy_atom_floor_weight = float(heavy_atom_floor_weight)
+        # Stationarity (#45 §12.4): the cavity volume is a function of the
+        # *fixed* pocket context, derived exactly once at construction —
+        # identical molecules + identical pockets keep identical rewards.
+        self._pocket_cavity_volume: Optional[float] = None
+        if (
+            pocket is not None
+            and volume_floor_angstrom3 is None
+            and self._volume_ratio_floor is not None
+        ):
+            self._pocket_cavity_volume = pocket_cavity_volume(
+                pocket.positions,
+                pocket.atomic_numbers,
+                grid_spacing=cavity_grid_spacing,
+            )
         self._volume_floor = (
-            float(volume_floor_angstrom3) if volume_floor_angstrom3 is not None else None
+            float(volume_floor_angstrom3)
+            if volume_floor_angstrom3 is not None
+            else (
+                self._volume_ratio_floor * self._pocket_cavity_volume
+                if self._pocket_cavity_volume is not None
+                else None
+            )
         )
 
     # -- configuration access -------------------------------------------------
@@ -166,6 +235,23 @@ class ThreeDReward:
     @property
     def volume_floor(self) -> Optional[float]:
         return self._volume_floor
+
+    @property
+    def pocket_cavity_volume(self) -> Optional[float]:
+        """The pocket's derived cavity volume (Å³, None unless derived)."""
+        return self._pocket_cavity_volume
+
+    @property
+    def volume_ratio_floor(self) -> Optional[float]:
+        return self._volume_ratio_floor
+
+    @property
+    def heavy_atom_floor(self) -> int:
+        return self._heavy_atom_floor
+
+    @property
+    def heavy_atom_floor_weight(self) -> float:
+        return self._heavy_atom_floor_weight
 
     # -- the reward -------------------------------------------------------------
 
@@ -219,14 +305,29 @@ class ThreeDReward:
         fsp3_value = self._fraction_sp3(relaxed_mol)
         s_props = 0.5 * qed_value + 0.5 * math.tanh(max(0.0, fsp3_value - 0.40) / 0.20)
 
-        # -- S_vol: pocket-cavity volume floor ------------------------------------
+        # -- S_vol: the #14 production volume floors (ratio + heavy atom) -------
+        num_heavy = sum(1 for atom in relaxed_mol.GetAtoms() if atom.GetAtomicNum() > 1)
         if self._volume_floor is not None:
             volume = float(AllChem.ComputeMolVolume(relaxed_mol, confId=conformer.GetId()))
+            if self._pocket_cavity_volume is not None:
+                ratio_penalty = volume_floor_penalty(
+                    volume, self._pocket_cavity_volume, self._volume_ratio_floor
+                )
+            else:
+                # explicit-floor configuration (legacy escape hatch)
+                ratio_penalty = -2.0 * max(
+                    0.0, (self._volume_floor - volume) / self._volume_floor
+                )
+            heavy_penalty = heavy_atom_floor_penalty(
+                num_heavy,
+                floor=self._heavy_atom_floor,
+                weight=self._heavy_atom_floor_weight,
+            )
+            s_vol = ratio_penalty + heavy_penalty
         else:
             volume = None
-        if self._volume_floor is not None and volume is not None:
-            s_vol = -2.0 * max(0.0, (self._volume_floor - volume) / self._volume_floor)
-        else:
+            ratio_penalty = 0.0
+            heavy_penalty = 0.0
             s_vol = 0.0
 
         total = s_dock + s_contact + s_key + s_props + s_vol
@@ -256,6 +357,17 @@ class ThreeDReward:
             "fsp3": fsp3_value,
             "volume_angstrom3": volume,
             "volume_floor_angstrom3": self._volume_floor,
+            "volume_ratio": (
+                volume_fill_ratio(volume, self._pocket_cavity_volume)
+                if volume is not None and self._pocket_cavity_volume is not None
+                else None
+            ),
+            "volume_ratio_floor": self._volume_ratio_floor,
+            "pocket_cavity_volume_angstrom3": self._pocket_cavity_volume,
+            "heavy_atom_count": num_heavy,
+            "heavy_atom_floor": self._heavy_atom_floor,
+            "heavy_atom_penalty": heavy_penalty,
+            "ratio_penalty": ratio_penalty,
             "pocket_atoms": 0 if self._pocket is None else self._pocket.num_atoms,
         }
         return reward, components

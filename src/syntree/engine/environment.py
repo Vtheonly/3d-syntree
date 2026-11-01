@@ -61,15 +61,23 @@ presence of symmetric molecules and alternative reaction orderings
 (multi-parent convergence) and is consumed by
 :class:`~syntree.engine.gflownet.TrajectoryBalanceEngine`.
 
-**Scope boundaries (deliberate, D-V2-009).**  The certified 32-reaction
+**Scope boundaries (deliberate, D-V2-009 / D-V2-015).**  The certified 32-reaction
 taxonomy with SMARTS atom mapping is owned by #11 (CHEM-01); this module
 ships a generic single-bond junction model whose reactions *declare* bond
 order, block-side handle class, and resonance-lock behaviour, with the same
-public interface the registry will fill in.  The production soft-core
-pocket potential and volume terms are owned by #14 (CHEM-04); this module
-carries a documented, deterministic soft-core surrogate sufficient for the
-reward oracle, injectable via :class:`PocketDefinition`.  A real docking
-engine is owned by the evaluation stack; :class:`~syntree.engine.rl.ThreeDReward`
+public interface the registry will fill in.  The production flat-bottom
+soft-core clash potential of #14 (CHEM-04,
+``syntree/chemistry/conformer.py``) **is wired in**: the sub-bin torsion
+refinement objective below evaluates
+``syntree.chemistry.conformer.soft_core_clash_energy`` — the bounded,
+flat-bottom, repulsive-only form with the documented atom typing and the
+500 kcal/mol per-pair spike ceiling (issue #14's follow-up addendum
+demand).  ``soft_core_pocket_energy`` remains exported in its
+*docking-surrogate* role (attractive 12-6 + softened Coulomb) for the
+reward's ``S_dock``/``S_contact`` terms — that is a different injection
+point owned by #30 FLOW-02 and the evaluation stack (a real docking
+engine supersedes it there).  A real docking engine is owned by the
+evaluation stack; :class:`~syntree.engine.rl.ThreeDReward`
 documents its surrogate.
 
 This module depends on ``rdkit``, ``numpy``, and (for the terminal oracle
@@ -88,6 +96,8 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.rdMolTransforms import GetDihedralRad
 from scipy.optimize import minimize_scalar
+
+from syntree.chemistry.conformer import soft_core_clash_energy
 
 __all__ = [
     "TORSION_BINS",
@@ -111,6 +121,7 @@ __all__ = [
     "finalize_terminal_molecule",
     "set_junction_dihedral",
     "soft_core_pocket_energy",
+    "soft_core_clash_energy",
     "coupled_charge_energy",
     "SOFT_CORE_DELTA",
     "POCKET_CUTOFF",
@@ -507,9 +518,17 @@ def soft_core_pocket_energy(
     ``sigma_ij = (sigma_i + sigma_j) / 2`` and the soft-core displacement
     ``r_tilde = sqrt(r^2 + delta^2)`` (``delta = 0.5`` Å), cut at 12 Å.
     Deterministic, bounded (``|E| <= sum_ij 4 sqrt(eps_i eps_j)``), and
-    finite for every input — the r -> 0 singularity is regularised.  This
-    is the *oracle-internal surrogate*: the production soft-core machinery
-    of #14 CHEM-04 supersedes it via injection when it lands.
+    finite for every input — the r -> 0 singularity is regularised.
+
+    **Role after #14 (D-V2-015):** this is now the *docking surrogate*
+    consumed only by :class:`~syntree.engine.rl.ThreeDReward`'s ``S_dock``
+    and ``S_contact`` (attractive 12-6 + softened Coulomb — the affinity
+    semantics a clash penalty cannot express).  The **production clash
+    physics** of #14 CHEM-04 lives in
+    :mod:`syntree.chemistry.conformer` (flat-bottom, repulsive-only,
+    bounded spike) and is what the terminal sub-bin torsion refinement
+    objective consumes.  A real docking engine (evaluation stack / #30)
+    supersedes *this* function without touching the MDP/TB contracts.
     """
     ligand_positions = np.asarray(ligand_positions, dtype=np.float64)
     if ligand_positions.ndim != 2 or ligand_positions.shape[1] != 3:
@@ -1374,7 +1393,12 @@ def finalize_terminal_molecule(
             def objective(value: float) -> float:
                 set_junction_dihedral(work, junction, float(value))
                 positions = np.array(conformer.GetPositions(), dtype=np.float64)
-                return soft_core_pocket_energy(positions, numbers, pocket)
+                # Production flat-bottom soft-core clash potential (#14
+                # CHEM-04 / D-V2-015): bounded spike, exact zero beyond
+                # contact — the #42 refinement's local torsion objective.
+                return soft_core_clash_energy(
+                    positions, numbers, pocket.positions, pocket.atomic_numbers
+                )
 
             initial = bin_center(junction.torsion_bin)
             energy_before = objective(initial)

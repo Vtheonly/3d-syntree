@@ -64,6 +64,7 @@ from syntree.engine.environment import (
     finalize_terminal_molecule,
     get_removable_leaves,
     set_junction_dihedral,
+    soft_core_clash_energy,
     soft_core_pocket_energy,
     wrap_angle,
 )
@@ -917,7 +918,14 @@ class TestSubbinRefinementMatchesDenseReferenceScan:
                 probe = Chem.Mol(baseline)
                 set_junction_dihedral(probe, junction, float(angle))
                 positions = np.array(probe.GetConformer().GetPositions(), dtype=np.float64)
-                values.append(soft_core_pocket_energy(positions, numbers, pocket))
+                # #14 CHEM-04: the dense reference uses the production
+                # flat-bottom soft-core clash potential — the same objective
+                # the oracle's Brent refinement consumes (D-V2-015).
+                values.append(
+                    soft_core_clash_energy(
+                        positions, numbers, pocket.positions, pocket.atomic_numbers
+                    )
+                )
             scan_best = min(values)
             assert entry["objective_after"] <= scan_best + 1e-6, (
                 "the bracketed Brent refinement must be at least as good as the "
