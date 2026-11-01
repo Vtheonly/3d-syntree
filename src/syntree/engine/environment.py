@@ -1180,6 +1180,8 @@ class AssemblyEnvironment:
         core_force_constant: float = 50.0,
         core_max_displacement: float = 0.3,
         return_diagnostics: bool = False,
+        junction_torsion_stage: bool = False,
+        pocket_vdw_relaxation: bool = False,
     ):
         """Terminal reward-oracle geometry (issues #42 and #13, terminal scope).
 
@@ -1210,6 +1212,8 @@ class AssemblyEnvironment:
             core_max_displacement=core_max_displacement,
             return_diagnostics=return_diagnostics,
             stats=self.stats,
+            junction_torsion_stage=junction_torsion_stage,
+            pocket_vdw_relaxation=pocket_vdw_relaxation,
         )
 
     # -- internals ---------------------------------------------------------------
@@ -1337,6 +1341,8 @@ def finalize_terminal_molecule(
     core_max_displacement: float = 0.3,
     return_diagnostics: bool = False,
     stats: Optional[Dict[str, int]] = None,
+    junction_torsion_stage: bool = False,
+    pocket_vdw_relaxation: bool = False,
 ):
     """Terminal Sub-Bin Geometry Refinement + scaffold-constrained MMFF94.
 
@@ -1361,6 +1367,24 @@ def finalize_terminal_molecule(
     documented no-op.  MMFF94 relaxation applies position restraints of
     ``core_force_constant`` (default 50 kcal/mol/Å²) to the seed-scaffold
     atoms.
+
+    **#13 opt-in stages (D-V2-017; both default to the legacy behaviour so
+    the 50 pinned reconciliation contracts stay green bit-for-bit):**
+
+    * ``junction_torsion_stage=True`` — after the sub-bin refinement, every
+      resonance-locked junction runs :func:`apply_junction_torsion`
+      (``syntree/chemistry/conformer.py``): the junction snaps to the
+      planar state (0°/180°) with the lower flat-bottom soft-core pocket
+      clash (ties -> trans; no pocket -> trans), and the junction's
+      recorded torsion bin routes as ``phi`` to the first adjacent
+      non-conjugated single bond on the synthon side (#13 §1).
+    * ``pocket_vdw_relaxation=True`` — the MMFF phase runs
+      :func:`relax_junction_constrained` (``syntree/chemistry/conformer.py``)
+      instead of the plain seed-restrained minimization: the pocket heavy
+      atoms enter the minimization system as position-constrained typed
+      mini-fragments, so junction atoms and internal synthon bonds minimize
+      freely *within the static vdW field of the pocket*, with the #13-pinned
+      scaffold flat-bottom restraints (50 kcal/mol/Å², 0.05 Å) (#13 §2).
 
     Returns ``(relaxed_mol, energy)`` or, with ``return_diagnostics``, the
     triple ``(relaxed_mol, energy, diagnostics)`` where diagnostics records
@@ -1448,29 +1472,74 @@ def finalize_terminal_molecule(
                 )
 
     energy: Optional[float] = None
+    if junction_torsion_stage:
+        # #13 §1 (D-V2-017): locked junctions get the LJ planar choice and
+        # the phi routing AFTER the sub-bin refinement of rotatable junctions
+        # (#42 addendum ordering: refinement before the #13 stages).
+        from syntree.chemistry.conformer import apply_junction_torsion
+
+        for junction in junctions:
+            if not junction.resonance_locked:
+                continue
+            entry13 = apply_junction_torsion(
+                work, junction, bin_center(junction.torsion_bin), pocket
+            )
+            diagnostics.setdefault("locked_junction_torsion", []).append(entry13)
+
     if mmff_relax:
         seed_atoms = [atom.GetIdx() for atom in work.GetAtoms() if atom.HasProp(SEED_PROP)]
-        relaxed = Chem.AddHs(work, addCoords=True)
-        if not AllChem.MMFFHasAllMoleculeParams(relaxed):
-            raise AssemblyError(
-                "MMFF94 parameters unavailable for the terminal molecule; the reward "
-                "oracle refuses to score an unsupportable structure (fail-closed)"
+        if pocket_vdw_relaxation:
+            # #13 §2 (D-V2-017): MMFF94 inside the static vdW field of the
+            # pocket, with the #13-pinned scaffold flat-bottom restraints.
+            from syntree.chemistry.conformer import (
+                POSITION_TOLERANCE,
+                relax_junction_constrained,
             )
-        properties = AllChem.MMFFGetMoleculeProperties(relaxed, mmffVariant="MMFF94")
-        force_field = AllChem.MMFFGetMoleculeForceField(relaxed, properties)
-        for idx in seed_atoms:
-            force_field.MMFFAddPositionConstraint(
-                idx, core_max_displacement, core_force_constant
+
+            work, energy, diag13 = relax_junction_constrained(
+                work,
+                pocket,
+                seed_atoms=seed_atoms,
+                core_force_constant=core_force_constant,
+                core_tolerance=POSITION_TOLERANCE,
+                mmff_max_iterations=mmff_max_iterations,
+                return_diagnostics=True,
             )
-        force_field.Minimize(maxIts=mmff_max_iterations)
-        energy = float(force_field.CalcEnergy())
-        work = Chem.RemoveHs(relaxed)
-        if stats is not None:
-            stats["mmff_minimizations"] += 1
-        diagnostics["mmff_energy_kcal_mol"] = energy
-        diagnostics["mmff_max_iterations"] = mmff_max_iterations
-        diagnostics["core_force_constant_kcal_mol_a2"] = core_force_constant
-        diagnostics["num_seed_restrained_atoms"] = len(seed_atoms)
+            if stats is not None:
+                stats["mmff_minimizations"] += 1
+            diagnostics.update(
+                {
+                    "mmff_energy_kcal_mol": energy,
+                    "mmff_max_iterations": mmff_max_iterations,
+                    "core_force_constant_kcal_mol_a2": core_force_constant,
+                    "num_seed_restrained_atoms": len(seed_atoms),
+                    "pocket_vdw_relaxation": True,
+                    "pocket_max_drift_a": diag13.get("pocket_max_drift_a"),
+                    "pocket_clash_after_kcal_mol": diag13.get("pocket_clash_after_kcal_mol"),
+                }
+            )
+        else:
+            relaxed = Chem.AddHs(work, addCoords=True)
+            if not AllChem.MMFFHasAllMoleculeParams(relaxed):
+                raise AssemblyError(
+                    "MMFF94 parameters unavailable for the terminal molecule; the reward "
+                    "oracle refuses to score an unsupportable structure (fail-closed)"
+                )
+            properties = AllChem.MMFFGetMoleculeProperties(relaxed, mmffVariant="MMFF94")
+            force_field = AllChem.MMFFGetMoleculeForceField(relaxed, properties)
+            for idx in seed_atoms:
+                force_field.MMFFAddPositionConstraint(
+                    idx, core_max_displacement, core_force_constant
+                )
+            force_field.Minimize(maxIts=mmff_max_iterations)
+            energy = float(force_field.CalcEnergy())
+            work = Chem.RemoveHs(relaxed)
+            if stats is not None:
+                stats["mmff_minimizations"] += 1
+            diagnostics["mmff_energy_kcal_mol"] = energy
+            diagnostics["mmff_max_iterations"] = mmff_max_iterations
+            diagnostics["core_force_constant_kcal_mol_a2"] = core_force_constant
+            diagnostics["num_seed_restrained_atoms"] = len(seed_atoms)
 
     if return_diagnostics:
         if mmff_relax:

@@ -106,6 +106,11 @@ __all__ = [
     "pair_epsilon",
     "SoftCoreClashPotential",
     "soft_core_clash_energy",
+    "apply_junction_torsion",
+    "relax_junction_constrained",
+    "CORE_FORCE_CONSTANT",
+    "POSITION_TOLERANCE",
+    "POCKET_FORCE_CONSTANT",
     "pocket_cavity_volume",
     "volume_fill_ratio",
     "volume_floor_penalty",
@@ -667,3 +672,461 @@ def heavy_atom_floor_penalty(
     if not (math.isfinite(weight) and weight >= 0.0):
         raise ChemistryError(f"weight must be finite and >= 0, got {weight}")
     return -float(weight) * max(0.0, (float(floor) - float(n)) / float(floor))
+
+
+# ===========================================================================
+# #13 CHEM-03: junction torsion application + scaffold-constrained MMFF94
+# ===========================================================================
+#
+# Issue #13 scope (as reconciled by D-V2-009/D-V2-017): these are
+# TERMINAL-ORACLE geometry stages.  They never touch an intermediate MDP
+# state; consumers (``finalize_terminal_molecule``, #42, #30) invoke them
+# on deep copies after STOP.  The legacy behaviour of
+# ``finalize_terminal_molecule`` is unchanged and remains the default;
+# the stages integrate behind explicit opt-in flags (D-V2-017) so the 50
+# pinned reconciliation contracts stay green bit-for-bit.
+#
+# * ``apply_junction_torsion`` — #13 sec. 1: for a resonance-locked
+#   junction (amide/ester/urea/carbamate/thioester), snap the junction
+#   dihedral to the planar state (0 deg or 180 deg) with the *lower
+#   pocket clash* (the production flat-bottom soft-core LJ of #14,
+#   D-V2-015 role separation — the "Lennard-Jones pocket clash" of the
+#   #13 text), ties resolved to trans; then route the predicted
+#   continuous dihedral ``phi`` to the first adjacent non-conjugated
+#   single bond on the synthon side (deterministic breadth-first order;
+#   rigid rotations only — covalent geometry is preserved exactly).  For
+#   a rotatable junction the ``phi`` applies to the junction bond itself.
+#
+# * ``relax_junction_constrained`` — #13 sec. 2: MMFF94 relaxation in the
+#   *static van der Waals field of the pocket*.  The pocket heavy atoms
+#   are embedded into the minimization system as typed mini-fragments
+#   (CH4/NH3/OH2/SH2 — RDKit's MMFF cannot type bare atoms), giving real
+#   ligand-pocket vdW coupling; every pocket atom (and its hydrogens) is
+#   position-constrained (flat-bottom, 0.05 A tolerance), and the
+#   seed-scaffold atoms carry the #13-pinned flat-bottom harmonic
+#   restraint (50 kcal/mol/A^2, 0.05 A tolerance).  Junction atoms and
+#   internal synthon bonds minimize freely; the pocket stays static
+#   within its tolerance; MMFF-untypeable pockets (metals) fail closed.
+
+from typing import Any as _Any
+from typing import Mapping as _Mapping
+from typing import Sequence as _Sequence
+
+from rdkit import Chem as _Chem
+from rdkit.Chem import AllChem as _AllChem
+from rdkit.Chem.rdMolTransforms import GetDihedralRad as _GetDihedralRad
+
+#: Scaffold restraint constant of the #13-pinned flat-bottom harmonic
+#: position restraint (kcal/mol/A^2).
+CORE_FORCE_CONSTANT: float = 50.0
+
+#: Flat-bottom tolerance of the scaffold and pocket position restraints (A).
+POSITION_TOLERANCE: float = 0.05
+
+#: Pocket restraint constant (kcal/mol/A^2) — stiffer than the scaffold so
+#: the pocket stays static within its 0.05 A tolerance while the ligand
+#: minimizes against its vdW field.
+POCKET_FORCE_CONSTANT: float = 5000.0
+
+
+def _unit3(vector: "np.ndarray") -> "np.ndarray":
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-12:
+        raise ChemistryError("degenerate direction: zero-length vector")
+    return vector / norm
+
+
+def _wrap(value: float) -> float:
+    two_pi = 2.0 * math.pi
+    return (value + math.pi) % two_pi - math.pi
+
+
+def _rotation_matrix(axis: "np.ndarray", angle: float) -> "np.ndarray":
+    axis = _unit3(axis)
+    x, y, z = axis
+    c, s = math.cos(angle), math.sin(angle)
+    t = 1.0 - c
+    return np.array(
+        [
+            [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+            [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+            [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _first_adjacent_rotatable_bond(mol, junction) -> "_Any":
+    """First adjacent non-conjugated single bond on the synthon side.
+
+    Breadth-first from the block-side attachment atom ``b1`` over the
+    junction's synthon fragment: level 1 bonds first (the literal
+    "first adjacent"), then deeper levels, each level scanned in ascending
+    atom index.  A bond qualifies when it is a *single* bond, acyclic,
+    and not conjugated (``Chem.SetConjugation`` semantics).  Returns
+    ``(u, v)`` with ``u`` the atom closer to the junction, or ``None``.
+    """
+    _Chem.SetConjugation(mol)
+    fragment_id = junction.fragment_id
+    b1 = junction.b1
+    synthon_atoms = {
+        atom.GetIdx()
+        for atom in mol.GetAtoms()
+        if atom.GetIntProp("syn_tree_fragment") == fragment_id
+    }
+    seen = {b1}
+    frontier = [b1]
+    while frontier:
+        next_frontier = []
+        level_bonds = []
+        for idx in frontier:
+            atom = mol.GetAtomWithIdx(idx)
+            for neighbor in atom.GetNeighbors():
+                n_idx = neighbor.GetIdx()
+                if n_idx in seen or n_idx not in synthon_atoms:
+                    continue
+                bond = mol.GetBondBetweenAtoms(idx, n_idx)
+                if (
+                    bond is not None
+                    and bond.GetBondType() == _Chem.BondType.SINGLE
+                    and not bond.IsInRing()
+                    and not bond.GetIsConjugated()
+                ):
+                    level_bonds.append((idx, n_idx))
+        if level_bonds:
+            return min(level_bonds, key=lambda pair: (pair[0], pair[1]))
+        for idx in frontier:
+            atom = mol.GetAtomWithIdx(idx)
+            for neighbor in atom.GetNeighbors():
+                n_idx = neighbor.GetIdx()
+                if n_idx in seen or n_idx not in synthon_atoms:
+                    continue
+                seen.add(n_idx)
+                next_frontier.append(n_idx)
+        frontier = sorted(next_frontier)
+    return None
+
+
+def _rotate_about_bond(mol, u: int, v: int, target: float) -> None:
+    """Set the dihedral of the *peripheral* side of bond ``u-v`` to ``target``.
+
+    The rotated component is the side of ``v`` NOT containing ``u`` (the
+    peripheral side away from the junction).  A rigid rotation about the
+    bond axis: covalent bond lengths and valence angles are preserved
+    exactly.  Deterministic reference neighbours: lowest-index heavy
+    neighbour other than the other junction atom.
+    """
+    conformer = mol.GetConformer()
+    positions = np.array(conformer.GetPositions(), dtype=np.float64)
+
+    def reference(atom_idx: int, exclude: int) -> int:
+        candidates = [
+            n.GetIdx()
+            for n in mol.GetAtomWithIdx(atom_idx).GetNeighbors()
+            if n.GetIdx() != exclude and n.GetAtomicNum() > 1
+        ]
+        if not candidates:
+            candidates = [
+                n.GetIdx()
+                for n in mol.GetAtomWithIdx(atom_idx).GetNeighbors()
+                if n.GetIdx() != exclude
+            ]
+        return min(candidates)
+
+    u_ref = reference(u, v)
+    v_ref = reference(v, u)
+    if u_ref is None or v_ref is None:
+        raise ChemistryError(
+            f"cannot define a dihedral about bond ({u}, {v}): no reference neighbours"
+        )
+    current = _GetDihedralRad(conformer, u_ref, u, v, v_ref)
+    delta = _wrap(target - current)
+    # component of v when the bond is removed (the peripheral side)
+    adjacency: "set" = {a.GetIdx(): {n.GetIdx() for n in a.GetNeighbors()} for a in mol.GetAtoms()}
+    adjacency[u].discard(v)
+    adjacency[v].discard(u)  # remove the bond in BOTH directions: the
+    # peripheral component must not walk back through u into the scaffold
+    stack = [v]
+    component = {v}
+    while stack:
+        node = stack.pop()
+        for nxt in adjacency.get(node, ()):  # type: ignore[arg-type]
+            if nxt not in component:
+                component.add(nxt)
+                stack.append(nxt)
+    axis = _unit3(positions[v] - positions[u])
+    rotation = _rotation_matrix(axis, delta)
+    origin = positions[u]
+    for idx in sorted(component):
+        q = positions[idx]
+        conformer.SetAtomPosition(idx, origin + rotation @ (q - origin))
+
+
+def apply_junction_torsion(
+    mol,
+    junction,
+    phi: float,
+    pocket=None,
+    route_phi: bool = True,
+) -> Dict[str, object]:
+    """#13 terminal geometry stage 1 (see the module-level notes).
+
+    ``mol`` is modified in place (the caller owns the deep copy, as
+    ``finalize_terminal_molecule`` does); only rigid rotations are ever
+    applied, so covalent geometry is preserved exactly.
+
+    * **resonance-locked junction** — snap the junction dihedral to the
+      planar state with the lower pocket clash (ties -> trans; no pocket
+      -> trans, the pinned rollout default); when ``route_phi`` is set,
+      apply ``phi`` to the first adjacent non-conjugated single bond on the
+      synthon side (documented no-op if the synthon has no such bond —
+      inert ``phi``).  ``route_phi=False`` performs only the planar snap
+      (used by ``relax_junction_constrained`` to restore the resonance
+      planarity after MMFF94, whose weak amide/ester torsions can sit
+      several degrees off planar at their minimum).
+    * **rotatable junction** — apply ``phi`` to the junction bond itself.
+
+    Returns auditable telemetry (chosen planar state, both clash values,
+    the bond that received ``phi``).
+    """
+    if not math.isfinite(phi):
+        raise ChemistryError(f"phi must be finite, got {phi}")
+    numbers = np.array([a.GetAtomicNum() for a in mol.GetAtoms()], dtype=np.int64)
+
+    def clash() -> float:
+        # reads the CURRENT conformer fresh on every call — never a stale
+        # snapshot (the planar probe changes the geometry between calls)
+        if pocket is None:
+            return 0.0
+        current = np.array(mol.GetConformer().GetPositions(), dtype=np.float64)
+        return soft_core_clash_energy(current, numbers, pocket.positions, pocket.atomic_numbers)
+
+    telemetry: Dict[str, object] = {
+        "fragment_id": junction.fragment_id,
+        "locked": bool(junction.resonance_locked),
+        "phi": float(phi),
+    }
+
+    if not junction.resonance_locked:
+        from syntree.engine.environment import set_junction_dihedral
+
+        set_junction_dihedral(mol, junction, float(phi))
+        telemetry["phi_applied_to"] = ("junction_bond", junction.a1, junction.b1)
+        return telemetry
+
+    # -- locked: choose the planar state by minimum pocket clash ------------
+    from syntree.engine.environment import set_junction_dihedral
+
+    set_junction_dihedral(mol, junction, 0.0)
+    clash_cis = clash()
+    set_junction_dihedral(mol, junction, math.pi)
+    clash_trans = clash()
+    if clash_cis < clash_trans - 1e-12:
+        planar = 0.0
+    else:
+        planar = math.pi  # ties and no-pocket cases resolve to trans
+    set_junction_dihedral(mol, junction, planar)
+    telemetry.update(
+        {
+            "planar_dihedral_rad": planar,
+            "clash_cis": clash_cis,
+            "clash_trans": clash_trans,
+        }
+    )
+    if not route_phi:
+        telemetry["phi_applied_to"] = None  # planar-snap-only mode
+        return telemetry
+
+    # -- route phi to the first adjacent rotatable synthon-side bond --------
+    bond = _first_adjacent_rotatable_bond(mol, junction)
+    if bond is None:
+        telemetry["phi_applied_to"] = None  # documented no-op: inert phi
+        return telemetry
+    u, v = bond
+    _rotate_about_bond(mol, u, v, float(phi))
+    telemetry["phi_applied_to"] = ("synthon_adjacent_bond", u, v)
+    return telemetry
+
+
+def relax_junction_constrained(
+    mol,
+    pocket=None,
+    *,
+    seed_atoms=None,
+    core_force_constant: float = CORE_FORCE_CONSTANT,
+    core_tolerance: float = POSITION_TOLERANCE,
+    pocket_force_constant: float = POCKET_FORCE_CONSTANT,
+    pocket_tolerance: float = POSITION_TOLERANCE,
+    mmff_max_iterations: int = 200,
+    return_diagnostics: bool = False,
+):
+    """#13 terminal geometry stage 2: scaffold-constrained MMFF94 relaxation.
+
+    The pocket heavy atoms are embedded into the minimization system as
+    typed mini-fragments (CH4/NH3/OH2/SH2) at their crystal coordinates,
+    giving genuine MMFF ligand-pocket van der Waals coupling — the
+    *static vdW field of the pocket*.  Every pocket atom (and its
+    hydrogens) is position-constrained (flat-bottom, ``pocket_tolerance``
+    A), so the field stays static; the seed-scaffold atoms carry the
+    #13-pinned flat-bottom harmonic restraint (``core_force_constant``
+    kcal/mol/A^2 within ``core_tolerance`` A).  Junction atoms and
+    internal synthon bonds minimize freely.  The input molecule is never
+    mutated (a deep copy is relaxed); the returned molecule carries no
+    explicit hydrogens.
+
+    Returns ``(relaxed_mol, energy)`` — the ligand-internal MMFF94 energy
+    (kcal/mol) of the relaxed heavy-atom molecule — or, with
+    ``return_diagnostics``, ``(relaxed_mol, energy, diagnostics)``.
+    """
+    work = _Chem.Mol(mol)  # deep copy: the caller's state is never mutated
+    work = _Chem.AddHs(work, addCoords=True)
+    n_lig = work.GetNumAtoms()
+
+    rw = _Chem.RWMol(work)
+    rw.RemoveAllConformers()
+    pocket_atoms: "list" = []
+    if pocket is not None:
+        for z, position in zip(pocket.atomic_numbers, pocket.positions):
+            rw.AddAtom(_Chem.Atom(int(z)))
+            pocket_atoms.append(rw.GetNumAtoms() - 1)
+    total = rw.GetNumAtoms()
+    conformer = _Chem.Conformer(total)
+    for i in range(n_lig):
+        conformer.SetAtomPosition(i, work.GetConformer().GetAtomPosition(i))
+    for k, atom_idx in enumerate(pocket_atoms):
+        conformer.SetAtomPosition(atom_idx, pocket.positions[k])
+    rw.AddConformer(conformer, assignId=True)
+    combined = rw.GetMol()
+    _Chem.SanitizeMol(combined)
+    combined = _Chem.AddHs(combined, addCoords=True)
+    _Chem.SanitizeMol(combined)
+
+    if not _AllChem.MMFFHasAllMoleculeParams(combined):
+        raise ChemistryError(
+            "MMFF94 parameters unavailable (untypeable pocket atom — e.g. a "
+            "metal — or unsupportable ligand); relax_junction_constrained "
+            "refuses to relax (fail-closed)"
+        )
+    properties = _AllChem.MMFFGetMoleculeProperties(combined, mmffVariant="MMFF94")
+    force_field = _AllChem.MMFFGetMoleculeForceField(combined, properties)
+    for atom_idx in pocket_atoms:
+        force_field.MMFFAddPositionConstraint(atom_idx, pocket_tolerance, pocket_force_constant)
+        for h in combined.GetAtomWithIdx(atom_idx).GetNeighbors():
+            if h.GetIdx() >= n_lig:
+                force_field.MMFFAddPositionConstraint(h.GetIdx(), pocket_tolerance, pocket_force_constant)
+    if seed_atoms is None:
+        seed_atoms = [
+            atom.GetIdx() for atom in work.GetAtoms() if atom.HasProp("syn_tree_seed")
+        ]
+    for idx in seed_atoms:
+        force_field.MMFFAddPositionConstraint(idx, core_tolerance, core_force_constant)
+    force_field.Minimize(maxIts=mmff_max_iterations)
+    combined_energy = float(force_field.CalcEnergy())
+
+    # -- extract the relaxed ligand (first fragment; the ligand was added
+    # first and is connected) --------------------------------------------
+    keep = set(range(n_lig))
+    ligand_rw = _Chem.RWMol()
+    mapping: "dict" = {}
+    for old in sorted(keep):
+        mapping[old] = ligand_rw.AddAtom(_Chem.Atom(combined.GetAtomWithIdx(old)))
+    for bond in combined.GetBonds():
+        b, e = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if b in mapping and e in mapping:
+            ligand_rw.AddBond(mapping[b], mapping[e], bond.GetBondType())
+    ligand_conf = _Chem.Conformer(len(mapping))
+    for old, new in mapping.items():
+        ligand_conf.SetAtomPosition(new, combined.GetConformer().GetAtomPosition(old))
+    ligand_rw.AddConformer(ligand_conf, assignId=True)
+    relaxed = ligand_rw.GetMol()
+    _Chem.SanitizeMol(relaxed)
+    # carry the caller's molecule-level properties (junction records, seed
+    # flags) onto the returned molecule — the terminal oracle's output must
+    # remain a fully-tagged assembled molecule
+    for name in mol.GetPropNames(includePrivate=True, includeComputed=False):
+        if not relaxed.HasProp(name):
+            relaxed.SetProp(name, mol.GetProp(name))
+
+    # -- restore the #13 resonance planarity on locked junctions.  MMFF94's
+    # amide/ester C-N/C-O torsion terms are weak (a bare amide sits ~3.7
+    # degrees off planar at the MMFF minimum; in-pocket several degrees
+    # more), so the #13-pinned constraint (planar within 1.0 degree) is
+    # enforced exactly, after the free minimization, by the same LJ-chosen
+    # rigid snap — a pure rotation of the distal subtree: the MMFF-relaxed
+    # internal geometry is preserved undistorted.
+    restored: "list" = []
+    try:
+        from syntree.engine.environment import _read_junctions
+
+        locked_records = [j for j in _read_junctions(mol) if j.resonance_locked]
+    except Exception:  # noqa: BLE001 - plain molecules carry no records
+        locked_records = []
+    for junction in locked_records:
+        snap = apply_junction_torsion(relaxed, junction, 0.0, pocket, route_phi=False)
+        restored.append(
+            {
+                "fragment_id": junction.fragment_id,
+                "planar_dihedral_rad": snap["planar_dihedral_rad"],
+                "clash_cis": snap["clash_cis"],
+                "clash_trans": snap["clash_trans"],
+            }
+        )
+
+    # ligand-internal energy at the relaxed geometry (no pocket terms);
+    # ``relaxed`` still carries its hydrogens — exactly what MMFF needs.
+    ligand_props = _AllChem.MMFFGetMoleculeProperties(relaxed, mmffVariant="MMFF94")
+    ligand_ff = _AllChem.MMFFGetMoleculeForceField(relaxed, ligand_props)
+    for idx in seed_atoms:
+        ligand_ff.MMFFAddPositionConstraint(idx, core_tolerance, core_force_constant)
+    energy = float(ligand_ff.CalcEnergy())
+    relaxed = _Chem.RemoveHs(relaxed)
+
+    if return_diagnostics:
+        diagnostics: Dict[str, object] = {
+            "mmff_energy_kcal_mol": energy,
+            "combined_energy_kcal_mol": combined_energy,
+            "core_force_constant_kcal_mol_a2": core_force_constant,
+            "core_tolerance_a": core_tolerance,
+            "pocket_force_constant_kcal_mol_a2": pocket_force_constant,
+            "pocket_tolerance_a": pocket_tolerance,
+            "mmff_max_iterations": mmff_max_iterations,
+            "num_seed_restrained_atoms": len(seed_atoms),
+            "num_pocket_atoms": len(pocket_atoms),
+        }
+        if pocket is not None:
+            ligand_positions = np.array(
+                relaxed.GetConformer().GetPositions(), dtype=np.float64
+            )
+            ligand_numbers = np.array(
+                [a.GetAtomicNum() for a in relaxed.GetAtoms()], dtype=np.int64
+            )
+            diagnostics["pocket_clash_after_kcal_mol"] = soft_core_clash_energy(
+                ligand_positions, ligand_numbers, pocket.positions, pocket.atomic_numbers
+            )
+            pocket_drift = float(
+                np.abs(
+                    np.array(
+                        [
+                            combined.GetConformer().GetAtomPosition(idx)
+                            for idx in pocket_atoms
+                        ],
+                        dtype=np.float64,
+                    )
+                    - pocket.positions
+                ).max()
+            )
+            diagnostics["pocket_max_drift_a"] = pocket_drift
+        if seed_atoms:
+            reference_conf = mol.GetConformer()
+            relaxed_conf = relaxed.GetConformer()
+            total_sq = 0.0
+            for idx in seed_atoms:
+                if idx >= mol.GetNumAtoms():
+                    continue
+                delta = np.array(reference_conf.GetAtomPosition(idx)) - np.array(
+                    relaxed_conf.GetAtomPosition(idx)
+                )
+                total_sq += float(np.dot(delta, delta))
+            diagnostics["seed_rmsd_a"] = math.sqrt(total_sq / len(seed_atoms))
+        return relaxed, energy, diagnostics
+    return relaxed, energy
