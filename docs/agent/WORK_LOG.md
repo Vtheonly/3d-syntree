@@ -671,3 +671,159 @@ MODEL-03** (two-layer stacked cross-attention decoder — consumes
 `GaussianRadialBasis`). Parallel-safe: #8 MATH-02, #10 MATH-04, #11
 CHEM-01, #14 CHEM-04, #16 DATA-01, #32 TEST-01. #36 remains gated on
 user authorization (Colab SSH).
+
+## S-V2-06 — 2026-11-01 — #23 MODEL-03 closed: two-layer stacked cross-attention decoder (D-V2-012)
+
+- **Agent/session:** autonomous lead-engineering session (Z.ai), UTC.
+- **Repository / branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `fd61e14` (S-V2-05 docs head; branch verified equal
+  to `origin/3d-synV2` before any change; working tree clean).
+
+### 1. State discovery (per #45 §25.1)
+
+- Read issue #45 in full; read STATUS / DECISIONS / DEPENDENCIES /
+  HANDOFF / WORK_LOG / ARCHITECTURE and the code head (`schema.py`,
+  `equivariant.py`, `cutoff.py`, `bipartite.py`, `handle_head.py`).
+  Fetched issue #23 + its comment thread (the owner's binding integration
+  notes) and the live #5–#44 issue states from GitHub.
+- The S-V2-05 handoff was unambiguous: next task **#23 MODEL-03** — all
+  three hard deps (#9, #21, #22) closed with inspected deliverables;
+  critical path #5 → #6 → #21 → #23 → #24 → #25 → #26 → …
+- Dev environment rebuilt from scratch in the recycled sandbox: Python
+  3.12.16, torch 2.15.0+cpu, torch_geometric 2.8.1, rdkit 2026.9.1,
+  scipy 1.14.1, pytest 9.0.2 (`pip install torch --index-url
+  https://download.pytorch.org/whl/cpu`, `pip install -e ".[test]"`,
+  `pip install torch_geometric`).
+- Baseline before any change: `python -m pytest tests/ -q` → **347/347
+  passed** (matches the S-V2-05 record exactly).
+
+### 2. Work performed (implementation)
+
+- **New module `src/syntree/models/policy.py`** (the issue-pinned path):
+  `CrossAttentionDecoderLayer` — `nn.MultiheadAttention(256, 8,
+  dropout=0.1, batch_first=True)`, FFN `Linear(256→512) → SiLU → Dropout
+  (0.1) → Linear(512→256)`, **pre-LayerNorm residuals on both
+  sub-layers**; `CrossAttentionDecoder` — 2 stacked layers + closing
+  LayerNorm, query projections from the #22 pooled handle surface and the
+  #21 pooled contexts, order-preserving per-graph padding of the flat
+  union memory into the dense `[B, N_max, d]` layout with a bool
+  `key_padding_mask`; two forward interfaces (dense `[B, 1, 256] ×
+  [B, N, 256] → [B, 256]` per the acceptance criteria; V2-native
+  `forward_state(backbone, handle)`); `DecoderOutput` (context / sequence
+  / per-layer attention maps / echoes / token counts); `audit()`
+  (incl. `projects_spatial_distances: False`); fail-closed validation
+  (FP32/FP64-only dtype policy matching module parameters per
+  D-V2-005/008, device, shapes, `Lq = 1` pinning, bool-only mask,
+  fully-padded-graph rejection, cross-field backbone↔handle graph-count
+  consistency, NaN/Inf fail loudly); frozen `DECODER_*` constants
+  (256/2/8/512/0.1); **1,219,328-parameter frozen profile**.
+- **Design decision D-V2-012 recorded**: per-graph handle query
+  (`W_handle(pooled_handle_context) + W_graph(graph_context) +
+  W_pocket(pocket_context)` — one authoritative embedding chain, the
+  per-row `handle_embeddings` stay with #24); **no new spatial-RBF site**
+  (D-V2-011's conditional clause resolved vacuously + structurally: the
+  decoder consumes no Cartesian coordinates at all; audit flag + no
+  radial-basis submodule pinned by test); dense padded memory with exact
+  masking semantics; closing LayerNorm (standard pre-LN practice) with
+  the documented row-sum-constant caveat for downstream losses.
+- **New test file `tests/test_cross_attention_decoder.py`** — 58 tests in
+  six classes: the two pinned acceptance criteria (frozen-profile shape
+  probe; padded columns exactly 0.0 in every layer/head/graph; outputs
+  bit-identical under padded-slot junk 999/−777/1e6; attention rows sum
+  to 1 over real tokens; train-mode dropout keeps pads exactly zero);
+  issue-pinned layer structure (MHA/FFN config; pre-LN residual identity
+  under zeroed sub-layers, which also distinguishes pre-LN from post-LN;
+  general-`Lq` layer primitive; constructor validation); padding
+  (roundtrip preserves rows and order; mask exactness; memory length;
+  fully-padded and zero-node-graph rejection); dense-forward contract and
+  fail-closed matrix (dtype policy, `Lq ≠ 1`, non-bool mask, shape/
+  batch/width mismatches, NaN/Inf, empty memory; eval determinism and
+  state-dict roundtrip bit-exact; seeded train-mode reproducibility;
+  memory-token permutation invariance; **no cross-graph gradient leaks**
+  — `context[0]`-loss leaves `memory.grad[1:]` exactly zero);
+  V2-native `forward_state` (end-to-end through the real backbone +
+  handle head; FP32 production path; plumbing equivalence bit-exact;
+  gradients reach all three query surfaces; zero-handle graphs give
+  finite context; single-graph batch; **SE(3) invariance 8.882e-16 FP64
+  / 4.768e-07 FP32**; translation invariance; pocket/ligand permutation
+  invariance with handle remap; batch-composition invariance; gradient
+  flow through the checkpointed backbone and the handle head;
+  cross-field/graph-count/width/dtype/poison fail-closed); frozen
+  profile (constants; 1,219,328 parameters; audit; no radial-basis
+  submodule; attention-footprint arithmetic 614,400 floats ≈ 0.59 MB at
+  B=12/N≤800 — below the issue's 20 MB budget, a calculation not a T4
+  measurement; full-production-profile integration smoke).
+- **Exports:** `syntree/models/__init__.py` extended with the
+  `DECODER_*` constants and the three new classes.
+- **Docs:** `docs/architecture/ARCHITECTURE.md` — new §3.13
+  (`[VERIFIED — #23]`), module map + repository layout updated, and the
+  stale header (missing S-V2-05) corrected to S-V2-06;
+  `docs/agent/DECISIONS.md` — **D-V2-012** recorded; `README.md` — new
+  architecture-invariant bullet (one authoritative representation
+  chain), module table row, repository structure, status table row,
+  limitations, "last updated S-V2-06"; `docs/agent/STATUS.md` /
+  `DEPENDENCIES.md` / `HANDOFF.md` synchronized.
+
+### 3. Extra verification beyond the suite (local CPU)
+
+- Test-side debugging (four initial failures, all test-side bugs, none
+  module-side): (a) the junk-invariance test wrote junk into an
+  *unmasked* slot of graph 2 — fixed by masking that slot; (b) the
+  all-padded-graph probe omitted `dtype=torch.float64` on its fixtures,
+  so the dtype-policy error fired before the mask check; (c) the
+  wrong-width probe narrowed `backbone.scalar` *and* the contexts
+  together, so the scalar error fired first — narrowed only the
+  contexts; (d) the gradient tests used `context.sum()` / `context[0]
+  .sum()` — degenerate losses because the closing LayerNorm makes each
+  output row sum to the constant `sum(β)` (gradients exactly zero
+  everywhere) — replaced with fixed linspace-weighted losses and the
+  property documented in the test file header (this is a real interface
+  fact for #24/#25, recorded in D-V2-012 and HANDOFF §2).
+- Hand-verified the frozen-profile parameter arithmetic before pinning
+  1,219,328 (MHA 263,168 + 2 LayerNorms 1,024 + FFN 262,912 = 527,104
+  per layer; ×2 + query projections 164,608 + out_norm 512).
+- Measured evidence script (kept at the session sandbox
+  `scripts/evidence_model03.py`, not part of the repo): SE(3) worst
+  |Δcontext| = **8.882e-16** (float64) / **4.768e-07** (float32
+  production path) through the real backbone + handle head + decoder.
+
+### 4. Verification summary (all local CPU; no GPU/T4 claims)
+
+- Environment: Python 3.12.16, torch 2.15.0+cpu, torch_geometric 2.8.1,
+  rdkit 2026.9.1, scipy 1.14.1, pytest 9.0.2.
+- `python -m pytest tests/test_cross_attention_decoder.py -q` → **58
+  passed, 0 warnings**.
+- `python -m pytest tests/ -q` → **405 passed** (347 baseline + 58 new;
+  nothing rewritten or deleted).
+- pyflakes clean on all touched files.
+- Mandatory pre-commit review: `git diff --check` (clean), `git diff
+  --stat`, `git diff --unified=80` (reviewed; new files authored and
+  reviewed in full), `git status --short`.
+
+### 5. Commits / pushes (session total)
+
+| Commit | Content | Push range |
+|---|---|---|
+| `dc4921e` | feat(model-03): two-layer stacked cross-attention decoder (#23) — module + 58 tests + ARCHITECTURE §3.13 + D-V2-012 + README | `fd61e14..dc4921e` |
+| (this docs commit) | docs(agent): S-V2-06 session record — #23 closed at `dc4921e`, statuses, dependency map, handoff to #8 | — |
+
+### 6. GitHub issues updated
+
+- **Closed with evidence comment: #23** (both acceptance criteria
+  verified — exact commands/results/measured values in
+  https://github.com/Vtheonly/3d-syntree/issues/23#issuecomment-6559134923;
+  D-V2-012 referenced).
+- Updated: #24's status note (deps remaining: #11, #8; the decoder
+  surfaces are available to its heads).
+- Verified untouched and OPEN: #45 (permanent).
+- STATUS.md synchronized (8/40 closed: #5, #6, #7, #9, #21, #22, #23,
+  #38).
+
+### 7. Next actions
+
+See `HANDOFF.md` §1: next dependency-ready critical-path task is **#8
+MATH-02** (analytic Amos-ratio autograd for the von Mises loss; deps #5
+only) — together with #11 CHEM-01 it is the last blocker of #24
+MODEL-04. Parallel-safe: #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16
+DATA-01, #32 TEST-01. #36 remains gated on user authorization (Colab
+SSH).

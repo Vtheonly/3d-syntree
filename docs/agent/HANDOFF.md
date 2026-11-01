@@ -5,38 +5,41 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-01, session S-V2-05 close (#9 MATH-03
-implemented, verified, and closed — decision D-V2-011).
+**Last updated:** 2026-11-01, session S-V2-06 close (#23 MODEL-03
+implemented, verified, and closed — decision D-V2-012).
 
 ## 1. Continuation instruction
 
 ```
-Next session: implement #23 MODEL-03 (two-layer stacked cross-attention
-decoder) — it is now dependency-ready: all three hard deps are closed and
-inspected (#9, #21, #22), and it is the next step on the critical path
-(#5 → #6 → #21 → #23 → #24 → #25 → #26 → ...). It consumes the #21
-backbone's BackboneOutput (scalar [N, d] / vector [N, 3, d], pooled
-per-graph contexts) and the #22 handle-side surface
-(HandleSelectionOutput.handle_embeddings / pooled_handle_context — one
-authoritative embedding, no second handle encoder). Binding envelope
-rule (D-V2-011): any spatial distance RBF the decoder projects MUST be
-produced by GaussianRadialBasis (enveloped inside the producer) — do not
-re-implement an expansion or multiply a raw one by hand. Read issue #23
-in full first; pinned module path: syntree/models/policy.py (per the
-issue body / STATUS.md module column); tests in tests/ (name not pinned
-by #23's body — follow the per-issue convention). Last verified code
-state: the S-V2-05 commits on 3d-synV2 (suite 347/347). #5, #6, #7, #9,
-#21, #38, #22 are implemented from scratch, locally verified, and CLOSED
-— do NOT redo the purge, the schema, the norms, the cosine cutoff
-envelope, the backbone, the GFlowNet state-space reconciliation, or the
-handle-selection head. Before coding, re-read issue #23 plus
-syntree/models/bipartite.py (BackboneOutput), syntree/models/
-handle_head.py (HandleSelectionOutput), and D-V2-004/D-V2-007/D-V2-008/
-D-V2-010/D-V2-011 in docs/agent/DECISIONS.md; confirm branch HEAD
-matches origin (push races possible). Parallel-safe alternatives if #23
-is taken: #8 MATH-02, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
-#32 TEST-01. After #23: #24 MODEL-04 still needs #11 (CHEM-01) and #8
-(MATH-02) plus #23.
+Next session: implement #8 MATH-02 (stable analytic Amos-ratio autograd
+for the von Mises circular torsion objective) — it is dependency-ready
+(deps: #5 only), it is the smallest remaining blocker of #24 MODEL-04 on
+the critical path (#24 → #25 → #26 → ...), and the S-V2-06 dependency
+review recommends it before #11 CHEM-01 (the other #24 blocker, a
+larger unit: 32-reaction registry + representative reagent/product
+tests per #45 §9.1). Read issue #8 in full first; module path per the
+STATUS table: syntree/models/ (von Mises mathematics; #45 §8.2 pins the
+bounded Amos approximation A(k) ≈ kappa / (0.5 + sqrt(kappa^2 + 2.25))
+and demands comparison against a trusted numerical reference over the
+relevant range, forward and backward, plus large/small-kappa behavior).
+#24 becomes dependency-ready once BOTH #8 and #11 are closed. Last
+verified code state: S-V2-06 commits on 3d-synV2 (suite 405/405; HEAD
+of this session's docs commit). #5, #6, #7, #9, #21, #22, #23, #38 are
+implemented from scratch, locally verified, and CLOSED — do NOT redo
+the purge, the schema, the norms, the cosine cutoff envelope, the
+backbone, the GFlowNet state-space reconciliation, the handle-selection
+head, or the cross-attention decoder. Before coding, re-read issue #8
+plus D-V2-004/D-V2-005 (numerical policy: no clamps, fail loudly) and
+syntree/models/equivariant.py (the #7 precedent for math-primitive
+modules and their test style); confirm branch HEAD matches origin (push
+races possible). Parallel-safe alternatives if #8 is taken: #10 MATH-04,
+#11 CHEM-01, #14 CHEM-04, #16 DATA-01, #32 TEST-01. #36 OPS-01 remains
+gated on user authorization (Colab SSH). For #24 (once ready): consume
+DecoderOutput.context [B, 256] (syntree/models/policy.py) + the per-row
+HandleSelectionOutput.handle_embeddings; NOTE the closing LayerNorm —
+each context row sums to the constant sum(beta), so head losses must be
+per-component weighted (context.sum() has exactly zero gradient; see
+tests/test_cross_attention_decoder.py header note and D-V2-012).
 ```
 
 ## 2. Binding context for every future session
@@ -55,18 +58,33 @@ is taken: #8 MATH-02, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
   `tests/test_mathematical_singularities.py` (#7),
   `syntree/models/bipartite.py` + `tests/test_bipartite_painn.py` (#21),
   `syntree/models/handle_head.py` + `tests/test_handle_selection.py`
-  (#22), `syntree/models/policy.py` (#23/#25, module not yet created),
-  and — new from #9 — the envelope module
-  `syntree/models/cutoff.py::continuous_cosine_envelope` with tests
-  `tests/test_cosine_cutoff.py`.
+  (#22), `syntree/models/policy.py` (#23/#25; #23 delivered
+  `CrossAttentionDecoderLayer` / `CrossAttentionDecoder` /
+  `DecoderOutput` there with tests `tests/test_cross_attention_decoder.py`)
+  and `syntree/models/cutoff.py::continuous_cosine_envelope` with tests
+  `tests/test_cosine_cutoff.py` (#9).
 - Backbone contract highlights (D-V2-007/D-V2-008/D-V2-011):
   `GaussianRadialBasis` emits the 20-Gaussian expansion MULTIPLIED by the
   continuous cosine cutoff envelope — integrated inside the producer,
-  unconditionally (no raw expansion exists anywhere in V2; #23 must route
-  its spatial RBF through it); the backbone accepts FP32 (production) and
+  unconditionally (no raw expansion exists anywhere in V2; #23 resolved
+  D-V2-011's conditional decoder clause by routing NO distances at all —
+  decision D-V2-012); the backbone accepts FP32 (production) and
   FP64 (local verification only, must match module dtype);
   `build_union_radius_graph` is the one authoritative edge construction —
   downstream heads must reuse it, not re-implement it.
+- Decoder contract highlights (D-V2-012, `syntree/models/policy.py`):
+  dense interface `forward(query [B, 1, 256], memory [B, N, 256],
+  key_padding_mask [B, N] bool) -> DecoderOutput` with `context
+  [B, 256]`; V2-native `forward_state(backbone, handle)` builds the query
+  from `pooled_handle_context` + `graph_context` + `pocket_context` (one
+  authoritative embedding chain — never a second pocket/handle encoder);
+  padded columns get exactly-zero attention and outputs are
+  bit-identical under pad junk; fully-padded graphs fail closed; the
+  module projects no spatial distances (any future distance bias MUST
+  route through `GaussianRadialBasis`); frozen profile 1,219,328 params;
+  **closing LayerNorm caveat for #24/#25**: each context row sums to the
+  constant sum(β), so plain `context.sum()` has zero gradient — head
+  losses must be per-component weighted.
 
 ## 3. What the next agent must NOT redo
 
@@ -119,6 +137,21 @@ is taken: #8 MATH-02, #10 MATH-04, #11 CHEM-01, #14 CHEM-04, #16 DATA-01,
   `AssemblyAction.handle_atom_idx`). The 64-D descriptor *producer* is
   owned by #12/#40; sampling/greedy utilities by #25. Do not reimplement
   or bypass it.
+- The two-layer stacked cross-attention decoder (#23, D-V2-012):
+  `syntree/models/policy.py` (`CrossAttentionDecoderLayer` with the
+  issue-pinned MHA(256/8/0.1) + FFN 256→512→SiLU→Dropout→512→256 +
+  pre-LN residuals; `CrossAttentionDecoder` with the dense
+  `[B, 1, 256] × [B, N, 256] + key_padding_mask → [B, 256]` interface
+  and `forward_state(backbone, handle)`; `DecoderOutput`; frozen
+  profile = 1,219,328 params; SE(3)-invariant end-to-end 8.882e-16 /
+  4.768e-07); 58 tests in `tests/test_cross_attention_decoder.py` pin
+  the contract (exact masking, bit-identical under pad junk, fail-closed
+  matrix, permutation/batch-composition invariance, gradient
+  connectivity without cross-graph leaks). The decoder projects NO
+  spatial distances (D-V2-012) — do not add a raw distance expansion; a
+  future distance bias must route through `GaussianRadialBasis`. The
+  closing LayerNorm makes each `context` row sum to `sum(β)` — head
+  losses must be per-component weighted. Do not reimplement or bypass it.
 - The reconciled two-level GFlowNet engine layer (#38 close, D-V2-009):
   `syntree/engine/environment.py` (discrete Assembly MDP with deterministic
   bin-centre geometry + terminal reward oracle: coarse-scan-seeded Brent
@@ -164,8 +197,8 @@ requested; #36 gate). No V2 checkpoints exist. No HF artifacts synced.
    https://download.pytorch.org/whl/cpu && pip install -e ".[test]" &&
    pip install torch_geometric`.
 3. Baseline the suite: `python -m pytest tests/ -q` — expected results
-   recorded in §1 (347/347 as of S-V2-05; the cosine-cutoff suite adds
-   46 tests to the 301 of S-V2-04).
+   recorded in §1 (405/405 as of S-V2-06; the cross-attention decoder
+   suite adds 58 tests to the 347 of S-V2-05).
 4. Work per the #45 §18 per-issue protocol; end with the mandatory git
    diff review, commit+push (report exact SHAs), issue update, and
    refreshed handoff.

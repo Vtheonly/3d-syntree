@@ -36,8 +36,8 @@
 | #20 DATA-05 | #19 | #26 |
 | #21 MODEL-01 | #6, #7 | #23, #24, #39 |
 | #22 MODEL-02 | #6, #21 | #23 — **closed 2026-11-01**: `syntree/models/handle_head.py` + 44 tests (D-V2-010) |
-| #23 MODEL-03 | #9, #21, #22 — **#9 closed 2026-11-01**: `syntree/models/cutoff.py` + 46 tests + `GaussianRadialBasis` integration (D-V2-011); all three deps now satisfied | #24, #39 |
-| #24 MODEL-04 | #11, #8, #23 | #25, #29, #38, #42 |
+| #23 MODEL-03 | #9, #21, #22 — **closed 2026-11-01 (session S-V2-06)**: `syntree/models/policy.py` + 58 tests (D-V2-012); all three deps were closed and inspected before implementation | #24, #39 |
+| #24 MODEL-04 | #11, #8, #23 — **#23 closed 2026-11-01** (`syntree/models/policy.py`, D-V2-012); remaining open deps: #11, #8 | #25, #29, #38, #42 |
 | #25 MODEL-05 | #21, #22, #23, #24, #39* | #26, #29 |
 | #26 TRAIN-01 | #10, #19, #20, #25 | #27, #33, #43 |
 | #27 TRAIN-02 | #26 | #28 |
@@ -83,26 +83,26 @@ with the chemistry/data spur feeding in earlier:
 ## 3. Dependency-READY set (against the clean-room codebase)
 
 With #5 (foundation), #6 (schema), #7 (norms), #9 (cosine cutoff
-envelope), #21 (backbone), #38 (state-space semantics), and #22
-(handle-selection head) implemented and verified (sessions S-V2-01 /
-S-V2-02 / S-V2-03 / S-V2-04 / S-V2-05), the engine layer of the
-reconciled two-level GFlowNet framework also exists (`syntree/engine/`,
-D-V2-009):
+envelope), #21 (backbone), #22 (handle-selection head), #23
+(cross-attention decoder) implemented and verified (sessions S-V2-01 /
+S-V2-02 / S-V2-03 / S-V2-04 / S-V2-05 / S-V2-06), and #38 closed with
+its state-space spec, the engine layer of the reconciled two-level
+GFlowNet framework also exists (`syntree/engine/`, D-V2-009):
 
-- **#23 MODEL-03** (cross-attention decoder) — **now the critical-path
-  recommendation**: all three dependencies (#9, #21, #22) are closed and
-  their deliverables inspected; it consumes
-  `HandleSelectionOutput.handle_embeddings` / `pooled_handle_context` as
-  its handle-side surface and must route its spatial RBF through
-  `GaussianRadialBasis` (enveloped per D-V2-011) instead of
-  re-implementing an expansion.
-- **#8 MATH-02**, **#10 MATH-04**, **#11 CHEM-01**, **#14 CHEM-04**,
-  **#16 DATA-01**, **#32 TEST-01** — depend on #5 only; parallel-safe.
+- **#8 MATH-02** (analytic Amos-ratio autograd for the von Mises loss) —
+  **now the recommended next critical-path task**: depends on #5 only,
+  and together with #11 it is the last blocker of #24 MODEL-04 on the
+  critical path (#24 → #25 → #26 → …).
+- **#11 CHEM-01** (certified 32-reaction taxonomy) — the other #24
+  blocker; dependency-ready; a larger unit of work (reaction registry +
+  representative reagent/product tests per #45 §9.1).
+- **#10 MATH-04**, **#14 CHEM-04**, **#16 DATA-01**, **#32 TEST-01** —
+  depend on #5 only; parallel-safe.
 - **#36 OPS-01** — no code dependency, but the remote-Colab part is gated
   on the **user's** authentication/authorization: prepare the workflow,
   never claim a connection.
 
-#24 MODEL-04 becomes ready once #11, #8 and #23 land.
+#24 MODEL-04 becomes ready once #11 and #8 land (#23 is done).
 
 ## 4. External (non-issue) dependencies
 
