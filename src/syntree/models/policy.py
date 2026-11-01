@@ -161,9 +161,11 @@ from syntree.chemistry.reactions import POLICY_REACTIONS, REACTION_FAMILIES
 from syntree.models.bipartite import (
     BACKBONE_HIDDEN_DIM,
     BackboneOutput,
+    BipartitePaiNN,
 )
 from syntree.models.handle_head import (
     HANDLE_HEAD_HIDDEN_DIM,
+    HandleSelectionHead,
     HandleSelectionOutput,
 )
 from syntree.models.torsion_head import (
@@ -174,6 +176,8 @@ from syntree.models.torsion_head import (
     TorsionOutput,
 )
 from syntree.utils.hardware import (
+    LOGIT_MASK_FILL,
+    LOGIT_MASK_LEGAL_ABOVE,
     HardwareError,
     apply_logit_mask,
     validate_target_actions,
@@ -219,6 +223,17 @@ __all__ = [
     "SynthonRetrievalHead",
     "ChiralParityHead",
     "HierarchicalPolicyHeads",
+    # -- issue #25 MODEL-05: the assembly + the #39 seed/anchor component --
+    "MAX_POCKET_ANCHORS",
+    "ANCHOR_MIN_SEPARATION",
+    "SYNTREE_POLICY_PARAMETER_PROFILE",
+    "pocket_anchor_candidates",
+    "batched_pocket_anchor_candidates",
+    "aggregate_anchor_features",
+    "SeedAnchorOutput",
+    "SeedAnchorHead",
+    "PolicyStateOutput",
+    "SynTreePolicy",
 ]
 
 # ---------------------------------------------------------------------------
@@ -2789,4 +2804,1103 @@ HIERARCHICAL_HEADS_PARAMETER_PROFILE = (
     + (TORSION_HEAD_CONTEXT_DIM // 2 * TORSION_BINS + TORSION_BINS)  # torsion logits
     + (TORSION_HEAD_CONTEXT_DIM // 2 * 2 + 2)  # torsion mu_xy
     + (TORSION_HEAD_CONTEXT_DIM // 2 * 1 + 1)  # torsion kappa
+)
+
+
+# ===========================================================================
+# Issue #25 MODEL-05 — Complete policy assembly (SynTreePolicy) with the
+# #39 seed/anchor selection component.
+#
+# The assembly unifies, in one registered module with one audit:
+#
+#   * the single authoritative ``BipartitePaiNN`` backbone (#21; frozen
+#     256/8/20/5.0 profile, activation checkpointing ON by default),
+#   * the agency-enabled handle-selection head (#22),
+#   * the two-layer stacked cross-attention decoder (#23),
+#   * the decoupled hierarchical policy heads of #24 (termination, family,
+#     reaction, synthon retrieval with the tied catalog table, parity,
+#     torsion),
+#   * the #39 seed/anchor selection component: a deterministic
+#     rotation-equivariant pocket-anchor candidate generator plus a
+#     factorized ``P(anchor | pocket) * P(seed | anchor, pocket)`` head
+#     whose seed side scores through the SAME tied catalog embedding table
+#     (one authoritative synthon representation, counted once).
+#
+# Parameter-budget reconciliation (decision D-V2-019): issue #25's
+# ``~4.8M`` estimate predates the frozen per-issue profiles; the closed and
+# verified profiles of #21 (5,999,104), #22 (224,896), #23 (1,219,328) and
+# #24 (3,272,975) are authoritative under #45 §5.2 (dimensions frozen in
+# version-controlled configuration, never re-derived to hit an estimate).
+# The BINDING acceptance criterion — total parameter memory < 50 MB — is
+# satisfied with margin: 10,880,719 parameters = 43.5 MB FP32.
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# The deterministic pocket-anchor candidate generator (#39 component 1)
+# ---------------------------------------------------------------------------
+
+#: Default maximum anchor candidates per pocket (#39 acceptance: "the
+#: environment can enumerate multiple valid seed/anchor candidates").
+MAX_POCKET_ANCHORS = 8
+
+#: Default minimum separation (Angstrom) between distinct anchor atoms —
+#: two pocket atoms closer than this never seed separate anchors, so a
+#: single contiguous subpocket yields one anchor, while separated
+#: subpockets yield one anchor each (the multi-subpocket criterion).
+ANCHOR_MIN_SEPARATION = 4.0
+
+
+def pocket_anchor_candidates(
+    pocket_pos: torch.Tensor,
+    pocket_z: torch.Tensor,
+    pocket_charge: torch.Tensor,
+    *,
+    max_anchors: int = MAX_POCKET_ANCHORS,
+    min_separation: float = ANCHOR_MIN_SEPARATION,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Deterministic anchor decomposition of ONE pocket (#39).
+
+    Farthest-point selection over the pocket atoms with strictly
+    rotation-invariant criteria and tie-breaks:
+
+    * the first anchor is the atom farthest from the pocket centroid
+      (tie-break: lower charge, then lower atomic number, then lower atom
+      index — all invariant under rigid motions of a fixed atom list);
+    * each subsequent anchor is the atom maximizing the minimum distance
+      to the already-selected anchors (same tie-break order), stopping at
+      ``max_anchors`` or when the best remaining separation falls below
+      ``min_separation``;
+    * every pocket atom is assigned to its nearest anchor atom (ties to
+      the lower anchor index), and each anchor's *position* is the
+      centroid of its assigned atoms.
+
+    The output is therefore **equivariant**: rotating/translating the
+    pocket rotates/translates the anchor positions and leaves the
+    assignment bit-identical (pinned by test) — which is what makes the
+    learned anchor scoring exactly SE(3)-invariant.
+
+    Returns ``(anchor_positions [M, 3], assignment [N_p] int64)`` where
+    ``assignment[i]`` is atom ``i``'s anchor index in ``[0, M)`` and
+    ``M >= 1`` for any non-empty pocket.
+    """
+    if not isinstance(pocket_pos, torch.Tensor) or pocket_pos.ndim != 2:
+        raise TensorContractError(
+            f"[anchors] pocket_pos must be [N, 3], got {type(pocket_pos).__name__}"
+        )
+    if tuple(pocket_pos.shape)[1] != 3:
+        raise TensorContractError(
+            f"[anchors] pocket_pos must be [N, 3], got {tuple(pocket_pos.shape)}"
+        )
+    num_atoms = int(pocket_pos.shape[0])
+    if num_atoms == 0:
+        raise TensorContractError(
+            "[anchors] an empty pocket has no anchor candidates (fail-closed)"
+        )
+    if not isinstance(pocket_z, torch.Tensor) or pocket_z.shape != (num_atoms,):
+        raise TensorContractError("[anchors] pocket_z must be [N]")
+    if not isinstance(pocket_charge, torch.Tensor) or pocket_charge.shape != (
+        num_atoms,
+    ):
+        raise TensorContractError("[anchors] pocket_charge must be [N]")
+    if not bool(torch.isfinite(pocket_pos).all()):
+        raise TensorContractError("[anchors] pocket_pos contains non-finite values")
+    if not bool(torch.isfinite(pocket_charge).all()):
+        raise TensorContractError("[anchors] pocket_charge contains non-finite values")
+    max_anchors = int(max_anchors)
+    min_separation = float(min_separation)
+    if max_anchors < 1:
+        raise TensorContractError(f"[anchors] max_anchors must be >= 1, got {max_anchors}")
+    if not (min_separation > 0.0):
+        raise TensorContractError(
+            f"[anchors] min_separation must be > 0, got {min_separation}"
+        )
+
+    pos = pocket_pos.to(torch.float64)
+    charge = pocket_charge.to(torch.float64)
+    z = pocket_z.to(torch.float64)
+
+    # Invariant tie-break order: (charge, atomic number, atom index).
+    order = sorted(
+        range(num_atoms), key=lambda i: (float(charge[i]), float(z[i]), i)
+    )
+
+    centroid = pos.mean(dim=0)
+    dist_to_centroid = (pos - centroid).norm(dim=-1)
+
+    selected: List[int] = []
+    # First anchor: farthest from the centroid under the tie-break order.
+    best_key, best_val = None, -1.0
+    for i in order:
+        value = float(dist_to_centroid[i])
+        if value > best_val:
+            best_key, best_val = i, value
+    selected.append(best_key)
+
+    # Subsequent anchors: maximize the minimum distance to the selection.
+    min_dist = (pos - pos[selected[0]]).norm(dim=-1)
+    while len(selected) < max_anchors:
+        best_key, best_val = None, -1.0
+        for i in order:
+            if i in selected:
+                continue
+            value = float(min_dist[i])
+            if value > best_val:
+                best_key, best_val = i, value
+        if best_key is None or best_val < min_separation:
+            break
+        selected.append(best_key)
+        dist_new = (pos - pos[best_key]).norm(dim=-1)
+        min_dist = torch.minimum(min_dist, dist_new)
+
+    # Assignment: nearest anchor atom (ties -> the lower anchor index).
+    anchor_atoms = torch.tensor(selected, dtype=torch.long, device=pos.device)
+    distances = torch.cdist(pos, pos.index_select(0, anchor_atoms))  # [N, M]
+    assignment = torch.argmin(distances, dim=-1).to(torch.int64)
+
+    # Anchor positions: centroids of the assigned atoms.
+    num_anchors = len(selected)
+    positions = torch.zeros((num_anchors, 3), dtype=torch.float64)
+    counts = torch.zeros((num_anchors,), dtype=torch.float64)
+    positions.index_add_(0, assignment, pos)
+    counts.index_add_(
+        0, assignment, torch.ones(num_atoms, dtype=torch.float64)
+    )
+    if bool((counts == 0).any()):
+        # Cannot happen (every anchor atom assigns to itself), but fail
+        # loudly rather than emit NaN centroids.
+        raise TensorContractError("[anchors] an anchor captured no atoms")
+    positions = positions / counts.unsqueeze(-1)
+    return (
+        positions.to(pocket_pos.dtype),
+        assignment,
+    )
+
+
+def batched_pocket_anchor_candidates(
+    pocket_pos: torch.Tensor,
+    pocket_z: torch.Tensor,
+    pocket_charge: torch.Tensor,
+    pocket_batch: torch.Tensor,
+    num_graphs: int,
+    *,
+    max_anchors: int = MAX_POCKET_ANCHORS,
+    min_separation: float = ANCHOR_MIN_SEPARATION,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The per-graph flattening of :func:`pocket_anchor_candidates`.
+
+    Returns ``(anchor_positions [M, 3], anchor_batch [M] int64,
+    assignment [N_p] int64, anchor_counts [B] int64)`` where
+    ``assignment[i]`` is pocket atom ``i``'s LOCAL anchor index within its
+    own graph and ``M = anchor_counts.sum()``.
+    """
+    num_pocket = int(pocket_pos.shape[0])
+    if int(pocket_batch.shape[0]) != num_pocket:
+        raise TensorContractError("[anchors] pocket_batch must match pocket rows")
+    if num_pocket:
+        observed = int(pocket_batch.max().item()) + 1
+        if observed != num_graphs:
+            raise TensorContractError(
+                f"[anchors] pocket_batch implies {observed} graphs, expected {num_graphs}"
+            )
+    positions_all, batch_all, assign_all, counts = [], [], [], []
+    for g in range(num_graphs):
+        rows = torch.nonzero(pocket_batch == g, as_tuple=False).flatten()
+        if rows.numel() == 0:
+            raise TensorContractError(
+                f"[anchors] graph {g} has an empty pocket (fail-closed)"
+            )
+        pos, assign = pocket_anchor_candidates(
+            pocket_pos.index_select(0, rows),
+            pocket_z.index_select(0, rows),
+            pocket_charge.index_select(0, rows),
+            max_anchors=max_anchors,
+            min_separation=min_separation,
+        )
+        positions_all.append(pos)
+        batch_all.append(torch.full((pos.shape[0],), g, dtype=torch.int64))
+        assign_all.append(assign)
+        counts.append(pos.shape[0])
+    return (
+        torch.cat(positions_all),
+        torch.cat(batch_all),
+        torch.cat(assign_all) if num_pocket else torch.zeros(0, dtype=torch.int64),
+        torch.tensor(counts, dtype=torch.int64),
+    )
+
+
+def aggregate_anchor_features(
+    backbone: BackboneOutput,
+    assignment: torch.Tensor,
+    anchor_batch: torch.Tensor,
+) -> torch.Tensor:
+    """Per-anchor mean of the backbone pocket-scalar features.
+
+    The invariant anchor feature ``f_m = mean(s_i : atom i assigned to
+    anchor m)`` — a rigid-motion-invariant summary of the anchor's
+    chemical neighborhood in the learned representation (#39's
+    "geometric/chemical features" consumed by the scoring head).
+    """
+    num_pocket = backbone.num_pocket
+    if assignment.shape != (num_pocket,):
+        raise TensorContractError(
+            f"[anchors] assignment must be [{num_pocket}], got "
+            f"{tuple(assignment.shape)}"
+        )
+    if assignment.dtype not in (torch.int64, torch.int32):
+        raise TensorContractError("[anchors] assignment must be integer")
+    num_anchors = int(anchor_batch.shape[0])
+    if num_anchors == 0:
+        raise TensorContractError("[anchors] no anchor rows (fail-closed)")
+    device = backbone.scalar.device
+    assignment = assignment.long().to(device)
+    anchor_batch = anchor_batch.long().to(device)
+    if bool((assignment < 0).any()):
+        raise TensorContractError("[anchors] negative assignment indices")
+    # Flat anchor row index per pocket atom (offset per graph).
+    offsets = torch.zeros(
+        (backbone.num_graphs + 1,), dtype=torch.long, device=device
+    )
+    counts_per_graph = torch.bincount(
+        anchor_batch, minlength=backbone.num_graphs
+    ).to(torch.long)
+    offsets[1:] = torch.cumsum(counts_per_graph, dim=0)
+    pocket_batch = backbone.node_batch[:num_pocket].long()
+    flat = offsets[pocket_batch] + assignment  # [N_p] global anchor row
+    if bool((flat >= num_anchors).any()) or bool((flat < 0).any()):
+        raise TensorContractError(
+            "[anchors] assignment references an anchor outside its graph "
+            "(fail-closed cross-field validation)"
+        )
+    # Cross-graph consistency: every atom's flat anchor must belong to the
+    # atom's own graph (an assignment crossing graphs is a wiring error).
+    if bool((anchor_batch.index_select(0, flat) != pocket_batch).any()):
+        raise TensorContractError(
+            "[anchors] a pocket atom is assigned to an anchor of another "
+            "graph (fail-closed cross-field validation)"
+        )
+    dim = backbone.scalar.size(1)
+    features = torch.zeros(
+        (num_anchors, dim), dtype=backbone.scalar.dtype, device=device
+    )
+    counts = torch.zeros(
+        (num_anchors,), dtype=backbone.scalar.dtype, device=device
+    )
+    features.index_add_(0, flat, backbone.pocket_scalar)
+    counts.index_add_(
+        0, flat, torch.ones(num_pocket, dtype=backbone.scalar.dtype, device=device)
+    )
+    if bool((counts == 0).any()):
+        raise TensorContractError(
+            "[anchors] an anchor captured no pocket atoms (fail-closed)"
+        )
+    return features / counts.unsqueeze(-1)
+
+
+# ---------------------------------------------------------------------------
+# The seed/anchor output and head (#39 component 2, policy-side)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SeedAnchorOutput:
+    """The explicit initial action ``a_seed = (B_0, h_0)`` (#39).
+
+    The probability measure is a rigorously factorized conditional —
+    ``P(a_seed | pocket) = P(anchor | pocket) * P(seed | anchor, pocket)``
+    — with both stages strictly categorical and dimensionless, so the
+    seed action joins the GFlowNet forward log-probability exactly like
+    every other action component (constitution §12.3: the forward
+    probability includes the seed action).
+
+    Fields (anchor stage, flat per-graph rows like the #22 handle head):
+        anchor_logits / anchor_log_probs / anchor_probs: ``[M]`` — the
+            per-graph normalized law over that graph's anchor candidates.
+        anchor_graph: ``[M]`` int64; anchor_counts: ``[B]`` int64.
+        selected_anchor_row: ``[B]`` int64 flat row of the selection (or
+            ``-1`` for a distribution-only pass).
+        anchor_selected_log_prob: ``[B]`` — the TB forward contribution
+            of the anchor component.
+
+    Fields (seed stage, dense per graph):
+        seed_logits / seed_log_probs / seed_probs: ``[B, K]`` — the law
+            over the seed-eligible catalog entries conditioned on the
+            selected anchor.
+        selected_seed: ``[B]`` int64 (``-1`` for a distribution-only
+            pass); seed_selected_log_prob: ``[B]``.
+        retrieved_embedding: ``[B, embed_dim]`` — the tied catalog
+            embedding of the selected seed (the t=0 conditioning surface).
+    """
+
+    anchor_logits: torch.Tensor  # [M]
+    anchor_log_probs: torch.Tensor  # [M]
+    anchor_probs: torch.Tensor  # [M]
+    anchor_graph: torch.Tensor  # [M] int64
+    anchor_counts: torch.Tensor  # [B] int64
+    selected_anchor_row: torch.Tensor  # [B] int64
+    anchor_selected_log_prob: torch.Tensor  # [B]
+    seed_logits: torch.Tensor  # [B, K]
+    seed_log_probs: torch.Tensor  # [B, K]
+    seed_probs: torch.Tensor  # [B, K]
+    selected_seed: torch.Tensor  # [B] int64
+    seed_selected_log_prob: torch.Tensor  # [B]
+    retrieved_embedding: torch.Tensor  # [B, embed_dim]
+    num_graphs: int
+
+    @property
+    def catalog_size(self) -> int:
+        return int(self.seed_log_probs.size(1))
+
+    def step_log_prob(self) -> torch.Tensor:
+        """The TB forward log-probability of the seed action ``[B]``.
+
+        The seed step's backward term is the zero-leaf special case the
+        TB engine already accepts (``num_leaves = 0`` semantics of a seed
+        step — see ``AssemblyEnvironment.reset``'s docstring and
+        ``MDP_STATE_SPACE.md``).
+        """
+        return self.anchor_selected_log_prob + self.seed_selected_log_prob
+
+
+class SeedAnchorHead(nn.Module):
+    """The learnable seed-fragment and pocket-anchor selection (#39).
+
+    Two strictly categorical stages over the decoder-facing pocket
+    context (the #23 addendum's explicitly allowed consumer):
+
+    * **anchor stage** — ``P(h_0 | pocket)``: a scaled dot-product score
+      between a query projected from the backbone's invariant
+      ``pocket_context`` ``[B, d]`` and keys projected from the invariant
+      per-anchor features ``f_m`` (means of the backbone pocket scalars
+      over each anchor's assigned atoms), normalized per graph over that
+      graph's candidates with the pinned logit-mask machinery;
+    * **seed stage** — ``P(B_0 | h_0, pocket)``: a query projected from
+      ``[pocket_context ; selected-anchor feature]`` scored against the
+      **tied catalog embedding table** (the single authoritative synthon
+      representation, shared with :class:`SynthonRetrievalHead` — the
+      same module instance, parameters counted once in any assembly),
+      masked to the seed-eligible entries.
+
+    Invalid seed/anchor combinations are masked exactly like every other
+    categorical: the anchor stage carries a per-row legality mask, and
+    the seed stage's mask is the composition of the seed-eligibility mask
+    with the selected anchor's combination mask (caller-supplied; the
+    class-political note is that class-level masks are prefilters, the
+    environment enforces exact chemistry).
+
+    Args:
+        context_dim: width of the consumed pocket context and anchor
+            features (the frozen backbone width, 256).
+        embed_dim: width of the tied catalog embeddings (64).
+        catalog_size: number of catalog entries (50,000).
+        catalog_embeddings: an optional externally-owned tied table
+            (:class:`nn.Embedding(catalog_size, embed_dim)`); when the
+            assembly wires the synthon head's table here, the two heads
+            share one representation and the parameters register once.
+    """
+
+    def __init__(
+        self,
+        context_dim: int = DECODER_D_MODEL,
+        embed_dim: int = SYNTON_EMBED_DIM,
+        catalog_size: int = SYNTON_CATALOG_SIZE,
+        catalog_embeddings: Optional[nn.Embedding] = None,
+    ) -> None:
+        super().__init__()
+        context_dim = int(context_dim)
+        embed_dim = int(embed_dim)
+        catalog_size = int(catalog_size)
+        if context_dim < 1:
+            raise ValueError(f"context_dim must be >= 1, got {context_dim}")
+        if embed_dim < 1:
+            raise ValueError(f"embed_dim must be >= 1, got {embed_dim}")
+        if catalog_size < 1:
+            raise ValueError(f"catalog_size must be >= 1, got {catalog_size}")
+        self.context_dim = context_dim
+        self.embed_dim = embed_dim
+        self.catalog_size = catalog_size
+        self.anchor_query = nn.Linear(context_dim, context_dim)
+        self.anchor_key = nn.Linear(context_dim, context_dim)
+        self.seed_query = nn.Linear(2 * context_dim, embed_dim)
+        self._catalog_embeddings_shared = catalog_embeddings is not None
+        if catalog_embeddings is None:
+            self.catalog_embeddings = nn.Embedding(catalog_size, embed_dim)
+        else:
+            if (
+                catalog_embeddings.num_embeddings != catalog_size
+                or catalog_embeddings.embedding_dim != embed_dim
+            ):
+                raise ValueError(
+                    "the tied catalog table must be "
+                    f"nn.Embedding({catalog_size}, {embed_dim}), got "
+                    f"({catalog_embeddings.num_embeddings}, "
+                    f"{catalog_embeddings.embedding_dim})"
+                )
+            self.catalog_embeddings = catalog_embeddings
+
+    def extra_repr(self) -> str:
+        return (
+            f"context_dim={self.context_dim}, embed_dim={self.embed_dim}, "
+            f"catalog_size={self.catalog_size}"
+        )
+
+    def audit(self) -> Dict[str, Any]:
+        parameters = list(self.parameters())
+        table_params = self.catalog_size * self.embed_dim
+        return {
+            "module": type(self).__name__,
+            "context_dim": self.context_dim,
+            "embed_dim": self.embed_dim,
+            "catalog_size": self.catalog_size,
+            "num_parameters": sum(p.numel() for p in parameters),
+            "num_trainable_parameters": sum(
+                p.numel() for p in parameters if p.requires_grad
+            ),
+            "all_parameters_trainable": all(p.requires_grad for p in parameters),
+            "own_parameters_excluding_catalog_table": sum(p.numel() for p in parameters)
+            - table_params,
+            "catalog_table_parameters": table_params,
+            "tied_catalog_table_shared": self._catalog_embeddings_shared,
+            "factorization": "P(anchor|pocket) * P(seed|anchor,pocket)",
+            "tb_probability_measures": {
+                "anchor": "categorical_per_pocket",
+                "seed": "categorical_K_anchor_conditional",
+            },
+            "deterministic_in_eval": True,
+        }
+
+    # -- stage 1: the anchor law ----------------------------------------------
+
+    def forward_anchor(
+        self,
+        pocket_context: torch.Tensor,
+        anchor_features: torch.Tensor,
+        anchor_graph: torch.Tensor,
+        anchor_mask: Optional[torch.Tensor] = None,
+        selected_anchor_row: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """``P(h_0 | pocket)`` over each graph's anchor candidates.
+
+        Parameters:
+            pocket_context: ``[B, context_dim]`` — the backbone's
+            invariant pocket summary.
+            anchor_features: ``[M, context_dim]`` — the per-anchor mean
+            pocket-scalar features (:func:`aggregate_anchor_features`).
+            anchor_graph: ``[M]`` int64 graph assignment.
+            anchor_mask: ``[M]`` bool legality (``True`` = illegal).
+            selected_anchor_row: ``[B]`` int64 flat row of the
+            supervised/sampled anchor (``-1`` = distribution-only).
+        """
+        pocket_context = _validate_context(
+            pocket_context,
+            self.context_dim,
+            self.anchor_query.weight.dtype,
+            "seed-anchor",
+        )
+        num_graphs = pocket_context.size(0)
+        num_anchors = int(anchor_features.shape[0])
+        if anchor_features.shape != (num_anchors, self.context_dim):
+            raise TensorContractError(
+                f"[seed-anchor] anchor_features must be [M, {self.context_dim}], "
+                f"got {tuple(anchor_features.shape)}"
+            )
+        if anchor_features.dtype != pocket_context.dtype:
+            raise TensorContractError(
+                "[seed-anchor] anchor_features dtype must match the pocket context"
+            )
+        if not bool(torch.isfinite(anchor_features).all()):
+            raise TensorContractError(
+                "[seed-anchor] anchor_features contains non-finite values"
+            )
+        if anchor_graph.dtype not in (torch.int64, torch.int32) or anchor_graph.shape != (
+            num_anchors,
+        ):
+            raise TensorContractError("[seed-anchor] anchor_graph must be [M] int")
+        anchor_graph = anchor_graph.long().to(pocket_context.device)
+        if bool((anchor_graph < 0).any()) or bool((anchor_graph >= num_graphs).any()):
+            raise TensorContractError("[seed-anchor] anchor_graph out of range")
+        if anchor_mask is None:
+            anchor_mask = torch.zeros(
+                num_anchors, dtype=torch.bool, device=pocket_context.device
+            )
+        else:
+            if anchor_mask.dtype != torch.bool or anchor_mask.shape != (num_anchors,):
+                raise TensorContractError("[seed-anchor] anchor_mask must be [M] bool")
+            anchor_mask = anchor_mask.to(pocket_context.device)
+        selected_anchor_row = _validate_index_vector(
+            selected_anchor_row,
+            num_graphs,
+            num_anchors,
+            "seed-anchor",
+            "selected_anchor_row",
+            allow_sentinel=-1,
+        )
+        if selected_anchor_row is None:
+            selected_anchor_row = torch.full(
+                (num_graphs,), -1, dtype=torch.int64, device=pocket_context.device
+            )
+        else:
+            selected_anchor_row = selected_anchor_row.to(pocket_context.device)
+
+        # Per-graph legality: a graph with ALL anchors masked has no valid
+        # seed placement — fail closed (never a silent uniform).
+        for g in range(num_graphs):
+            rows = anchor_graph == g
+            if rows.numel() == 0:
+                raise TensorContractError(
+                    f"[seed-anchor] graph {g} has no anchor candidates "
+                    "(fail-closed: generate candidates first)"
+                )
+            if bool(anchor_mask[rows].all()):
+                raise TensorContractError(
+                    f"[seed-anchor] graph {g} has no legal anchor candidate "
+                    "(fail-closed)"
+                )
+
+        query = self.anchor_query(pocket_context)  # [B, d]
+        key = self.anchor_key(anchor_features)  # [M, d]
+        scores = (
+            query.index_select(0, anchor_graph) * key
+        ).sum(dim=-1) / math.sqrt(self.context_dim)  # [M]
+        # Flat single-action rows cannot route through apply_logit_mask's
+        # per-row no-legal-action guard (an individually masked anchor is
+        # legitimate — its graph has other legal candidates, checked
+        # above), so the pinned mask constant is applied here with the
+        # same fail-closed finiteness / poisoned-logit protections
+        # inlined (#10 D-V2-014 semantics).
+        if not bool(torch.isfinite(scores).all()):
+            raise HardwareError(
+                "[seed-anchor] anchor scores contain non-finite values (fail-closed)"
+            )
+        legal_scores = scores[~anchor_mask]
+        if bool((legal_scores <= LOGIT_MASK_LEGAL_ABOVE).any()):
+            raise HardwareError(
+                "[seed-anchor] a legal anchor score is at or below "
+                f"LOGIT_MASK_LEGAL_ABOVE ({LOGIT_MASK_LEGAL_ABOVE}): poisoned "
+                "scores would compete with the mask fill (fail-closed)"
+            )
+        scores = scores.masked_fill(anchor_mask, LOGIT_MASK_FILL)
+        # Segment log-softmax per graph (exact per-graph normalization,
+        # finite masked entries by construction).
+        max_per_graph = torch.full(
+            (num_graphs,), -float("inf"), dtype=scores.dtype, device=scores.device
+        )
+        max_per_graph.scatter_reduce_(
+            0, anchor_graph, scores, reduce="amax", include_self=True
+        )
+        shifted = scores - max_per_graph.index_select(0, anchor_graph)
+        exp = shifted.exp().masked_fill(anchor_mask, 0.0)
+        denom = torch.zeros(
+            (num_graphs,), dtype=scores.dtype, device=scores.device
+        )
+        denom.index_add_(0, anchor_graph, exp)
+        log_probs = shifted - denom.index_select(0, anchor_graph).log()
+        probs = log_probs.exp()
+
+        selected_log_prob = torch.full(
+            (num_graphs,),
+            float("nan"),
+            dtype=log_probs.dtype,
+            device=log_probs.device,
+        )
+        has_selection = selected_anchor_row >= 0
+        if bool(has_selection.any()):
+            rows = torch.nonzero(has_selection, as_tuple=False).flatten()
+            selected_log_prob = selected_log_prob.index_copy(
+                0,
+                rows,
+                log_probs.index_select(0, selected_anchor_row[rows]),
+            )
+        return {
+            "logits": scores,
+            "log_probs": log_probs,
+            "probs": probs,
+            "anchor_graph": anchor_graph,
+            "selected_anchor_row": selected_anchor_row,
+            "selected_log_prob": selected_log_prob,
+        }
+
+    # -- stage 2: the seed law ---------------------------------------------------
+
+    def forward_seed(
+        self,
+        pocket_context: torch.Tensor,
+        selected_anchor_feature: torch.Tensor,
+        seed_mask: Optional[torch.Tensor] = None,
+        selected_seed: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """``P(B_0 | h_0, pocket)`` over the seed-eligible catalog entries.
+
+        Parameters:
+            pocket_context: ``[B, context_dim]``.
+            selected_anchor_feature: ``[B, context_dim]`` — the feature of
+                the selected anchor (conditions the seed choice).
+            seed_mask: ``[B, K]`` bool legality — the composition of the
+                seed-eligibility mask with the selected anchor's
+                combination mask.
+            selected_seed: ``[B]`` int64 catalog index (``-1`` =
+                distribution-only).
+        """
+        pocket_context = _validate_context(
+            pocket_context,
+            self.context_dim,
+            self.seed_query.weight.dtype,
+            "seed-anchor",
+        )
+        num_graphs = pocket_context.size(0)
+        if (
+            not isinstance(selected_anchor_feature, torch.Tensor)
+            or selected_anchor_feature.shape != (num_graphs, self.context_dim)
+            or selected_anchor_feature.dtype != pocket_context.dtype
+        ):
+            raise TensorContractError(
+                f"[seed-anchor] selected_anchor_feature must be "
+                f"[{num_graphs}, {self.context_dim}] with the context dtype"
+            )
+        if not bool(torch.isfinite(selected_anchor_feature).all()):
+            raise TensorContractError(
+                "[seed-anchor] selected_anchor_feature contains non-finite values"
+            )
+        if seed_mask is None:
+            seed_mask = torch.zeros(
+                (num_graphs, self.catalog_size),
+                dtype=torch.bool,
+                device=pocket_context.device,
+            )
+        else:
+            if (
+                seed_mask.dtype != torch.bool
+                or tuple(seed_mask.shape) != (num_graphs, self.catalog_size)
+            ):
+                raise TensorContractError(
+                    f"[seed-anchor] seed_mask must be "
+                    f"[{num_graphs}, {self.catalog_size}] bool"
+                )
+            seed_mask = seed_mask.to(pocket_context.device)
+        selected_seed = _validate_index_vector(
+            selected_seed,
+            num_graphs,
+            self.catalog_size,
+            "seed-anchor",
+            "selected_seed",
+            allow_sentinel=-1,
+        )
+        if selected_seed is None:
+            selected_seed = torch.full(
+                (num_graphs,), -1, dtype=torch.int64, device=pocket_context.device
+            )
+        else:
+            selected_seed = selected_seed.to(pocket_context.device)
+
+        query = self.seed_query(
+            torch.cat((pocket_context, selected_anchor_feature), dim=-1)
+        )  # [B, embed_dim]
+        table = self.catalog_embeddings.weight  # [K, embed_dim]
+        logits = (query @ table.t()) * (1.0 / math.sqrt(self.embed_dim))  # [B, K]
+        logits = apply_logit_mask(logits, seed_mask)
+        log_probs = F.log_softmax(logits, dim=-1)
+        probs = log_probs.exp()
+
+        selected_log_prob = torch.full(
+            (num_graphs,), float("nan"), dtype=log_probs.dtype, device=log_probs.device
+        )
+        retrieved = torch.zeros(
+            (num_graphs, self.embed_dim),
+            dtype=pocket_context.dtype,
+            device=pocket_context.device,
+        )
+        has_selection = selected_seed >= 0
+        if bool(has_selection.any()):
+            rows = torch.nonzero(has_selection, as_tuple=False).flatten()
+            selected_log_prob = selected_log_prob.index_copy(
+                0,
+                rows,
+                log_probs.gather(1, selected_seed[rows].unsqueeze(-1)).squeeze(-1),
+            )
+            retrieved = retrieved.index_copy(
+                0, rows, self.catalog_embeddings(selected_seed[rows].long())
+            )
+        return {
+            "logits": logits,
+            "log_probs": log_probs,
+            "probs": probs,
+            "selected_seed": selected_seed,
+            "selected_log_prob": selected_log_prob,
+            "retrieved_embedding": retrieved,
+        }
+
+    # -- the teacher-forced one-shot ----------------------------------------------
+
+    def forward(
+        self,
+        pocket_context: torch.Tensor,
+        anchor_features: torch.Tensor,
+        anchor_graph: torch.Tensor,
+        anchor_mask: Optional[torch.Tensor] = None,
+        selected_anchor_row: Optional[torch.Tensor] = None,
+        seed_mask: Optional[torch.Tensor] = None,
+        selected_seed: Optional[torch.Tensor] = None,
+    ) -> SeedAnchorOutput:
+        """Teacher-forced evaluation of the full seed action.
+
+        The selected anchor conditions the seed stage; the selected
+        anchor's *feature* is gathered from ``anchor_features``.
+        """
+        anchor = self.forward_anchor(
+            pocket_context,
+            anchor_features,
+            anchor_graph,
+            anchor_mask,
+            selected_anchor_row,
+        )
+        num_graphs = pocket_context.size(0)
+        device = pocket_context.device
+        sel_rows = anchor["selected_anchor_row"]
+        if bool((sel_rows >= 0).all()):
+            selected_anchor_feature = anchor_features.index_select(0, sel_rows)
+        else:
+            selected_anchor_feature = torch.zeros(
+                (num_graphs, self.context_dim),
+                dtype=pocket_context.dtype,
+                device=device,
+            )
+        seed = self.forward_seed(
+            pocket_context,
+            selected_anchor_feature,
+            seed_mask,
+            selected_seed,
+        )
+        counts = torch.bincount(
+            anchor["anchor_graph"], minlength=num_graphs
+        ).to(torch.int64)
+        return SeedAnchorOutput(
+            anchor_logits=anchor["logits"],
+            anchor_log_probs=anchor["log_probs"],
+            anchor_probs=anchor["probs"],
+            anchor_graph=anchor["anchor_graph"],
+            anchor_counts=counts,
+            selected_anchor_row=sel_rows,
+            anchor_selected_log_prob=anchor["selected_log_prob"],
+            seed_logits=seed["logits"],
+            seed_log_probs=seed["log_probs"],
+            seed_probs=seed["probs"],
+            selected_seed=seed["selected_seed"],
+            seed_selected_log_prob=seed["selected_log_prob"],
+            retrieved_embedding=seed["retrieved_embedding"],
+            num_graphs=num_graphs,
+        )
+
+
+# ---------------------------------------------------------------------------
+# The assembly (#25 MODEL-05)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PolicyStateOutput:
+    """One growth-step encoding pass of :class:`SynTreePolicy`.
+
+    Fields:
+        backbone: the :class:`~syntree.models.bipartite.BackboneOutput`
+            (union-graph representations; ``pocket_context`` feeds the
+            seed/anchor stage, the pooled surfaces feed the decoder).
+        handle: the :class:`~syntree.models.handle_head.HandleSelectionOutput`
+            (the #22 law over the active handle pool).
+        decoder: the :class:`DecoderOutput` (the refined decision context
+            — the #24 heads' input surface).
+    """
+
+    backbone: BackboneOutput
+    handle: HandleSelectionOutput
+    decoder: DecoderOutput
+
+    @property
+    def context(self) -> torch.Tensor:
+        """The per-graph decision context ``[B, d_model]``."""
+        return self.decoder.context
+
+    @property
+    def num_graphs(self) -> int:
+        return self.decoder.num_graphs
+
+
+class SynTreePolicy(nn.Module):
+    """The complete 3D-SynTree V2 policy assembly (#25 MODEL-05).
+
+    One registered module containing the full frozen production stack —
+    backbone (#21, activation checkpointing ON), handle-selection head
+    (#22), stacked cross-attention decoder (#23), the decoupled
+    hierarchical heads (#24), and the seed/anchor selection component of
+    #39 — with a single authoritative audit (constitution #45 §7.3:
+    parameter counts, trainability, dimensions, gradient connectivity,
+    the tied catalog embeddings, the mask interfaces, and model memory).
+
+    The evaluation protocol mirrors the MDP: **stage 0** (once, at
+    ``t = 0``) scores the explicit seed action ``(B_0, h_0)`` via
+    :meth:`forward_seed_anchor` — no hidden hotspot heuristic decides the
+    production starting state; **stage 1** scores termination
+    (:meth:`forward_stop`); **stage 2** scores the continuation heads for
+    the CONTINUE rows (:meth:`forward_continue` /
+    :meth:`forward_state` + the stage-2 heads).  Every stage contributes
+    a pure dimensionless categorical log-probability, and the total
+    trajectory forward probability is their sum (constitution §12.3).
+
+    Parameter budget (decision D-V2-019): the frozen per-issue profiles
+    sum to **10,880,719 parameters = 43.5 MB FP32** — below the 50 MB
+    acceptance bound with margin. The issue's ``~4.8M`` estimate predates
+    the frozen profiles and is superseded by them (see the module-level
+    reconciliation note).
+    """
+
+    def __init__(
+        self,
+        catalog_size: int = SYNTON_CATALOG_SIZE,
+        max_pocket_anchors: int = MAX_POCKET_ANCHORS,
+        anchor_min_separation: float = ANCHOR_MIN_SEPARATION,
+        activation_checkpointing: bool = True,
+    ) -> None:
+        super().__init__()
+        catalog_size = int(catalog_size)
+        if catalog_size < 1:
+            raise ValueError(f"catalog_size must be >= 1, got {catalog_size}")
+        if int(max_pocket_anchors) < 1:
+            raise ValueError("max_pocket_anchors must be >= 1")
+        if not (float(anchor_min_separation) > 0.0):
+            raise ValueError("anchor_min_separation must be > 0")
+        self.catalog_size = catalog_size
+        self.max_pocket_anchors = int(max_pocket_anchors)
+        self.anchor_min_separation = float(anchor_min_separation)
+
+        # The frozen production stack (one of each — no duplicates, no
+        # compatibility shims; clean-room mandate #45 §24).
+        self.backbone = BipartitePaiNN(
+            activation_checkpointing=activation_checkpointing
+        )
+        self.handle_head = HandleSelectionHead()
+        self.decoder = CrossAttentionDecoder()
+        self.heads = HierarchicalPolicyHeads(catalog_size=catalog_size)
+        # The #39 seed/anchor component, wired to the SAME tied catalog
+        # table the retrieval head owns (one synthon representation,
+        # parameters registered once).
+        self.seed_anchor_head = SeedAnchorHead(
+            catalog_size=catalog_size,
+            catalog_embeddings=self.heads.synthon_head.catalog_embeddings,
+        )
+
+    def extra_repr(self) -> str:
+        return (
+            f"catalog_size={self.catalog_size}, "
+            f"max_pocket_anchors={self.max_pocket_anchors}, "
+            f"anchor_min_separation={self.anchor_min_separation}"
+        )
+
+    # -- the anchor candidate machinery (deterministic, #39) -----------------
+
+    def anchor_candidates(self, pocket_pos, pocket_z, pocket_charge, pocket_batch, num_graphs):
+        """Deterministic anchor decomposition of the batched pockets."""
+        return batched_pocket_anchor_candidates(
+            pocket_pos,
+            pocket_z,
+            pocket_charge,
+            pocket_batch,
+            num_graphs,
+            max_anchors=self.max_pocket_anchors,
+            min_separation=self.anchor_min_separation,
+        )
+
+    def anchor_features(self, backbone_output: BackboneOutput, assignment, anchor_batch):
+        """Invariant per-anchor features from a backbone encoding."""
+        return aggregate_anchor_features(backbone_output, assignment, anchor_batch)
+
+    # -- stage 0: the explicit seed action (#39) --------------------------------
+
+    def forward_seed_anchor(
+        self,
+        backbone_output: BackboneOutput,
+        anchor_features: torch.Tensor,
+        anchor_graph: torch.Tensor,
+        anchor_mask: Optional[torch.Tensor] = None,
+        selected_anchor_row: Optional[torch.Tensor] = None,
+        seed_mask: Optional[torch.Tensor] = None,
+        selected_seed: Optional[torch.Tensor] = None,
+    ) -> SeedAnchorOutput:
+        """Score the seed action ``a_seed = (B_0, h_0)`` (stage 0)."""
+        return self.seed_anchor_head(
+            backbone_output.pocket_context,
+            anchor_features,
+            anchor_graph,
+            anchor_mask,
+            selected_anchor_row,
+            seed_mask,
+            selected_seed,
+        )
+
+    # -- growth-step encoding ------------------------------------------------------
+
+    def forward_state(
+        self,
+        state: Any,
+        handle_descriptors: torch.Tensor,
+        handle_pos: torch.Tensor,
+        handle_graph: torch.Tensor,
+        handle_atom: torch.Tensor,
+        handle_flags: Optional[torch.Tensor] = None,
+    ) -> PolicyStateOutput:
+        """Encode a growth state: backbone -> handle head -> decoder.
+
+        Consumes the canonical V2 state batch (the
+        :func:`~syntree.core.schema.collate_state_batch` layout) and the
+        active-handle pool in the #22 contract; returns the auditable
+        triple whose ``context`` feeds the #24 heads.
+        """
+        backbone_output = self.backbone(state, handle_flags=handle_flags)
+        handle_output = self.handle_head(
+            backbone_output,
+            handle_descriptors,
+            handle_pos,
+            handle_graph,
+            handle_atom,
+        )
+        decoder_output = self.decoder.forward_state(
+            backbone_output, handle_output
+        )
+        return PolicyStateOutput(
+            backbone=backbone_output,
+            handle=handle_output,
+            decoder=decoder_output,
+        )
+
+    # -- stages 1 and 2 (delegation to the #24 container) -----------------------
+
+    def forward_stop(
+        self, context: torch.Tensor, force_stop: Optional[torch.Tensor] = None
+    ) -> StopOutput:
+        """Stage 1: the binary termination law."""
+        return self.heads.forward_stop(context, force_stop)
+
+    def forward_continue(
+        self,
+        context: torch.Tensor,
+        selected_reaction: torch.Tensor,
+        selected_synthon: torch.Tensor,
+        selected_parity: torch.Tensor,
+        selected_torsion_bin: torch.Tensor,
+        stereocenter_required: torch.Tensor,
+        family_mask: torch.Tensor,
+        reaction_mask: torch.Tensor,
+        catalog_handle_classes: Optional[torch.Tensor] = None,
+        bin_mask: Optional[torch.Tensor] = None,
+    ) -> ContinueOutput:
+        """Stage 2: teacher-forced continuation (CONTINUE rows only)."""
+        return self.heads.forward_continue(
+            context,
+            selected_reaction,
+            selected_synthon,
+            selected_parity,
+            selected_torsion_bin,
+            stereocenter_required,
+            family_mask,
+            reaction_mask,
+            catalog_handle_classes,
+            bin_mask,
+        )
+
+    # -- audit ---------------------------------------------------------------
+
+    def audit(self) -> Dict[str, Any]:
+        """The complete assembly audit (constitution #45 §7.3)."""
+        parameters = list(self.parameters())
+        num_parameters = sum(p.numel() for p in parameters)
+        bytes_fp32 = num_parameters * 4
+        # The #21 backbone predates the audit() convention — its audit is
+        # computed inline here (dimensions, counts, checkpointing flag).
+        backbone_params = list(self.backbone.parameters())
+        backbone_audit = {
+            "module": type(self.backbone).__name__,
+            "hidden_dim": self.backbone.hidden_dim,
+            "num_layers": self.backbone.num_layers,
+            "num_radial": self.backbone.num_radial,
+            "r_cut": self.backbone.r_cut,
+            "activation_checkpointing": bool(
+                self.backbone.activation_checkpointing
+            ),
+            "num_parameters": sum(p.numel() for p in backbone_params),
+            "num_trainable_parameters": sum(
+                p.numel() for p in backbone_params if p.requires_grad
+            ),
+        }
+        component_audit = {
+            "backbone": backbone_audit,
+            "handle_head": self.handle_head.audit(),
+            "decoder": self.decoder.audit(),
+            "hierarchical_heads": self.heads.audit(),
+            "seed_anchor_head": self.seed_anchor_head.audit(),
+        }
+        return {
+            "module": type(self).__name__,
+            "catalog_size": self.catalog_size,
+            "max_pocket_anchors": self.max_pocket_anchors,
+            "anchor_min_separation": self.anchor_min_separation,
+            "activation_checkpointing": bool(
+                self.backbone.activation_checkpointing
+            ),
+            "components": {
+                name: {
+                    "module": audit["module"],
+                    # the seed head's count EXCLUDES the shared tied table
+                    # (owned by the retrieval head, counted once globally)
+                    "num_parameters": audit.get(
+                        "own_parameters_excluding_catalog_table",
+                        audit["num_parameters"],
+                    ),
+                    "num_trainable_parameters": audit.get(
+                        "num_trainable_parameters", audit["num_parameters"]
+                    ),
+                }
+                for name, audit in component_audit.items()
+            },
+            "num_parameters": num_parameters,
+            "num_trainable_parameters": sum(
+                p.numel() for p in parameters if p.requires_grad
+            ),
+            "all_parameters_trainable": all(p.requires_grad for p in parameters),
+            "parameter_dtypes": sorted({str(p.dtype) for p in parameters}),
+            "parameter_memory_bytes_fp32": bytes_fp32,
+            "parameter_memory_mb_fp32": bytes_fp32 / (1000 * 1000),
+            "parameter_memory_under_50_mb": bytes_fp32 < 50 * 1000 * 1000,
+            "tied_catalog_embeddings": {
+                "shared_by": ["synthon_head", "seed_anchor_head"],
+                "num_embeddings": self.catalog_size,
+                "embedding_dim": SYNTON_EMBED_DIM,
+                "parameters_counted_once": self.heads.synthon_head.catalog_embeddings
+                is self.seed_anchor_head.catalog_embeddings,
+            },
+            "mask_interfaces": {
+                "stage0_anchor": "[M] bool (per-row legality)",
+                "stage0_seed": "[B, K] bool (eligibility + combination)",
+                "stage1_stop": "forced rows via [B] bool",
+                "stage2": "family [B,9] / reaction [B,27] / synthon [B,K] / bins [B,36]",
+            },
+            "action_contract": {
+                "stage0_seed_action": "P(anchor|pocket)*P(seed|anchor,pocket)",
+                "stage1": "P(STOP|s) binary",
+                "stage2": "P(f)P(r|f)P(B|r)P(c)P(k) + #22 P(h|s)",
+                "all_categorical": True,
+                "von_mises_in_tb": False,
+            },
+            "frozen_profile_note": (
+                "10,880,719 parameters = 43.5 MB FP32 (< 50 MB acceptance "
+                "bound); the issue's ~4.8M estimate is superseded by the "
+                "closed per-issue frozen profiles (D-V2-019)"
+            ),
+        }
+
+
+#: The frozen production parameter total of :class:`SynTreePolicy`
+#: (version-controlled arithmetic; #45 §5.2 — frozen dimensions).
+SYNTREE_POLICY_PARAMETER_PROFILE = (
+    5_999_104  # BipartitePaiNN (#21 frozen profile)
+    + 224_896  # HandleSelectionHead (#22 frozen profile)
+    + 1_219_328  # CrossAttentionDecoder (#23 frozen profile)
+    + HIERARCHICAL_HEADS_PARAMETER_PROFILE  # #24 (incl. the 3.2M tied table)
+    + (256 * 256 + 256) * 2  # seed/anchor query + key
+    + (512 * 64 + 64)  # seed/anchor seed query
 )
