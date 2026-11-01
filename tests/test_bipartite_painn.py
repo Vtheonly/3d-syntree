@@ -10,8 +10,9 @@ Acceptance criteria of issue #21 (clean-room V2 implementation):
 
 Beyond the two pinned criteria, this suite enforces the frozen production
 profile, the exact radius-graph construction (all three pair families, no
-self-loops, no cross-graph edges, brute-force equivalence), the Gaussian
-radial basis (including the documented #9 envelope boundary), translation
+self-loops, no cross-graph edges, brute-force equivalence), the
+envelope-integrated Gaussian radial basis (#9 MATH-03 / D-V2-011 — the
+raw boundary pins of D-V2-007 were superseded when #9 landed), translation
 invariance, batched-equals-single-graph behaviour, activation-checkpointing
 equivalence, pooled-context semantics, determinism, and the fail-closed input
 contract (dtype/atomic-number/shape/device/handle-flag validation).
@@ -252,19 +253,30 @@ class TestGaussianRadialBasis:
         assert rbf(torch.zeros(7)).shape == (7, 20)
         assert rbf(torch.zeros(3, 11)).shape == (3, 11, 20)
 
-    def test_values_bounded(self):
+    def test_values_bounded_and_nonnegative(self):
+        # Envelope contract (#9 / D-V2-011): features are bounded in [0, 1],
+        # strictly positive strictly inside (0, r_cut), and vanish at the
+        # cutoff (exactly 0.0 on the reference platform).
         rbf = GaussianRadialBasis(num_radial=20, r_cut=5.0)
         d = torch.linspace(0.0, 5.0, 101, dtype=torch.float64)
         out = rbf(d)
-        assert bool((out > 0).all())
+        assert bool((out >= 0).all())
         assert bool((out <= 1.0 + 1e-12).all())
+        interior = out[(d > 0) & (d < 5.0)]
+        assert bool((interior > 0).all())
+        assert float(out[-1].abs().max()) <= 1e-12
 
-    def test_peaks_at_centers(self):
+    def test_peaks_at_centers_carry_the_envelope(self):
+        # At its own center mu_k channel k evaluates to the raw Gaussian 1.0
+        # multiplied by the cosine envelope at mu_k (#9 / D-V2-011).
+        from syntree.models.cutoff import continuous_cosine_envelope
+
         rbf = GaussianRadialBasis(num_radial=20, r_cut=5.0)
+        expected = continuous_cosine_envelope(rbf.centers, 5.0)
         for k in range(20):
             center = rbf.centers[k]
             value = rbf(center.reshape(1))[0, k]
-            assert torch.allclose(value, torch.ones_like(value))
+            assert torch.allclose(value, expected[k].reshape(1), atol=1e-12)
 
     def test_decay_away_from_center(self):
         rbf = GaussianRadialBasis(num_radial=20, r_cut=5.0)
@@ -278,13 +290,19 @@ class TestGaussianRadialBasis:
         assert torch.allclose(out[0, 0], torch.ones(()))
         assert bool((out[0, 1:] < 1.0).all())
 
-    def test_at_cutoff_last_channel_is_one(self):
-        """Documents the #9 envelope boundary (decision D-V2-007): the raw
-        Gaussian basis has no cosine cutoff — at ``d = r_cut`` the last
-        channel still evaluates to 1.0. #9 MATH-03 owns the envelope."""
+    def test_at_cutoff_features_vanish_and_beyond_is_bitwise_zero(self):
+        """Pins the #9 MATH-03 integration (decision D-V2-011): the cosine
+        envelope multiplies the Gaussian expansion — at ``d = r_cut`` the
+        features vanish and for every ``d > r_cut`` (including
+        ``r_cut + 1e-4``, the issue's acceptance probe) the whole feature
+        vector is identically zero. Supersedes the pre-#9 pin
+        ``test_at_cutoff_last_channel_is_one`` (D-V2-007's documented
+        "until #9 lands" boundary)."""
         rbf = GaussianRadialBasis(num_radial=20, r_cut=5.0)
         out = rbf(torch.tensor([5.0]))
-        assert torch.allclose(out[0, -1], torch.ones(()))
+        assert float(out.abs().max()) <= 1e-12
+        beyond = rbf(torch.tensor([5.0 + 1e-4, 5.5, 50.0]))
+        assert bool((beyond == 0).all())
 
     def test_no_learnable_parameters(self):
         rbf = GaussianRadialBasis(num_radial=20, r_cut=5.0)

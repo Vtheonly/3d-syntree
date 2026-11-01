@@ -348,3 +348,91 @@
   is deliberately *not* hard-equal-checked against the node position, so a
   future directional growth-point offset remains possible; sampling /
   greedy selection utilities are deferred to #25.
+
+## D-V2-011 — 2026-11-01 — Cosine cutoff envelope integrated inside `GaussianRadialBasis` (the one authoritative place)
+
+- **Problem:** Issue #9 MATH-03 mandates the `C¹`-continuous cosine
+  cutoff envelope multiplied into *all* spatial distance RBF projections
+  (`radial(d) = Gaussian(d) ⊙ f_cut(d)`), closing legacy "Vulnerability 7"
+  (clamped raw RBFs gave every spectator from `r_cut + ε` to 50 Å an
+  identical non-zero bias feature). Two integration designs existed:
+  applying the envelope at each consumer's projection site (backbone
+  forward, handle-head forward, future #23 decoder), or integrating it
+  once inside the shared RBF producer. D-V2-007 had deferred the
+  envelope from #21 with the note "#9 will integrate it in one
+  authoritative place", which required an interpretation.
+- **Decision:** Implement `continuous_cosine_envelope(dist, cutoff)`
+  exactly in the issue's pinned form in a new dedicated module
+  `syntree/models/cutoff.py` (fail-closed: non-tensor / non-floating /
+  non-finite inputs and non-finite-or-non-positive cutoffs raise), and
+  integrate it *inside* `GaussianRadialBasis.forward` — unconditionally,
+  no opt-out flag. Rationale: both existing spatial RBF consumers (the
+  #21 backbone edge-distance expansion and the #22 handle head's
+  [0, 12] Å centroid-distance expansion) construct
+  `GaussianRadialBasis` directly, so envelope-inside-the-producer covers
+  every projection site in one place and makes the Vulnerability-7 class
+  of bug structurally impossible to reintroduce (a future consumer
+  cannot forget the envelope). The #23 decoder must likewise route its
+  spatial RBF through `GaussianRadialBasis`. The envelope is
+  parameter-free: frozen profiles are unchanged (backbone 5,999,104;
+  handle head 224,896 — re-pinned by the existing tests).
+- **Test-contract consequences (sanctioned by #45 §24.3 and D-V2-007's
+  explicit "until #9 lands" clause):** the four pre-#9 raw-RBF pins were
+  rewritten 1:1 to the enveloped contract, none deleted:
+  `test_at_cutoff_last_channel_is_one` →
+  `test_at_cutoff_features_vanish_and_beyond_is_bitwise_zero`
+  (`tests/test_bipartite_painn.py`), `test_values_bounded` →
+  `test_values_bounded_and_nonnegative`, `test_peaks_at_centers` →
+  `test_peaks_at_centers_carry_the_envelope`, and
+  `test_radial_basis_is_the_raw_gaussian_expansion` →
+  `test_radial_basis_is_enveloped` (`tests/test_handle_selection.py`).
+- **Numerical facts pinned by the new suite:** beyond the cutoff the
+  features are *bitwise* zero (the `torch.where` branch) including the
+  issue's acceptance probe `d = r_cut + 1e-4`; at `d = r_cut` the
+  envelope evaluates to exactly `0.0` on the reference CPU platforms in
+  both dtypes (elsewhere ≤ 1e-12); `f_cut(0) = 1` exactly so the first
+  channel at `d = 0` remains exactly 1.0; the derivative decays
+  linearly to zero as `d → r_cut⁻` (measured summed-gradient decay
+  4.3e-2 → 3.5e-5 for offsets 1e-1 → 1e-4, matching
+  `0.5 (π/r_cut)² δ`); the fp32 `0.5·(cos+1)` cancellation floor near
+  the seam is ≤ ~6e-8 and the fp64 one ≤ ~1e-16 (documented in the
+  tests; physically negligible). The envelope is a radial function, so
+  SE(3) invariance/equivariance is unaffected (the full #21 suites
+  re-run green against the enveloped path; a compact invariance test
+  also lives in the new file).
+- **Alternatives considered:** applying the envelope at each consumer
+  site (rejected: duplicated application sites — exactly the
+  forget-to-apply failure mode #9 exists to prevent); an
+  `apply_envelope=False` escape flag (rejected: no V2 requirement needs
+  a raw expansion, and a flag invites silent contract drift);
+  implementing the envelope in `syntree/models/policy.py` as literally
+  worded in the #9 body (rejected: that module is #23/#25's pinned
+  deliverable and does not exist yet; the envelope must precede and
+  outlive it); a smooth distance-weighted graph cutoff on edges
+  (rejected: changes radius-graph semantics, out of #9 scope).
+- **Evidence:** `tests/test_cosine_cutoff.py` — 46 tests: both pinned
+  issue acceptance criteria; the analytic closed forms (value,
+  derivative, reflection identity `f(d)+f(r_cut−d)=1`, monotonicity,
+  quadratic near-cutoff decay, linear derivative decay); the
+  product-rule analytic radial-derivative match in fp64 (reference
+  derived from the module's own buffers so the pinned quantity is the
+  envelope mathematics, not buffer rounding); bitwise determinism;
+  dtype preservation; the fail-closed matrix (non-tensor, non-floating,
+  NaN/Inf distances; zero/negative/NaN/Inf cutoffs); the enveloped-RBF
+  integration (peaks carry the envelope, sup-norm ≤ envelope, no
+  parameters added, state-dict roundtrip, unchanged fail-closed
+  behaviour); the handle-head [0, 12] Å basis beyond-cutoff bitwise
+  zeros (Vulnerability-7 regime dead); a backbone smoke test and a
+  compact fp64 scalar-invariance / vector-equivariance check through
+  the enveloped backbone. Full suite: **347/347**
+  (`python -m pytest tests/ -q`, CPU sandbox, Python 3.12.16,
+  torch 2.15.0+cpu, PyG 2.8.1).
+- **Affected:** #9 (closed — all acceptance criteria verified), #21
+  (`GaussianRadialBasis` semantics updated; frozen profile and
+  equivariance contracts unchanged), #22 (centroid-distance RBF now
+  enveloped at 12 Å; frozen profile unchanged), #23 (now
+  dependency-ready; must route its spatial RBF through
+  `GaussianRadialBasis` rather than re-implementing an expansion),
+  #32/#33 (suite aggregation), D-V2-007 (superseded in its
+  envelope-deferral clause; its "one authoritative place" intent is
+  realized by this decision).

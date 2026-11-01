@@ -122,9 +122,10 @@ start at zero and acquire geometry only through message passing.
 (#45 §7.2): exact radius graph emitting pocket–pocket, ligand–ligand and
 pocket–ligand pairs of the same state (both directions, no self-loops, no
 cross-graph edges), `safe_norm` threshold, differentiable `edge_vec` /
-`edge_dist` only. `GaussianRadialBasis` emits the raw 20-Gaussian expansion
-with **no** cosine envelope — the envelope for all spatial RBF projections
-is owned by #9 (decision D-V2-007). Every layer is wrapped in non-reentrant
+`edge_dist` only. `GaussianRadialBasis` emits the 20-Gaussian expansion
+multiplied by the continuous cosine cutoff envelope integrated inside
+the producer (#9 MATH-03 / decision D-V2-011 — see §3.12). Every layer is
+wrapped in non-reentrant
 activation checkpointing while gradients are enabled (T4 capability;
 measured benefit deferred to #43). Inputs are fail-closed validated (FP32
 production / FP64 local verification only, decision D-V2-008; atomic-number
@@ -225,8 +226,9 @@ width; legacy 67-D Franken rows fail closed), reacting-atom positions
 `AssemblyEnvironment.active_handles()` menu rows.
 
 Per handle, the invariant embedding combines the 64-D descriptor MLP, the
-backbone scalar of the attachment atom, the raw (envelope-free, #9-owned)
-Gaussian RBF of the handle's distance to its graph's pocket centroid, and
+backbone scalar of the attachment atom, the cosine-enveloped (#9 /
+D-V2-011) Gaussian RBF of the handle's distance to its graph's pocket
+centroid, and
 the SE(3)-invariant directional features `<v_atom, x_handle − centroid>`
 built from the *equivariant* backbone vector channel — so the head is
 genuinely 3D-aware ("open cavity vs wall") while every scalar it produces
@@ -241,7 +243,7 @@ handles contribute no rows and zero entropy). The output exposes the
 auditable tensor/log-probability interface (logits, log_probs, probs,
 attention weights, entropies, counts) plus the handle embeddings and
 pooled handle context for the #23 decoder. Frozen production profile:
-backbone d = 256, head width 128, 20 raw RBFs on [0, 12] Å, 224,896
+backbone d = 256, head width 128, 20 enveloped RBFs on [0, 12] Å, 224,896
 parameters (pinned by test). Verified: valid normalized distributions on
 real `AssemblyEnvironment` menus at t = 0 and on grown intermediates
 (argmax row ⇒ legal `AssemblyAction.handle_atom_idx`); rigid-motion
@@ -252,6 +254,29 @@ backbone; fail-closed validation (dtype/device/shape/index ranges,
 cross-field graph consistency, legacy 67-D rejection). Pinned by
 `tests/test_handle_selection.py`.
 
+### 3.12 Continuous cosine cutoff envelope `[VERIFIED — #9, 2026-11-01]`
+
+`syntree/models/cutoff.py::continuous_cosine_envelope` implements the
+issue-#9 pinned `C¹` envelope `f_cut(d) = 0.5 (cos(π d / r_cut) + 1)`
+for `d ≤ r_cut`, `0` beyond, and it is integrated **inside**
+`GaussianRadialBasis.forward` — the one authoritative place for *all*
+spatial distance RBF projections (decision D-V2-011): the #21 backbone's
+edge-distance expansion and the #22 handle head's [0, 12] Å
+centroid-distance expansion are enveloped by construction, and the #23
+decoder must route its spatial RBF through the same producer instead of
+re-implementing an expansion. The envelope is parameter-free (frozen
+profiles unchanged) and a radial function, so SE(3)
+invariance/equivariance is unaffected. Pinned by
+`tests/test_cosine_cutoff.py`: bitwise-zero features for every
+`d > r_cut` (including the issue's acceptance probe `d = r_cut + 1e-4` —
+legacy "Vulnerability 7", far spectators receiving constant non-zero
+bias, is structurally dead); derivative → 0 linearly as `d → r_cut⁻`;
+`f_cut(0) = 1` exactly (first channel exactly 1.0 at `d = 0`); analytic
+value/derivative closed forms, the reflection identity
+`f(d) + f(r_cut − d) = 1`, and the product-rule radial derivative match
+in fp64; fail-closed validation (non-tensor / non-floating / NaN-Inf
+distances, invalid cutoffs).
+
 ## 4. Repository layout (V2, growing with the roadmap)
 
 ```
@@ -260,7 +285,9 @@ src/syntree/              # the V2 package (src-layout, decision D-V2-003)
   models/                 # equivariant math kernels; union-graph backbone;
                           # policy heads
     equivariant.py        #   safe norms + PaiNN blocks (#7)
-    bipartite.py          #   BipartitePaiNN + radius graph + RBF (#21)
+    cutoff.py             #   continuous cosine cutoff envelope (#9)
+    bipartite.py          #   BipartitePaiNN + radius graph + enveloped RBF
+                          #   (#21; envelope integrated per #9/D-V2-011)
     handle_head.py        #   agency-enabled handle selection P(handle|s) (#22)
   engine/                 # the reconciled two-level GFlowNet framework
                           # (D-V2-009; docs/architecture/MDP_STATE_SPACE.md)

@@ -978,16 +978,35 @@ class TestFrozenProfile:
         # Single source of truth: the head and the schema agree on 64.
         assert HANDLE_FEATURE_DIM == 64
 
-    def test_radial_basis_is_the_raw_gaussian_expansion(self):
+    def test_radial_basis_is_enveloped(self):
+        # #9 MATH-03 / D-V2-011: the cosine cutoff envelope is integrated
+        # inside GaussianRadialBasis (the one authoritative place for all
+        # spatial RBF projections) — the head's [0, 12] A centroid-distance
+        # basis is enveloped at 12 A. Supersedes the pre-#9 raw-expansion
+        # pin (D-V2-007's documented "until #9 lands" boundary).
+        from syntree.models.cutoff import continuous_cosine_envelope
+
         head = HandleSelectionHead()
         centers = head.radial_basis.centers
         assert centers.numel() == HANDLE_HEAD_NUM_RADIAL
         assert float(centers[0]) == 0.0
         assert float(centers[-1]) == pytest.approx(HANDLE_GEOM_CUTOFF)
-        # at the cutoff the last Gaussian still evaluates to 1.0 (no
-        # envelope — owned by #9, decision D-V2-007)
-        rbf = head.radial_basis(torch.tensor([HANDLE_GEOM_CUTOFF]))
-        assert float(rbf[0, -1]) == pytest.approx(1.0)
+        # at the cutoff the features vanish; beyond it they are bitwise zero
+        at_cutoff = head.radial_basis(torch.tensor([HANDLE_GEOM_CUTOFF]))
+        assert float(at_cutoff.abs().max()) <= 1e-6  # fp32 cancellation floor
+        beyond = head.radial_basis(
+            torch.tensor([HANDLE_GEOM_CUTOFF + 1e-4, 20.0, 62.0])
+        )
+        assert bool((beyond == 0).all())
+        # inside the range the expansion equals raw Gaussian * envelope
+        d = torch.linspace(0.0, HANDLE_GEOM_CUTOFF, 41, dtype=torch.float64)
+        rbf64 = head.radial_basis.to(torch.float64)
+        out = rbf64(d)
+        sigma = HANDLE_GEOM_CUTOFF / (HANDLE_HEAD_NUM_RADIAL - 1)
+        for k in range(HANDLE_HEAD_NUM_RADIAL):
+            raw = torch.exp(-0.5 * ((d - float(centers[k])) / sigma) ** 2)
+            expected = raw * continuous_cosine_envelope(d, HANDLE_GEOM_CUTOFF)
+            assert torch.allclose(out[:, k], expected, atol=1e-12)
 
     def test_constructor_rejects_invalid_arguments(self):
         with pytest.raises(ValueError, match="backbone_dim"):

@@ -78,7 +78,8 @@ The target V2 system (issue numbers mark ownership; see
 | Concern | Canonical home | Issue |
 |---|---|---|
 | Frozen state tensor schemas & PyG batch contracts | `syntree.core.schema` | #6 |
-| Non-singular equivariant math kernels | `syntree.models.equivariant` | #7, #8, #9 |
+| Non-singular equivariant math kernels | `syntree.models.equivariant` | #7, #8 |
+| Continuous cosine cutoff envelope for all spatial RBFs | `syntree.models.cutoff` | #9 |
 | Fail-closed pure-FP32 precision engine | `syntree.utils` | #10 |
 | Bipartite SE(3) backbone over pocket ∪ ligand (`BipartitePaiNN`) | `syntree.models` | #21 |
 | Agency-enabled handle-selection head (`P(handle \| s)`) | `syntree.models` | #22 |
@@ -132,11 +133,22 @@ through the invariant quantities `‖Vv‖` and `⟨Uv, Vv⟩`. Scalar outputs a
 provably invariant and vector outputs equivariant under rigid motions; both
 properties are pinned by tests with random rotations.
 
+**Continuous cosine cutoff envelope.** Every spatial distance RBF
+projection is multiplied by the `C¹` cosine envelope
+`f_cut(d) = 0.5 (cos(π d / r_cut) + 1)` that decays to zero at the cutoff
+(`syntree.models.cutoff`, integrated inside `GaussianRadialBasis` — the
+one authoritative producer for the backbone's edge distances and the
+handle head's centroid distances alike, issue #9 / decision D-V2-011).
+Beyond the cutoff the radial features are *identically* zero (bitwise),
+killing the legacy failure mode where clamped raw Gaussians handed every
+far spectator atom an identical non-zero bias feature; the derivative
+approaches zero continuously at the boundary, so features taper smoothly
+instead of switching abruptly.
+
 **Planned, not yet implemented:** analytic Amos-ratio autograd for the von
-Mises circular torsion objective (#8); continuous cosine cutoff envelopes
-for cross-attention radial bases (#9); the fail-closed FP32 precision engine
-(#10). These are listed for design completeness — no claim of existence is
-made until their issues close with evidence.
+Mises circular torsion objective (#8); the fail-closed FP32 precision
+engine (#10). These are listed for design completeness — no claim of
+existence is made until their issues close with evidence.
 
 ## 5. Chemistry: reactions, catalog, geometry
 
@@ -262,8 +274,9 @@ never hardcoded or logged.
 ```
 src/syntree/            # the V2 package
   core/                 # frozen state tensor contract & batch path (#6)
-  models/               # equivariant math kernels (#7), union-graph
-                        # backbone (#21), handle-selection head (#22);
+  models/               # equivariant math kernels (#7), cosine cutoff
+                        # envelope (#9), union-graph backbone (#21),
+                        # handle-selection head (#22);
                         # remaining policy heads (later issues)
   engine/               # reconciled two-level GFlowNet framework (#24
                         # geometry / #38 semantics / #42+#13 terminal
@@ -282,18 +295,19 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-01, session S-V2-04):
+tracker; last updated 2026-11-01, session S-V2-05):
 
 | Capability | Status | Evidence |
 |---|---|---|
 | Branch clean-room reset (purge of all legacy content) | **Done, verified, closed** | commit `075f86d` — branch tree verified empty on origin; foundation `0f5d74a` (#5) |
 | Frozen state tensor contract & PyG batch path | **Done, verified, closed** | `syntree/core/schema.py` @ `0001087`, 93/93 tests (#6) |
 | Non-singular PaiNN norms & bounded unit vectors | **Done, verified, closed** | `syntree/models/equivariant.py` @ `00ec653`, 45/45 tests (#7) |
+| Continuous cosine cutoff envelope for all spatial RBF projections | **Done, verified, closed** | `syntree/models/cutoff.py` (this session), 46/46 tests — bitwise-zero features beyond the cutoff (`d = r_cut + 1e-4` probe), derivative → 0 continuously at the boundary, integrated inside `GaussianRadialBasis` for the backbone and handle-head bases (#9, D-V2-011) |
 | Bipartite union-graph backbone (`BipartitePaiNN`) | **Done, verified, closed** | `syntree/models/bipartite.py` @ `e76d955`, 69/69 tests — SE(3) invariance/equivariance ≤3e-13 over 36 rigid-motion trials, clean pocket-only N_l=0, 5,999,104-param frozen profile (#21) |
 | MDP / derivation-DAG semantics + TB backward policy | **Done, verified, closed** | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` @ `d3d186a`, 50/50 tests — toy-DAG `P(x)=R(x)/Z` residuals < 1e-9 (#38, D-V2-009) |
-| Agency-enabled handle-selection head | **Done, verified, closed** | `syntree/models/handle_head.py` (this session), 44/44 tests — valid normalized laws on real `AssemblyEnvironment` menus, rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32), 224,896-param frozen profile (#22, D-V2-010) |
+| Agency-enabled handle-selection head | **Done, verified, closed** | `syntree/models/handle_head.py` @ `433d303` (S-V2-04), 44/44 tests — valid normalized laws on real `AssemblyEnvironment` menus, rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32), 224,896-param frozen profile (#22, D-V2-010) |
 | Discrete assembly MDP + terminal reward oracle + TB engine (engine layer) | **Implemented, tested locally** — engine layer of the reconciled design; trainer/CLI integration open | `syntree/engine/environment.py` / `rl.py` / `gflownet.py` @ `d3d186a`, 50/50 tests (D-V2-009); #24/#29/#30/#42 remain open for their full scope |
-| Decoder, remaining policy heads, policy assembly | Not started | #23 (ready after #9), #24, #25, #39 |
+| Decoder, remaining policy heads, policy assembly | Not started | #23 (**dependency-ready** after #9 closed), #24, #25, #39 |
 | Reaction registry, catalog, chemistry engines | Not started | #11–#15, #40–#42 |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |

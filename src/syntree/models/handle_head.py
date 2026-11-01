@@ -59,10 +59,10 @@ atom ``i`` and graph ``g``:
 
    where ``s_i`` / ``v_i`` are the backbone scalar/vector features of the
    attachment atom, ``c_g`` is the pocket centroid of graph ``g``, and the
-   radial basis is the raw (envelope-free) :class:`GaussianRadialBasis`
-   over ``[0, HANDLE_GEOM_CUTOFF]`` — the cosine cutoff envelope for *all*
-   spatial RBF projections is owned by #9 MATH-03 (decision D-V2-007) and
-   is deliberately not applied here.
+   radial basis is the cosine-enveloped :class:`GaussianRadialBasis`
+   over ``[0, HANDLE_GEOM_CUTOFF]`` (the envelope is integrated inside the
+   RBF producer per #9 MATH-03 / decision D-V2-011 — the one authoritative
+   place for *all* spatial RBF projections).
 
 2. *Per-graph query* — the contextualized ligand summary conditioned on
    the pocket::
@@ -178,9 +178,10 @@ HANDLE_HEAD_NUM_RADIAL = 20
 #: Upper edge (Angstrom) of the centroid-distance radial basis centers.
 #: Pocket extraction uses a 10 A radius around the co-crystallized ligand
 #: centroid (#45 §11), so handle-to-pocket-centroid distances live inside
-#: roughly [0, 12] A; distances beyond the last center decay smoothly
-#: through the Gaussian tail (no envelope, decision D-V2-007 — #9 owns the
-#: envelope).
+#: roughly [0, 12] A; the continuous cosine cutoff envelope is applied at
+#: this cutoff inside ``GaussianRadialBasis`` (#9 MATH-03, decision
+#: D-V2-011), so distances beyond 12 A contribute exactly zero radial
+#: geometry and near-cutoff distances taper smoothly to zero.
 HANDLE_GEOM_CUTOFF = 12.0
 
 #: Input dtypes accepted by the head (D-V2-005 / D-V2-008): FP32
@@ -393,8 +394,9 @@ class HandleSelectionHead(nn.Module):
         self.score_context = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.score_out = nn.Linear(hidden_dim, 1, bias=False)
 
-        # Raw (envelope-free) centroid-distance radial basis — the cosine
-        # envelope for all spatial RBF projections is owned by #9 (D-V2-007).
+        # Centroid-distance radial basis with the cosine cutoff envelope
+        # applied inside the producer (#9 MATH-03 / D-V2-011 — the one
+        # authoritative place for all spatial RBF projections).
         self.radial_basis = GaussianRadialBasis(num_radial, geom_cutoff)
 
     def extra_repr(self) -> str:
@@ -672,7 +674,7 @@ class HandleSelectionHead(nn.Module):
         # -- invariant handle embedding ---------------------------------------
         rel = handle_pos - centroid.index_select(0, handle_graph)  # [H, 3]
         radial = safe_norm(rel, dim=-1)  # [H] (exact 0 at r = 0, #7)
-        geom_rbf = self.radial_basis(radial)  # [H, R] raw expansion (D-V2-007)
+        geom_rbf = self.radial_basis(radial)  # [H, R] enveloped (#9 / D-V2-011)
         dir_feat = torch.einsum("hkd,hk->hd", v_atom, rel)  # [H, d] invariant
         e = (
             self.descriptor_mlp(handle_descriptors)

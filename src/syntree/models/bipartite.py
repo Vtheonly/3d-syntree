@@ -50,13 +50,19 @@ including the radius-graph distance threshold, so coincident coordinates
 degrade gracefully (zero direction, bounded gradient) instead of producing
 ``0/0`` NaNs.
 
-**Radial basis (#9 boundary, decision D-V2-007).** The 20-Gaussian radial
-basis produced here is the *raw* expansion ``exp(-((d-mu_k)/(2 sigma))^2/2)``
-over centers ``[0, r_cut]``. The smooth cosine cutoff envelope that must
-multiply *all* spatial distance RBF projections is owned by #9 MATH-03 and is
-deliberately NOT applied here; #9 will integrate it. Consequence (documented,
-tested): at ``d = r_cut`` the last Gaussian still evaluates to 1.0 and edge
-existence is a hard graph-construction threshold.
+**Radial basis (enveloped per #9 MATH-03, decision D-V2-011).** The
+20-Gaussian radial basis produced here is multiplied by the continuous
+cosine cutoff envelope
+``f_cut(d) = 0.5 (cos(pi d / r_cut) + 1)`` for ``d <= r_cut`` and ``0``
+beyond — implemented once in
+:func:`syntree.models.cutoff.continuous_cosine_envelope` (the one
+authoritative place, per D-V2-007/D-V2-011). Consequence (documented,
+tested): at ``d = r_cut`` the radial features vanish (exactly ``0.0`` on
+the reference platforms) and for every ``d > r_cut`` they are identically
+zero, so no spectator at any distance can contribute unphysical constant
+bias features; the gradient tapers continuously to zero at the boundary.
+Edge existence remains the hard graph-construction threshold
+(``build_union_radius_graph``).
 
 **Activation checkpointing (#45 §3.4 / §5.2).** Each message-then-update
 layer is wrapped in non-reentrant ``torch.utils.checkpoint`` whenever
@@ -85,6 +91,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from syntree.core.schema import MAX_ATOMIC_NUMBER, TensorContractError
+from syntree.models.cutoff import continuous_cosine_envelope
 from syntree.models.equivariant import PaiNNInteraction, PaiNNMixing, safe_norm
 
 __all__ = [
@@ -143,37 +150,47 @@ _NODE_FIELDS = (
 
 
 # ---------------------------------------------------------------------------
-# Gaussian radial basis (the #21 RBF producer; envelope deferred to #9)
+# Gaussian radial basis (the #21 RBF producer; cosine cutoff envelope
+# integrated by #9 MATH-03 / decision D-V2-011)
 # ---------------------------------------------------------------------------
 
 
 class GaussianRadialBasis(nn.Module):
-    """Fixed (non-learnable) Gaussian radial basis expansion.
+    """Fixed (non-learnable) Gaussian radial basis with cosine cutoff envelope.
 
     Implements the SchNet/PaiNN-style smeared distance expansion
 
-        ``radial_k(d) = exp(-0.5 * ((d - mu_k) / sigma)^2)``
+        ``radial_k(d) = exp(-0.5 * ((d - mu_k) / sigma)^2) * f_cut(d)``
 
     with ``num_radial`` centers ``mu_k`` evenly spaced on ``[0, r_cut]`` and
-    width ``sigma = r_cut / (num_radial - 1)`` (the center spacing). The
-    centers and scale are registered buffers (cast with the module, persisted
-    in the state dict, deterministic and reproducible); there are no trainable
-    parameters.
+    width ``sigma = r_cut / (num_radial - 1)`` (the center spacing), multiplied
+    by the continuous cosine cutoff envelope
+    :func:`~syntree.models.cutoff.continuous_cosine_envelope` evaluated at
+    ``r_cut`` (issue #9 MATH-03, #45 §8.3, decision D-V2-011). The centers and
+    scale are registered buffers (cast with the module, persisted in the state
+    dict, deterministic and reproducible); there are no trainable parameters
+    and the envelope adds none.
 
-    **No cutoff envelope (decision D-V2-007):** the output is the raw
-    Gaussian expansion. The continuous cosine envelope that must multiply all
-    spatial RBF projections is specified and owned by #9 MATH-03 and will be
-    integrated there — at ``d = r_cut`` the last Gaussian here still evaluates
-    to 1.0 (pinned by test).
+    **Envelope contract (pinned by tests):** the output is identically zero
+    (bitwise) for every ``d > r_cut`` — at ``d = r_cut + 1e-4`` the whole
+    feature vector is exactly ``0`` — and the derivative ``d(radial)/dd``
+    approaches zero continuously as ``d -> r_cut^-``, so radial features
+    taper smoothly to zero at the graph-construction boundary instead of
+    switching abruptly (legacy "Vulnerability 7": clamped raw Gaussians gave
+    every far spectator an identical non-zero bias feature). At ``d = 0`` the
+    first channel is exactly ``1.0`` (``f_cut(0) = 1``, Gaussian at its
+    center).
 
     Args:
         num_radial: number of Gaussian centers (>= 2).
-        r_cut: upper edge of the center range in Angstrom (> 0).
+        r_cut: upper edge of the center range in Angstrom (> 0); also the
+            envelope cutoff.
 
     Forward:
-        ``dist``: tensor of non-negative distances, any rank.
-        Returns the Gaussian expansion with one extra trailing axis of size
-        ``num_radial`` (e.g. ``[E] -> [E, R]``, ``[B, N] -> [B, N, R]``).
+        ``dist``: tensor of non-negative distances, any rank, floating dtype.
+        Returns the enveloped Gaussian expansion with one extra trailing
+        axis of size ``num_radial`` (e.g. ``[E] -> [E, R]``,
+        ``[B, N] -> [B, N, R]``).
         Negative or non-finite distances raise
         :class:`~syntree.core.schema.TensorContractError` (fail-closed).
     """
@@ -213,7 +230,12 @@ class GaussianRadialBasis(nn.Module):
                 "are non-negative by definition — locate the producer"
             )
         diff = dist.unsqueeze(-1) - self.centers  # [..., R]
-        return torch.exp(self._scale * diff * diff)
+        gaussians = torch.exp(self._scale * diff * diff)
+        # Multiply by the continuous cosine cutoff envelope — the one
+        # authoritative integration point for ALL spatial RBF projections
+        # (#9 MATH-03; #45 §8.3; decision D-V2-011).
+        envelope = continuous_cosine_envelope(dist, self.r_cut)
+        return gaussians * envelope.unsqueeze(-1)
 
 
 # ---------------------------------------------------------------------------

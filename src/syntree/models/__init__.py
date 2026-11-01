@@ -1,6 +1,6 @@
 """Model components: equivariant math kernels (#7+), the union-graph
-backbone (#21), the handle-selection head (#22) and the remaining policy
-heads (later issues)."""
+backbone (#21), the handle-selection head (#22), the cosine cutoff envelope
+(#9) and the remaining policy heads (later issues)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from syntree.models.bipartite import (
     GaussianRadialBasis,
     build_union_radius_graph,
 )
+from syntree.models.cutoff import continuous_cosine_envelope
 from syntree.models.equivariant import (
     SAFE_NORM_EPS,
     PaiNNInteraction,
@@ -38,6 +39,7 @@ __all__ = [
     "BipartitePaiNN",
     "GaussianRadialBasis",
     "build_union_radius_graph",
+    "continuous_cosine_envelope",
     "SAFE_NORM_EPS",
     "PaiNNInteraction",
     "PaiNNMixing",
