@@ -187,3 +187,86 @@
   measured worst errors 2.98e-13 / 4.62e-14 over 36 rigid-motion trials).
 - **Affected:** #21, #10 (the fail-closed precision engine enforces the
   production side), #26.
+
+## D-V2-009 — 2026-11-01 — Two-level GFlowNet reconciliation: discrete MDP + terminal reward oracle, uniform-leaf backward policy, stationary reward (owner task label "D21")
+
+- **Problem:** The pre-reconciliation backlog contained three theoretical
+  contradictions.  (1) *Geometry:* #24 mandates a discrete 36-bin torsion
+  action for dimensionless Trajectory Balance, while #42 as originally
+  scoped continuous sub-bin refinement + MMFF94 relaxation as an
+  environment-side mutation of intermediate states — the resulting
+  `s_{t+1}` would not be the state the policy transitioned to, a
+  zero-probability continuous shift under a categorical measure, destroying
+  flow conservation.  (2) *Backward:* #29's original `P_B = 1` assumption
+  fails for multi-parent states (symmetric molecules, alternative reaction
+  orders) while #38 demanded the semantics be proven first.  (3) *Reward:*
+  #30's original batch-level Tanimoto diversity term made `R(x)` depend on
+  rollout-batch siblings — a non-stationary target that destabilises
+  `log Z` (its own addendum had already superseded the formula but no
+  implementation existed).
+- **Decision (owner-directed reconciliation task, 2026-11-01):**
+  1. **Two-level architecture.**  The GFlowNet MDP state is strictly
+     discrete; during rollout 3D coordinates are generated deterministically
+     from the exact bin centres `phi_k = -pi + (k-0.5)*2*pi/36` with
+     resonance-locked amide/ester junctions snapped planar trans.  *All*
+     continuous physics (sub-bin refinement ±5°, scaffold-constrained
+     MMFF94 with 50 kcal/mol/Å² seed restraints) runs **only upon STOP**
+     as the terminal reward oracle, on a deep copy.  #42 is thereby
+     re-scoped as "Terminal Sub-Bin Geometry Refinement".
+  2. **Uniform Leaf Deletion backward policy.**  States are
+     order-quotiented discrete assembly objects (canonical derivations);
+     `P_B(s'|s) = 1/|RemovableLeafSynthons(s)|` over non-seed fragments
+     with exactly one junction bond.  The STOP step's backward term is
+     exactly zero *by proof* (absorbing uniqueness).  Specification,
+     proofs, and the backward-path-measure identity:
+     `docs/architecture/MDP_STATE_SPACE.md`.
+  3. **Stationary reward.**  `R(x) = exp((S_dock + S_contact + S_key +
+     S_props + S_vol)/T)` bounded below by `1e-4` — a function of the
+     terminal molecule and the fixed pocket context only; the compute
+     signature carries no batch parameter at all.  Diversity is evaluation
+     telemetry, never a loss term.
+  4. **Sub-bin optimiser naming (per #42's accuracy mandate):** the
+     refinement is a *coarse-scan-seeded bracketed Brent optimiser* — a
+     deterministic 9-point grid scan selects the bracket, then
+     `scipy.optimize.minimize_scalar(method='bounded')` converges within
+     it; the hybrid exists because the soft-core objective can be
+     multimodal over the 10° interval.  It is verified to be at least as
+     good as a dense 200-point reference scan on the same sequential
+     baseline.
+- **Alternatives considered:** continuous torsion densities summed with
+  discrete probabilities (rejected: breaks the measure and the TB units —
+  the pre-V2 κ→∞ failure); executing MMFF on intermediate states (rejected:
+  the transition must be governed by the policy); `P_B = 1` with
+  derivation-tree states (rejected: N! multiplicity inflation of
+  multi-order molecules); `P_B = 1` with graph states (rejected: violates
+  flow conservation at every multi-parent convergence); keeping the batch
+  Tanimoto term (rejected: non-stationary target; already superseded by
+  #30's addendum); plain Brent over the full ±5° interval (rejected:
+  locks into local basins on the multimodal landscape).
+- **Evidence:** `tests/test_gflownet_reconciliation.py` — 50 tests: pinned
+  determinism (bit-for-bit, fresh catalogs), terminal-oracle isolation
+  (counters, fail-closed non-terminal refusal, state immutability, rigid
+  refinement preserving covalent geometry), reward stationarity
+  (batch-composition invariance to 8 decimals / bit-identical, signature
+  inspection, bounds, fail-closed), leaf semantics (branched periphery,
+  symmetric convergence, renumbering invariance, path measure = 1),
+  **enumerable toy-DAG flow accounting** (19 quotient states / 31
+  trajectories: every TB residual < 1e-9 through the real engine with
+  `log Z` set to the true total flow; terminal outcome probabilities equal
+  `R(x)/Z` to 1e-9; two-order states split mass into exact halves), amide
+  resonance snap + post-MMFF planarity, Brent-vs-dense-scan, and the
+  pinned TB equation / STOP-zero-term / fail-closed contracts.  Full
+  suite: 257/257.
+- **Affected:** #24 (geometry contract implemented; heads remain open),
+  #29 (TB mathematics + backward semantics pinned; trainer remains open),
+  #30 (stationary reward core implemented; production physics remains
+  open), #38 (closed — formal spec + proofs + tests), #42 (re-scoped and
+  core implemented; T4 benchmarking + #11/#13/#14 integration remain open),
+  #22–#25 (consume the environment's contracts), #45 §12.3/§12.4
+  (satisfied by construction).
+- **Scope boundaries recorded:** the engine's soft-core LJ / Coulomb
+  surrogate, the generic junction-reaction registry, and the docking
+  surrogate are *documented interim implementations with injection
+  points*; #11/#13/#14 own the production chemistry and must supersede
+  them without changing the MDP/TB contracts above.  Bit-for-bit
+  determinism is claimed per RDKit build, not across versions.
