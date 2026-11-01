@@ -83,7 +83,7 @@ The target V2 system (issue numbers mark ownership; see
 | Fail-closed pure-FP32 precision engine | `syntree.utils` | #10 |
 | Bipartite SE(3) backbone over pocket ∪ ligand (`BipartitePaiNN`) | `syntree.models` | #21 |
 | Agency-enabled handle-selection head (`P(handle \| s)`) | `syntree.models` | #22 |
-| Cross-attention decoder + hierarchical policy heads | `syntree.models` | #23, #24 |
+| Two-layer cross-attention decoder + hierarchical policy heads | `syntree.models.policy` | #23, #24 |
 | Certified 32-reaction taxonomy (9 coarse families) | `syntree.chemistry` | #11 |
 | Enamine REAL synthon catalog + `pharm3d` descriptors | `syntree.chemistry` | #12, #40 |
 | MMFF94 relaxation, soft-core LJ, torsion refinement | `syntree.chemistry` | #13, #14, #42 |
@@ -105,6 +105,12 @@ Binding architectural invariants (details in the architecture document):
 - **Non-singular geometry operators.** All norms and directional unit
   vectors use the ε-smoothed formulation below; no raw `torch.norm`
   divisions by near-zero distances anywhere in the model path.
+- **One authoritative representation chain into the policy.** The
+  cross-attention decoder (#23) refines a per-graph handle query built
+  solely from the backbone's pooled contexts and the handle head's pooled
+  surface (no second pocket/handle encoder) and projects no spatial
+  distances itself — every geometric quantity it consumes already passed
+  through the enveloped radial basis upstream.
 - **Pure FP32 on Tesla T4 only** (see §7).
 
 ## 4. Mathematical foundations
@@ -276,8 +282,9 @@ src/syntree/            # the V2 package
   core/                 # frozen state tensor contract & batch path (#6)
   models/               # equivariant math kernels (#7), cosine cutoff
                         # envelope (#9), union-graph backbone (#21),
-                        # handle-selection head (#22);
-                        # remaining policy heads (later issues)
+                        # handle-selection head (#22), cross-attention
+                        # decoder (#23); remaining policy heads (later
+                        # issues)
   engine/               # reconciled two-level GFlowNet framework (#24
                         # geometry / #38 semantics / #42+#13 terminal
                         # oracle / #30 stationary reward / #29 TB core)
@@ -295,7 +302,7 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-01, session S-V2-05):
+tracker; last updated 2026-11-01, session S-V2-06):
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -307,7 +314,8 @@ tracker; last updated 2026-11-01, session S-V2-05):
 | MDP / derivation-DAG semantics + TB backward policy | **Done, verified, closed** | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` @ `d3d186a`, 50/50 tests — toy-DAG `P(x)=R(x)/Z` residuals < 1e-9 (#38, D-V2-009) |
 | Agency-enabled handle-selection head | **Done, verified, closed** | `syntree/models/handle_head.py` @ `433d303` (S-V2-04), 44/44 tests — valid normalized laws on real `AssemblyEnvironment` menus, rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32), 224,896-param frozen profile (#22, D-V2-010) |
 | Discrete assembly MDP + terminal reward oracle + TB engine (engine layer) | **Implemented, tested locally** — engine layer of the reconciled design; trainer/CLI integration open | `syntree/engine/environment.py` / `rl.py` / `gflownet.py` @ `d3d186a`, 50/50 tests (D-V2-009); #24/#29/#30/#42 remain open for their full scope |
-| Decoder, remaining policy heads, policy assembly | Not started | #23 (**dependency-ready** after #9 closed), #24, #25, #39 |
+| Two-layer stacked cross-attention decoder | **Done, verified, closed** | `syntree/models/policy.py` (this session), 58/58 tests — `[B, 1, 256]` × `[B, N, 256]` → `[B, 256]` acceptance shapes, padded atoms masked exactly (bit-identical under pad junk), SE(3) invariance 8.882e-16 (FP64) / 4.768e-07 (FP32), 1,219,328-param frozen profile, no new spatial-RBF site (#23, D-V2-012) |
+| Remaining policy heads, policy assembly, seed/anchor selection | Not started | #24 (needs #11, #8), #25, #39 |
 | Reaction registry, catalog, chemistry engines | Not started | #11–#15, #40–#42 |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
@@ -323,7 +331,8 @@ repository.
 ## 15. Limitations
 
 - The system is an early-stage rebuild: the foundation, the backbone, the
-  handle-selection head, and the reconciled GFlowNet engine layer are
+  handle-selection head, the cross-attention decoder, and the reconciled
+  GFlowNet engine layer are
   implemented; everything else in this README describes the *target*
   design, clearly marked as such.
 - The MDP/derivation-DAG semantics and the TB backward term are resolved

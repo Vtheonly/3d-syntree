@@ -436,3 +436,102 @@
   #32/#33 (suite aggregation), D-V2-007 (superseded in its
   envelope-deferral clause; its "one authoritative place" intent is
   realized by this decision).
+
+## D-V2-012 — 2026-11-01 — Cross-attention decoder: per-graph handle query from the #22 surface, dense padded memory, no new spatial-RBF site
+
+- **Problem:** Issue #23 pins the decoder's layer structure exactly
+  (`nn.MultiheadAttention(256, 8, dropout=0.1)`, FFN
+  `256→512→SiLU→Dropout→512→256`, pre-LayerNorm residuals on both
+  sub-layers, ×2 stacked layers) and its dense acceptance shapes
+  (`[B, 1, 256]` query × `[B, N, 256]` memory → `[B, 256]`, padded atoms
+  masked via `key_padding_mask`), but three integration questions were
+  open: (1) what the "handle query" is built from, given the #22 head
+  emits both per-row handle embeddings `[H, 128]` and a pooled handle
+  context `[B, 128]` while the decoder is 256-wide; (2) whether the
+  decoder projects its own spatial distance RBF (D-V2-011 anticipated
+  "the decoder's spatial RBF" but nothing in #23 pins one); (3) how the
+  flat PyG-style union memory (`[N, d]` + `node_batch`) becomes the
+  issue's dense padded `[B, N, d]` layout.
+- **Decision:**
+  1. **Per-graph query, `Lq = 1`** (the pinned acceptance shape):
+     `q_g = W_handle(pooled_handle_context_g) + W_graph(graph_context_g)
+     + W_pocket(pocket_context_g)` — the #22 pooled context is the
+     attention-weighted aggregate of the authoritative handle embeddings
+     (one handle encoder, D-V2-010), and the #21 pooled contexts are the
+     backbone summaries (one pocket encoder). The per-row
+     `handle_embeddings` stay available to the #24 heads for
+     per-candidate scoring; the decoder does not re-encode them. The
+     stack pins `Lq = 1`; the layer primitive accepts general `Lq`
+     (pinned by test).
+  2. **No new spatial-RBF site.** The decoder consumes no Cartesian
+     coordinates: every spatial quantity it sees already passed through
+     the enveloped `GaussianRadialBasis` upstream (backbone edge
+     distances inside #21; centroid distances + directional invariants
+     inside #22). D-V2-011's conditional rule is satisfied vacuously
+     *and* structurally (audit flag `projects_spatial_distances: False`;
+     no radial-basis submodule — pinned by test). Any future
+     query-to-memory distance bias (e.g. #24/#39) MUST route through
+     `GaussianRadialBasis`.
+  3. **Order-preserving per-group padding** of the flat union memory
+     into `[B, N_max, d]` with a bool `key_padding_mask` (True = padded,
+     zero-filled slots). Padded columns receive exactly-zero attention
+     in every layer/head/graph (train and eval); outputs are
+     bit-identical under arbitrary padded-slot values; fully-padded
+     graphs fail closed (softmax over an empty key set is undefined —
+     impossible for valid backbone outputs, which guarantee ≥ 1 pocket
+     atom per graph).
+  4. **Final LayerNorm** after the two pre-LN layers (standard pre-LN
+     stack practice; the issue pins the per-layer structure, the closing
+     norm is the stack's). Consequence documented in the tests: each
+     output row sums to the constant `sum(β)`, so `context.sum()` has
+     exactly zero gradient — gradient tests (and any real head loss)
+     use per-component weighted objectives.
+- **Alternatives considered:** per-handle queries `[H, 256]` (rejected:
+  contradicts the pinned `[B, 1, 256]` acceptance interface and would
+  make the output per-handle rather than per-graph; #24 can consume the
+  per-row embeddings directly); an RBF query-to-node attention bias
+  (rejected: not pinned by any issue — speculative scope; both query and
+  memory are already 3D-contextualized through enveloped producers, so
+  content-based attention is 3D-aware on both sides); post-LN residuals
+  (rejected: the issue pins pre-LN); no closing norm (rejected: the
+  pre-LN residual stream would hand downstream heads unnormalized
+  scale); accepting general `Lq` at stack level (rejected: the pinned
+  shape is the contract; `Lq = 1` is the decoder's use); float
+  `key_padding_mask` (rejected: bool is the exact PyTorch semantic;
+  anything else invites silent mask misinterpretation).
+- **Evidence:** `tests/test_cross_attention_decoder.py` — 58 tests: both
+  pinned acceptance criteria (`[B, 1, 256]` × `[B, N, 256]` → `[B,
+  256]`; padded columns exactly zero in every layer/head/graph, outputs
+  bit-identical under pad junk, attention rows sum to 1 over real
+  tokens, train-mode dropout keeps pads zero); the issue-pinned
+  structure (MHA config, FFN widths/activation, pre-LN residual identity
+  under zeroed sub-layers — which also distinguishes pre-LN from
+  post-LN); padding roundtrip / order / mask exactness; the fail-closed
+  matrix (dtype policy D-V2-005/008, `Lq ≠ 1`, non-bool mask,
+  fully-padded graph, NaN/Inf, shape/batch/width mismatches,
+  cross-field graph-count consistency, poisoned backbone scalar); SE(3)
+  invariance end-to-end **8.882e-16** (FP64) / **4.768e-07** (FP32
+  production) through the real backbone + handle head + decoder;
+  translation, pocket/ligand permutation (with handle remap),
+  memory-token permutation, and batch-composition invariance; gradient
+  connectivity through the activation-checkpointed backbone and the
+  handle head with **no cross-graph leaks**; frozen profile
+  **1,219,328 parameters**; audit interface; eval determinism and
+  state-dict roundtrip bit-exact; attention-footprint arithmetic
+  (614,400 floats ≈ 0.59 MB at B = 12, N = 800 — below the issue's
+  20 MB budget; a calculation, not a T4 measurement). Full suite:
+  **405/405** (`python -m pytest tests/ -q`, CPU sandbox, Python
+  3.12.16, torch 2.15.0+cpu, PyG 2.8.1).
+- **Affected:** #23 (closed — all acceptance criteria verified), #24/#25
+  (consume `DecoderOutput.context [B, 256]` plus the per-row
+  `HandleSelectionOutput.handle_embeddings`), #39 (its addendum to #23
+  allows consuming the decoder's pocket-conditioned context — exactly
+  `context`), #32/#33 (suite aggregation), D-V2-011 (its conditional
+  "decoder spatial RBF" clause is resolved: there is none, and the
+  structural guarantee is pinned).
+- **Scope boundaries recorded:** the decoder is a representation module
+  — no action distributions are produced here (STOP / reaction family /
+  reaction / synthon / stereo / torsion are #24's heads; assembly and
+  sampling utilities are #25); no T4 execution or memory measurement has
+  occurred (arithmetic only; #43 owns measured profiling); the pinned
+  dropout 0.1 is active in training mode only (eval is bit-deterministic).

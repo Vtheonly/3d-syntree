@@ -1,6 +1,7 @@
 """Model components: equivariant math kernels (#7+), the union-graph
 backbone (#21), the handle-selection head (#22), the cosine cutoff envelope
-(#9) and the remaining policy heads (later issues)."""
+(#9), the cross-attention decoder (#23) and the remaining policy heads
+(later issues)."""
 
 from __future__ import annotations
 
@@ -29,6 +30,16 @@ from syntree.models.handle_head import (
     HandleSelectionHead,
     HandleSelectionOutput,
 )
+from syntree.models.policy import (
+    DECODER_D_MODEL,
+    DECODER_DROPOUT,
+    DECODER_FFN_DIM,
+    DECODER_NUM_HEADS,
+    DECODER_NUM_LAYERS,
+    CrossAttentionDecoder,
+    CrossAttentionDecoderLayer,
+    DecoderOutput,
+)
 
 __all__ = [
     "BACKBONE_CUTOFF",
@@ -50,4 +61,12 @@ __all__ = [
     "HANDLE_HEAD_NUM_RADIAL",
     "HandleSelectionHead",
     "HandleSelectionOutput",
+    "DECODER_D_MODEL",
+    "DECODER_DROPOUT",
+    "DECODER_FFN_DIM",
+    "DECODER_NUM_HEADS",
+    "DECODER_NUM_LAYERS",
+    "CrossAttentionDecoder",
+    "CrossAttentionDecoderLayer",
+    "DecoderOutput",
 ]

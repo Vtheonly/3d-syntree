@@ -10,7 +10,8 @@
 > `docs/agent/DECISIONS.md`.
 >
 > Last updated: 2026-11-01 (sessions S-V2-02: #5, #6, #7, #21; S-V2-03:
-> #38 + the reconciled engine layer; S-V2-04: #22).
+> #38 + the reconciled engine layer; S-V2-04: #22; S-V2-05: #9; S-V2-06:
+> #23).
 
 ## 1. System overview
 
@@ -59,7 +60,7 @@ policy) — the exact formulation is #38 FLOW-04 `[TARGET]`.
 | Augmentation (train split only) | `syntree/data/` | #20 |
 | Backbone `BipartitePaiNN` | `syntree/models/bipartite.py` | #21 |
 | Handle selection head | `syntree/models/handle_head.py` | #22 |
-| Cross-attention decoder | `syntree/models/` | #23 |
+| Cross-attention decoder | `syntree/models/policy.py` | #23 |
 | Hierarchical policy heads + torsion space | `syntree/models/` | #24 |
 | Policy assembly + audit | `syntree/models/policy.py` | #25, #39 |
 | Trainers (FP32 / curriculum / transfer) | `syntree/engine/` | #26, #27, #28 |
@@ -277,6 +278,61 @@ value/derivative closed forms, the reflection identity
 in fp64; fail-closed validation (non-tensor / non-floating / NaN-Inf
 distances, invalid cutoffs).
 
+### 3.13 Cross-attention decoder `[VERIFIED — #23, 2026-11-01]`
+
+`syntree/models/policy.py::CrossAttentionDecoder` implements the two-layer
+stacked cross-attention decoder block (issue #23; pre-reset decision D08
+re-adopted as specification by D-V2-002). Each
+`CrossAttentionDecoderLayer` is the issue-pinned structure —
+`nn.MultiheadAttention(embed_dim=256, num_heads=8, dropout=0.1,
+batch_first=True)`, feed-forward refinement `Linear(256→512) → SiLU →
+Dropout → Linear(512→256)`, and **pre-LayerNorm residual connections on
+both sub-layers** — and the stack of two layers (layer 1: cavity bulk and
+steric boundaries; layer 2: localized hydrogen-bond and salt-bridge
+partners — a representational specialization of the same pinned
+mechanism) closes with one final `LayerNorm` (standard pre-LN stack
+practice). Frozen profile: d_model 256, 2 layers, 8 heads, FFN 512,
+dropout 0.1 — **1,219,328 parameters** (pinned by test).
+
+Two forward interfaces: the **dense padded** interface pinned by the #23
+acceptance criteria (`query [B, 1, 256]` + `memory [B, N, 256]` +
+`key_padding_mask [B, N]` → `context [B, 256]`; one query per graph is
+the stack's contract, the layer primitive supports general `Lq`), and the
+V2-native **`forward_state(backbone, handle)`** which consumes the #21
+`BackboneOutput` (union scalars as the memory; pooled graph/pocket
+contexts) and the #22 handle surface (`pooled_handle_context` — the
+attention-weighted aggregate of the authoritative handle embeddings) to
+build the per-graph handle query `W_handle(pooled_handle_context) +
+W_graph(graph_context) + W_pocket(pocket_context)`. No second pocket
+encoder, no second handle encoder; the per-row `handle_embeddings` remain
+the #24 heads' surface. The flat union memory is padded per graph
+(order-preserving gather) into the dense layout with a bool mask
+(`True` = padded slot, zero-filled).
+
+Masking semantics (pinned by tests): attention weights over padded
+columns are **exactly 0** in every layer, head, and graph (train and
+eval); outputs are **bit-identical** under arbitrary padded-slot values;
+and a fully-padded graph fails closed (softmax over an empty key set is
+undefined — impossible for valid backbone outputs, which guarantee ≥ 1
+pocket atom per graph). The decoder projects **no spatial distances at
+all** (decision D-V2-012): every consumed tensor is already invariant and
+its geometry already passed through the enveloped `GaussianRadialBasis`
+upstream (#21 edge distances; #22 centroid distances + directional
+invariants), so D-V2-011's rule is satisfied vacuously and structurally —
+any future query-to-memory distance bias must route through
+`GaussianRadialBasis`. The output context is therefore SE(3)-invariant
+end-to-end through the real backbone + handle head + decoder stack
+(measured worst error **8.882e-16** FP64 / **4.768e-07** FP32).
+Attention-map footprint at the documented T4 batch target (B = 12,
+N ≤ 800, 2 layers × 8 heads, Lq = 1) is ≈ 0.59 MB FP32 **by arithmetic**
+— two orders below the issue's 20 MB budget (a calculation, not a T4
+measurement; #43 owns measured profiling). Inputs are fail-closed
+validated (FP32/FP64-only dtype policy matching module parameters per
+D-V2-008, device, shapes, index ranges, cross-field backbone↔handle
+graph-count consistency, NaN/Inf fail loudly) and eval-mode forwards are
+bit-deterministic (dropout is training-mode only). Pinned by
+`tests/test_cross_attention_decoder.py` (58 tests; full suite 405/405).
+
 ## 4. Repository layout (V2, growing with the roadmap)
 
 ```
@@ -289,6 +345,9 @@ src/syntree/              # the V2 package (src-layout, decision D-V2-003)
     bipartite.py          #   BipartitePaiNN + radius graph + enveloped RBF
                           #   (#21; envelope integrated per #9/D-V2-011)
     handle_head.py        #   agency-enabled handle selection P(handle|s) (#22)
+    policy.py             #   two-layer stacked cross-attention decoder
+                          #   (#23; decision D-V2-012 — no new spatial RBF
+                          #   site, dense padded memory, exact masking)
   engine/                 # the reconciled two-level GFlowNet framework
                           # (D-V2-009; docs/architecture/MDP_STATE_SPACE.md)
     environment.py        #   discrete Assembly MDP + terminal reward oracle
