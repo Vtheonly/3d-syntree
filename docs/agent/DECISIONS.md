@@ -695,3 +695,119 @@
   #30 (its `#14` dependency is satisfied; #29 remains; the docking
   surrogate's production closure stays #30's scope), #24 (no change),
   #16 (cavity estimator calibration on real pockets arrives with DATA-01).
+
+## D-V2-016 — 2026-11-02 — The certified 32-reaction taxonomy supersedes the engine's generic junction registry; the family-map conflict resolves to cross_coupling_cc; stereo retention is verified, not declared (#11)
+
+- **Problem:** Three internal conflicts had to be resolved without
+  guessing (constitution §0).  (1) The issue's family listing omits
+  ``rxn_14``/``rxn_15`` — the two remaining C-C couplings after
+  ``cross_coupling_cc``'s five — while the same issue mandates "map the
+  32 transformations into the 9 canonical reaction families".
+  (2) The engine's pinned single-junction MDP can never close a ring, so
+  the six "heterocycle cyclizations" could not be expressed as ring-forming
+  junctions.  (3) The issue's "explicit stereochemical retention tokens in
+  all coupling templates" would, if implemented as hard ``@``/``@@``
+  requirements inside reactant templates, reject valid enantiomeric and
+  achiral reagents (SMARTS ``[C@]`` matches only that winding), the
+  opposite of the intended retention guarantee.
+- **Decision:**
+  1. ``rxn_14`` (alkenyl Suzuki) and ``rxn_15`` (alkyl Negishi) are placed
+     in ``cross_coupling_cc`` — the only C-C family — so the 9-family map
+     covers all 27 policy reactions exactly as the issue demands.
+  2. The heterocycle installations ship the ring **pre-cyclized on the
+     synthon side** (the only representation compatible with the pinned
+     MDP contracts); every entry documents the one-step cyclization
+     provenance of its synthon class (amidines + beta-dicarbonyls for
+     pyrimidines, Hantzsch for thiazoles, etc.).
+  3. Stereo retention is implemented by RDKit's atom-map chirality
+     transfer and **verified**: 16 stereo certification pairs compared as
+     canonical isomeric SMILES plus explicit CIP-code tests — templates
+     never hard-require a winding.
+  4. ``DEFAULT_REACTION_REGISTRY`` **is** the certified taxonomy (27
+     policy reactions in ``JunctionReaction`` format); the generic
+     interim (``generic_coupling``/``amide_formation``/
+     ``ester_formation``) is superseded and removed — no side-by-side
+     versions (constitution §24.3).  All 50 pinned MDP/TB contracts stay
+     green bit-for-bit (verified: full suite 616/616 at the #11 commit).
+  5. Every policy reaction carries a product-side ``junction_pattern``
+     (map ``:1`` = molecule-side attachment, ``:2`` = block-side) with a
+     ``junction_priority``; bond-claim ambiguity resolves by
+     ``(priority DESC, reaction_id ASC)`` — the metadata the #40
+     chemoselectivity rules and #41 retrieval index require (the #11
+     addendum) without weakening exact forward-replay validation.
+- **Alternatives considered:** a 10th family for rxn_14/15 (rejected: the
+  issue pins exactly 9); expressing cyclizations as engine ring-closure
+  (rejected: would change the pinned ``JunctionRecord``/dihedral
+  contracts); hard ``@`` tokens in reactant templates (rejected: rejects
+  valid reagents); keeping the interim registry beside the certified one
+  (rejected: §24.3 forbids old and new active side by side).
+- **Evidence:** ``tests/test_32_reactions.py`` — 82 tests: taxonomy shape
+  (32 = 8 C-N + 7 C-C + 6 C-O/C-S + 6 heterocycle + 5 deprotections;
+  exact family membership incl. rxn_14/15); 100% round-trip forward-replay
+  certification on 48 standardized reagent pairs (16 stereo, CIP
+  retained); deprotections deterministic with no-op absence; engine
+  end-to-end products through the real ``AssemblyEnvironment`` for 10
+  reactions (certified trans locks snap to pi exactly, rotatable junctions
+  honour the torsion bin, TB engine consumes certified-registry
+  trajectories); fail-closed behaviour.  Full suite 616/616 → 655/655.
+- **Affected:** #11 (closed), #12/#40/#41 (consume the handle metadata and
+  junction patterns), #15 (consumes the patterns as its cut-eligibility
+  source), #24 (dependency satisfied; consumes the registry), #42/#30
+  (unlocked).
+
+## D-V2-017 — 2026-11-02 — #13's geometry stages integrate behind opt-in flags whose defaults preserve the pinned legacy behaviour; MMFF94's weak amide torsions are restored exactly post-minimization (#13)
+
+- **Problem:** (1) #13's body (written before the owner reconciliation)
+  prescribes the cis/trans planar choice "via minimum Lennard-Jones pocket
+  clash" and phi routing to the adjacent synthon-side bond — but the
+  reconciliation tests pin the terminal oracle's legacy behaviour
+  (locked junctions skipped, ``diagnostics["junctions"] == []``,
+  ``subbin_refinements == 0``, drift measured from pi).  (2) RDKit's MMFF
+  cannot type bare pocket atoms, so "minimize freely in MMFF94 within the
+  static vdW field of the pocket" had no direct implementation.  (3) A
+  measured finding: MMFF94's amide C-N torsion terms are weak — a bare
+  amide sits ~3.7 deg off planar at the MMFF minimum, ~11.6 deg for the
+  in-pipeline pose — so MMFF alone cannot deliver #13's pinned
+  "planar within 1.0 degree" acceptance.
+- **Decision:**
+  1. ``apply_junction_torsion`` and ``relax_junction_constrained`` live in
+     ``syntree/chemistry/conformer.py`` as terminal-oracle stages;
+     ``finalize_terminal_molecule`` exposes them behind **opt-in flags**
+     (``junction_torsion_stage`` / ``pocket_vdw_relaxation``, both default
+     ``False``) so the 50 pinned reconciliation contracts stay green
+     bit-for-bit — the same injection-point pattern as D-V2-009/D-V2-015.
+     The #42 addendum ordering (sub-bin refinement before the #13 stages)
+     is implemented and tested.
+  2. The static pocket vdW field is realized by embedding the pocket heavy
+     atoms into the MMFF system as **typed mini-fragments**
+     (CH4/NH3/OH2/SH2 — hydrogen-completed, so MMFF types them),
+     position-constrained (flat-bottom 0.05 A, k=5000) with their
+     hydrogens: genuine ligand-pocket vdW coupling, pocket static within
+     its tolerance.  Pocket metals receive RDKit MMFF's generic metal type
+     (95) — a documented placeholder vdW shell, not an error (measured).
+  3. The #13 planarity is **restored exactly after the free minimization**
+     by the same LJ-chosen rigid snap (``route_phi=False`` mode): a pure
+     rotation of the distal subtree, preserving the MMFF-relaxed internal
+     geometry undistorted.  The "junction bond within 0.02 A of
+     equilibrium" acceptance is implemented as convergence to the MMFF
+     equilibrium (second-pass relaxation moves it < 0.02 A) — the engine's
+     bin-centre placement deliberately uses covalent-radii sums, which are
+     not MMFF equilibria (measured: N-C 1.47 A placed vs ~1.34 A MMFF
+     amide).
+- **Alternatives considered:** flipping the default behaviour on
+  (rejected: breaks the pinned contracts silently); re-snapping only
+  before MMFF (rejected: the measured 3.7-11.6 deg tilt shows the
+  constraint does not survive the free minimization); post-hoc planarity
+  by coordinate projection (rejected: would distort covalent geometry;
+  the rigid rotation preserves it exactly).
+- **Evidence:** ``tests/test_conformer_relaxation.py`` — 18 tests: LJ
+  argmin self-consistency across two pockets (one crowding the trans
+  region); no-pocket ties resolve to trans; phi routing verified on the
+  exact deterministic reference convention; covalent geometry preserved
+  under every rotation; the pinned acceptance criteria (planarity
+  <= 1.0 deg, seed RMSD < 0.15 A, junction bond < 0.02 A of equilibrium,
+  pocket static <= 0.05 A); combined pipeline ordering; legacy-default
+  boundary.  Full suite 655/655.
+- **Affected:** #13 (closed), #42 (its #13 dependency is satisfied; #24
+  remains), #29 (its #13 dependency is satisfied; #25/#26/#39 remain),
+  #30 (production physics closure unchanged in scope).

@@ -309,7 +309,7 @@ that must leave a precise, verified resumption point after every session.
 ## 14. Implementation status
 
 Honest, evidence-linked status (synchronized with the GitHub issue
-tracker; last updated 2026-11-02, session S-V2-07):
+tracker; last updated 2026-11-02, session S-V2-08):
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -325,8 +325,11 @@ tracker; last updated 2026-11-02, session S-V2-07):
 | Stable von Mises circular-torsion mathematics | **Done, verified, closed** | `syntree/models/torsion_head.py` @ `ae2c615` (S-V2-07), 44/44 tests — `log I_0` matches `scipy.special.i0e` to a measured 6.51e-6 over κ∈[0,100] (< 1e-5 acceptance); analytic Amos' ratio backward finite, ≥ 0, strictly < 1 everywhere (measured deviation vs `I₁/I₀`: 3.30e-2 max, O(κ⁻²) decay); the legacy NaN-leak/series-divergence failure is structurally eliminated (#8, D-V2-013) |
 | Fail-closed FP32 hardware precision engine | **Done, verified, closed** | `syntree/utils/hardware.py` @ `5ce4f5e` (S-V2-07), 35/35 tests — simulated Tesla T4 (cc 7.5) forces `precision="fp32"` with no GradScaler/autocast; `mixed_precision="fp16"` requests log a FAIL-CLOSED warning and execute pure FP32; TF32 structurally off on supported hardware; repo-wide AST ban on AMP machinery (#10, D-V2-014) |
 | Flat-bottom soft-core LJ clash + cavity/heavy-atom volume floors | **Done, verified, closed** | `syntree/chemistry/conformer.py` + engine wiring @ `d61a7fc` (S-V2-07), 50/50 tests — V(0.5 Å) = 484.85 kcal/mol < 500 for **every** supported element pair (bounded-spike ceiling by construction) vs 1.58×10⁹ for the rigid wall; the #42 torsion-refinement objective and the reward's `S_vol` (0.35 cavity ratio + 12-heavy-atom floors, stationary) consume it (#14, D-V2-015) |
-| Remaining policy heads, policy assembly, seed/anchor selection | Not started | #24 (needs #11 only now), #25, #39 |
-| Reaction registry, catalog, chemistry engines | Partially started — the production clash/volume physics is done (#14); the certified reaction taxonomy, catalog, relaxation, decomposition, chemoselectivity, and index are open | #11–#13, #15, #40–#42 |
+| Certified 32-reaction taxonomy + 9-family coarse mapping + deterministic deprotections | **Done, verified, closed** | `syntree/chemistry/reactions.py` @ `0e296b0` (S-V2-08), 82/82 tests — 100% round-trip forward-replay certification on 48 standardized reagent pairs (16 stereo pairs with CIP retention); `DEFAULT_REACTION_REGISTRY` is the certified taxonomy (the generic interim was superseded and removed) while all 50 pinned MDP/TB contracts stay green (#11, D-V2-016) |
+| Junction torsion stages + scaffold-constrained MMFF94 in the static pocket vdW field | **Done, verified, closed** | `syntree/chemistry/conformer.py` (extended) + `finalize_terminal_molecule` opt-in flags @ `472f4df` (S-V2-08), 18/18 tests — amide planarity ≤ 1.0° (restored exactly post-MMFF: MMFF94's amide torsions sit ~3.7–11.6° off planar at their minimum, a measured finding), seed-scaffold RMSD < 0.15 Å, junction bond settles < 0.02 Å of its MMFF equilibrium, pocket static within 0.05 Å behind D-V2-017 opt-in flags whose defaults preserve the legacy behaviour bit-for-bit (#13) |
+| Canonical assembly ordering + seed-conditioned decompositions | **Done, verified, closed** | new package `syntree/data/fragmenter.py` @ `864530d` (S-V2-08), 21/21 tests — identical retrosynthetic trajectories under 12–20 random atom renumberings per ligand (the #15 acceptance criterion); the pinned seed rule (max ring system → highest degree → canonical SMILES) and periphery→core peeling with permanent rejection of atom-isolating cuts (#15) |
+| Remaining policy heads, policy assembly, seed/anchor selection | Not started | #24 (dependency-ready — #11 landed), #25, #39 |
+| Reaction catalog, chemoselectivity, geometry index | Not started (the taxonomy/relaxation/decomposition layers above are done) | #12 (needs #40), #40 (dependency-ready), #41 (needs #12) |
 | Data pipeline, splits, replay, sharding | Not started | #16–#20 |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
 | Test suites A/B (full scope) | Not started (only issue-scoped tests exist) | #32, #33 |
@@ -343,7 +346,9 @@ repository.
 - The system is an early-stage rebuild: the foundation, the backbone, the
   handle-selection head, the cross-attention decoder, the von Mises
   torsion mathematics, the FP32 hardware gate, the soft-core clash and
-  volume-floor physics, and the reconciled GFlowNet engine layer are
+  volume-floor physics, the reconciled GFlowNet engine layer, the certified
+  32-reaction taxonomy, the #13 junction-torsion/MMFF stages, and the
+  canonical decomposer are
   implemented; everything else in this README describes the *target*
   design, clearly marked as such.
 - The MDP/derivation-DAG semantics and the TB backward term are resolved

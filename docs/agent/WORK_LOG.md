@@ -1039,3 +1039,136 @@ SSH).
    `DecoderOutput.context` + `handle_embeddings` + `von_mises_loss` +
    `apply_logit_mask`/`unmask_target_actions`).
 3. Do not redo #8/#10/#14 — their contracts are pinned by 129 tests.
+
+---
+
+## S-V2-08 — 2026-11-02 — #11 CHEM-01 + #13 CHEM-03 + #15 CHEM-05
+
+- **Agent/session:** autonomous lead-engineering session (Z.ai), UTC.
+- **Repository / branch:** `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- **Starting commit:** `1db55e7` (S-V2-07 docs close).
+- **Issues worked:** #11 (CHEM-01), #13 (CHEM-03), #15 (CHEM-05) — all
+  three implemented, verified, pushed, and closed this session.
+
+### 1. State discovery (per #45 §25.1)
+
+- Read issue #45 in full; confirmed the branch/HEAD matched the S-V2-07
+  handoff (`git status` clean, HEAD `1db55e7` = origin/3d-synV2).
+- Fetched issues #5–#45 with comments; verified open set against
+  STATUS.md: closures at session start were #5, #6, #7, #8, #9, #10,
+  #14, #21, #22, #23, #38 — full agreement, no reconciliation needed.
+- Read DECISIONS D-V2-009 (engine scope boundaries) and D-V2-015 (role
+  separation) as instructed by the handoff; inspected
+  `syntree/engine/environment.py` (JunctionReaction /
+  DEFAULT_REACTION_REGISTRY interim) and the 50 pinned
+  `tests/test_gflownet_reconciliation.py` contracts.
+- Baseline suite: **534/534 green** (matches the handoff).
+
+### 2. #11 CHEM-01 — commit `0e296b0` (closed)
+
+- Implemented `syntree/chemistry/reactions.py`: 32 certified reactions
+  (8 C-N, 7 C-C, 6 C-O/C-S, 6 heterocycle installations, 5
+  deprotections), 9 coarse families with the issue-pinned membership,
+  48 standardized reagent/product certification pairs (16 stereo pairs),
+  junction patterns + priorities for #15/#40/#41, deterministic
+  deprotections (Boc/Alloc/Cbz/O-benzyl/TBDMS).
+- **Conflict resolutions recorded as D-V2-016:** rxn_14/rxn_15 →
+  cross_coupling_cc (the family list omitted them); heterocycles ship
+  pre-cyclized on the synthon side (the pinned single-junction MDP can
+  never close rings — one-step cyclization provenance documented per
+  synthon class); stereo retention by atom-map chirality transfer,
+  *verified* by CIP tests (hard `@` templates would reject valid
+  enantiomeric/achiral reagents).
+- **Empirical pre-verification loop** (scripts/verify_rxn_design.py —
+  session-local, not committed): caught the pyrazine-vs-pyrimidine
+  SMILES trap (`c1nccnc1` is pyrazine; the pyrimidine core is
+  `c1ncccn1`), the boronic-acid `[OX2]` degree subtlety, the Stille
+  template orientation, and the rxn_06/rxn_08 product-template typo —
+  before any code was committed. All 32 reactions then certified 100%
+  round-trip (48 pairs; symmetric-match duplicates deduplicated).
+- Flipped the engine default: `DEFAULT_REACTION_REGISTRY` = the
+  certified taxonomy (27 policy reactions); the generic interim was
+  removed. Full suite after the flip: **616/616** — all 50 pinned
+  contracts stay green bit-for-bit.
+- Tests: `tests/test_32_reactions.py` 82/82 (16 skips by design).
+  Issue #11 updated with evidence and closed (state_reason=completed).
+
+### 3. #13 CHEM-03 — commit `472f4df` (closed)
+
+- Extended `syntree/chemistry/conformer.py` in place:
+  `apply_junction_torsion` (LJ-chosen planar snap for locked junctions
+  via the production #14 flat-bottom clash; phi routes to the first
+  adjacent non-conjugated single synthon-side bond through deterministic
+  BFS; rigid rotations only) and `relax_junction_constrained` (MMFF94 in
+  the static pocket vdW field — pocket heavy atoms embedded as
+  hydrogen-completed typed mini-fragments CH4/NH3/OH2/SH2,
+  position-constrained at 0.05 Å / k=5000; scaffold flat-bottom
+  restraints pinned at 50 kcal/mol/Å² / 0.05 Å).
+- **Measured findings recorded as D-V2-017:** MMFF94's amide torsions
+  sit ~3.7° (bare amide) to ~11.6° (in-pipeline) off planar at their
+  minimum, so planarity is *restored exactly post-minimization* by the
+  same LJ-chosen rigid snap; the engine's covalent-radii placement is
+  deliberately not an MMFF equilibrium, so the bond-length acceptance is
+  implemented as MMFF convergence (< 0.02 Å second-pass).  Debugging
+  also caught: the stale-snapshot clash() read, the bidirectional-
+  adjacency BFS bug (the peripheral rotation swallowed the whole
+  molecule), the multi-conformer zero-position trap (RWMol auto-extends
+  existing conformers with (0,0,0) — strip conformers first), and the
+  missing junction-property carry onto the returned molecule.
+- `finalize_terminal_molecule` gained the opt-in flags
+  `junction_torsion_stage` / `pocket_vdw_relaxation` (defaults preserve
+  the legacy behaviour bit-for-bit; the 50 pinned contracts stay green).
+- Tests: `tests/test_conformer_relaxation.py` 18/18 — acceptance
+  criteria verified (planarity ≤ 1.0°, seed RMSD < 0.15 Å, junction
+  bond < 0.02 Å of equilibrium, pocket static ≤ 0.05 Å).
+  Full suite 634/634. Issue #13 updated with evidence and closed.
+
+### 4. #15 CHEM-05 — commit `864530d` (closed)
+
+- New package `syntree/data/` (first data-layer module);
+  `fragmenter.py`: legal cuts from the #11 junction patterns (bridge
+  bonds, both sides ≥ 2 heavy atoms, one reaction per bond by priority
+  DESC / id ASC); canonical cut-application order with permanent
+  rejection of atom-isolating cuts; the pinned seed rule (max ring
+  system → highest degree → canonical SMILES ASC); periphery-to-core
+  peeling (farthest-from-seed first) with the assembly order as the
+  exact reverse. All labels canonical — identical trajectories under any
+  atom ordering.
+- Tests: `tests/test_canonical_fragmenter.py` 21/21 (12–20 random atom
+  renumberings per ligand incl. the symmetric biphenyl; sequential
+  rejection: amide beats the N-alkyl split of the same amine, ester
+  beats the ether split of the same oxygen). Full suite **655/655**.
+  Issue #15 updated with evidence and closed.
+
+### 5. Verification and pushes
+
+- Every issue followed the #45 §18 protocol: full issue read → deps
+  inspected → implementation → tests → mandatory `git diff --check` /
+  `--stat` / `--unified` review → commit → push to `3d-synV2` → GitHub
+  issue comment (SHA + evidence) → close (state_reason=completed).
+- Pushed commits: `0e296b0` (#11), `472f4df` (#13), `864530d` (#15) —
+  all confirmed on origin (token embedded in the remote URL, verified
+  99 chars per the S-V2-07 §1 note).
+- Full-suite progression this session: 534/534 → 616/616 → 634/634 →
+  655/655 (16 by-design skips: #11 stereo coverage).
+
+### 6. Documentation (this commit)
+
+- DECISIONS.md: D-V2-016, D-V2-017 appended.
+- STATUS.md: #11/#13/#15 closed rows; #12/#18/#24/#28/#29/#40/#42 rows
+  updated; denominator 14/40; pre-existing-failures section refreshed.
+- DEPENDENCIES.md: graph rows updated; the READY set is now #24 (critical
+  path), #40, #16, #32, #36 (authorization gate).
+- HANDOFF.md: continuation instruction rewritten (next: #24 MODEL-04).
+- README §14/§15: three new closed-capability rows + limitation wording.
+
+### 7. Blockers, uncertainty, and next actions
+
+- No new blockers. Unchanged gates: catalog access (#12), MMseqs2 binary
+  (#17), T4 authorization (#36/#43), AiZynthFinder availability (#34/#44).
+- Never verified this session: any GPU/T4 behaviour, training, HF sync
+  (CPU sandbox; #45 §6 unchanged).
+- **Next session: implement #24 MODEL-04** (all deps closed; the next
+  critical-path node; unblocks #25 and retires #42's last open dep).
+  Parallel-safe alternatives: #40 CHEM-06 (unblocks #12), #16 DATA-01,
+  #32 TEST-01.
