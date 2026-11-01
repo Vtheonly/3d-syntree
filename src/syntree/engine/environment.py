@@ -61,12 +61,16 @@ presence of symmetric molecules and alternative reaction orderings
 (multi-parent convergence) and is consumed by
 :class:`~syntree.engine.gflownet.TrajectoryBalanceEngine`.
 
-**Scope boundaries (deliberate, D-V2-009 / D-V2-015).**  The certified 32-reaction
-taxonomy with SMARTS atom mapping is owned by #11 (CHEM-01); this module
-ships a generic single-bond junction model whose reactions *declare* bond
-order, block-side handle class, and resonance-lock behaviour, with the same
-public interface the registry will fill in.  The production flat-bottom
-soft-core clash potential of #14 (CHEM-04,
+**Scope boundaries (deliberate, D-V2-009 / D-V2-015; updated for #11).**
+The certified 32-reaction taxonomy of #11 (CHEM-01,
+``syntree/chemistry/reactions.py``) **is wired in as the default reaction
+registry** (``DEFAULT_REACTION_REGISTRY`` = the 27 policy reactions of the
+certified taxonomy; the generic interim junction model it replaced was
+superseded and removed, D-V2-016).  The MDP/TB contracts above are
+unchanged: same single-junction execution path, same resonance locks —
+now certified (amide/urea/carbamate/ester/thioester trans locks), with
+the amide/ester trans snap pinned by the reconciliation tests.  The
+production flat-bottom soft-core clash potential of #14 (CHEM-04,
 ``syntree/chemistry/conformer.py``) **is wired in**: the sub-bin torsion
 refinement objective below evaluates
 ``syntree.chemistry.conformer.soft_core_clash_energy`` — the bounded,
@@ -76,8 +80,7 @@ demand).  ``soft_core_pocket_energy`` remains exported in its
 *docking-surrogate* role (attractive 12-6 + softened Coulomb) for the
 reward's ``S_dock``/``S_contact`` terms — that is a different injection
 point owned by #30 FLOW-02 and the evaluation stack (a real docking
-engine supersedes it there).  A real docking engine is owned by the
-evaluation stack; :class:`~syntree.engine.rl.ThreeDReward`
+engine supersedes it there).  :class:`~syntree.engine.rl.ThreeDReward`
 documents its surrogate.
 
 This module depends on ``rdkit``, ``numpy``, and (for the terminal oracle
@@ -98,6 +101,7 @@ from rdkit.Chem.rdMolTransforms import GetDihedralRad
 from scipy.optimize import minimize_scalar
 
 from syntree.chemistry.conformer import soft_core_clash_energy
+from syntree.chemistry.reactions import build_junction_reaction_registry
 
 __all__ = [
     "TORSION_BINS",
@@ -235,15 +239,15 @@ class HandleSpec:
 
 @dataclass(frozen=True)
 class JunctionReaction:
-    """A registered junction reaction (generic core model).
+    """A registered junction reaction.
 
     ``block_handle_class`` selects the unique block-side handle whose class
     matches; ``None`` requires the block to expose exactly one handle.
     ``resonance_lock``: ``'trans'`` (amide/ester — snap the junction
     dihedral to planar 180°), ``'cis'`` (0°), or ``None`` (rotatable — the
-    torsion bin action governs the dihedral).  The certified 32-reaction
-    taxonomy with SMARTS atom mapping is owned by #11 CHEM-01 and will
-    populate the same registry interface.
+    torsion bin action governs the dihedral).  The interface is the MDP
+    contract carrier; ``DEFAULT_REACTION_REGISTRY`` populates it with the
+    certified 32-reaction taxonomy of #11 (CHEM-01, D-V2-016).
     """
 
     reaction_id: str
@@ -265,13 +269,12 @@ class JunctionReaction:
         return math.pi if self.resonance_lock == "trans" else 0.0
 
 
-#: Default registry: one generic rotatable junction plus the two resonance
-#: locked coupling archetypes (illustrative until #11 lands the taxonomy).
-DEFAULT_REACTION_REGISTRY: Dict[str, JunctionReaction] = {
-    "generic_coupling": JunctionReaction("generic_coupling"),
-    "amide_formation": JunctionReaction("amide_formation", resonance_lock="trans"),
-    "ester_formation": JunctionReaction("ester_formation", resonance_lock="trans"),
-}
+#: Default registry: the 27 policy reactions of the certified 32-reaction
+#: taxonomy of #11 CHEM-01 (``syntree/chemistry/reactions.py``), built in
+#: the engine's ``JunctionReaction`` format.  This supersedes and removed
+#: the generic interim junction model (D-V2-016): there is exactly one
+#: authoritative reaction registry in V2.
+DEFAULT_REACTION_REGISTRY: Dict[str, JunctionReaction] = build_junction_reaction_registry()
 
 
 @dataclass

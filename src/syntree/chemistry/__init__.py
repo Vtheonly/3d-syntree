@@ -1,12 +1,16 @@
 """V2 chemistry layer: production pocket physics and reaction machinery.
 
-Public surface (issue #14 CHEM-04 landed first; #11/#12/#13/#15/#40/#41
+Public surface (issue #14 CHEM-04 and #11 CHEM-01 landed; #12/#13/#15/#40/#41
 follow per the dependency map):
 
 * :mod:`syntree.chemistry.conformer` — the flat-bottom soft-core
   Lennard-Jones clash potential (the #42 torsion-refinement objective),
   atom typing, and the cavity-volume / heavy-atom floor machinery wired
   into the stationary reward.
+* :mod:`syntree.chemistry.reactions` — the certified 32-reaction taxonomy
+  with its 9-family coarse mapping, standardized reagent/product
+  certification pairs, deterministic deprotections, and the engine-format
+  registry builder (#11 CHEM-01, D-V2-016).
 """
 
 from __future__ import annotations
@@ -33,6 +37,19 @@ from syntree.chemistry.conformer import (
     volume_fill_ratio,
     volume_floor_penalty,
 )
+from syntree.chemistry.reactions import (
+    CERTIFIED_REACTIONS,
+    DEPROTECTIONS,
+    POLICY_REACTIONS,
+    REACTION_CATEGORIES,
+    REACTION_FAMILIES,
+    ReactionRegistryError,
+    apply_all_deprotections,
+    apply_deprotection,
+    build_junction_reaction_registry,
+    certify_reaction,
+    certify_registry,
+)
 
 __all__ = [
     "CLASH_SPIKE_CEILING",
@@ -55,4 +72,15 @@ __all__ = [
     "soft_core_clash_energy",
     "volume_fill_ratio",
     "volume_floor_penalty",
+    "CERTIFIED_REACTIONS",
+    "DEPROTECTIONS",
+    "POLICY_REACTIONS",
+    "REACTION_CATEGORIES",
+    "REACTION_FAMILIES",
+    "ReactionRegistryError",
+    "apply_all_deprotections",
+    "apply_deprotection",
+    "build_junction_reaction_registry",
+    "certify_reaction",
+    "certify_registry",
 ]
