@@ -11,10 +11,29 @@ follow per the dependency map):
   with its 9-family coarse mapping, standardized reagent/product
   certification pairs, deterministic deprotections, and the engine-format
   registry builder (#11 CHEM-01, D-V2-016).
+* :mod:`syntree.chemistry.chemoselectivity` — the reaction-aware
+  chemoselectivity and competing-handle screen for synthon curation
+  (#40 CHEM-06): the free-group vocabulary with orthogonal protection
+  honoured by construction, the per-class exclusion matrix (self-reactive
+  pairs, organometallic quenching, competing handles/electrophiles/SNAr
+  positions, catalyst poisons), the differentiated 2,4-dihalo-1,3-azine
+  exemption, and the catalog manifest with per-rule impact reporting.
 """
 
 from __future__ import annotations
 
+from syntree.chemistry.chemoselectivity import (
+    ALL_HANDLE_CLASSES,
+    ChemoscreenResult,
+    CurationManifest,
+    ChemoselectivityError,
+    chemoselectivity_rule_report,
+    detect_free_groups,
+    detect_handle_instances,
+    handle_class_of_atom,
+    screen_block,
+    screen_catalog,
+)
 from syntree.chemistry.conformer import (
     CLASH_SPIKE_CEILING,
     DEFAULT_ATOM_TYPE,
