@@ -1557,3 +1557,10 @@ record (CrossDocked tar 1.6 GB, PDBbind zip 625 MB,
   funnel over 290,648 source records with the #40 chemoselectivity
   screen applied before admission, per the audit addendum). Training/
   validation: not yet (#17–#20 pending).
+
+
+## S-V2-11 — 2026-11-02 — Continuous push directive
+
+Owner directive: commit each bounded, coherent unit immediately after its applicable checks pass and push to `origin/3d-synV2`; do not wait until session end. Push recovery checkpoints before risky work and delegation, and after each independently recoverable batch. Verify the remote ref after each push and record the SHA/evidence in existing session artifacts. Preserve concurrent history. Keep credentials out of tracked content. See D-V2-024 and the updated HANDOFF.
+
+Documentation-only session: no implementation issues #5–#44 were changed or closed. Issue #45 remains open.
