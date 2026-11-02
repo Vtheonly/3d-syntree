@@ -222,3 +222,8 @@ committed).
    "Invalid username or token", check `git remote get-url origin | wc -c`
    (≈190 means the token is embedded across both remote lines, ≈86
    means it cloned anonymously — fix with `git remote set-url`).
+
+
+## Continuous commit-and-push rule (owner directive)
+
+Commit each bounded, coherent unit as soon as its applicable checks pass, then push it immediately to `origin/3d-synV2`; never defer all pushes until session end. Keep the unpushed window near zero. Before risky or long-running work and delegation, push a verified recovery checkpoint; push each independently recoverable completed batch. After every push, fetch/inspect the remote and verify the exact commit SHA is reachable from `origin/3d-synV2`, recording the SHA and evidence in this work log or handoff. On concurrent remote movement, fetch and merge/reconcile without force-pushing or discarding history, rerun affected checks, then push and verify. Keep implementation changes on `3d-synV2`. Never commit knowingly broken work or weaken tests to push faster. Never put GitHub or Hugging Face credentials in prompts, tracked files, logs, or command history; use secure credentials/environment secrets and report authentication blockers. Avoid recursive verification-only commits; record verification in existing session artifacts.
