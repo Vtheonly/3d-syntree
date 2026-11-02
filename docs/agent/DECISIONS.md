@@ -1003,3 +1003,14 @@
   consumers #18/#24/#39/#41/#44 (read the pinned schema; do not
   re-derive the descriptor or projection); #37 (the HF dataset repo is
   the catalog artifact channel).
+
+
+## D-V2-024 — Continuous commit-and-push persistence
+
+**Status:** accepted by explicit owner direction (2026-11-02).
+
+**Decision:** Commit each bounded, coherent unit immediately after its applicable checks pass, then push it to `origin/3d-synV2` without waiting for session end. Push recovery checkpoints before risky or long-running work, before delegation, and after each independently recoverable batch. Verify every push by inspecting the remote ref and record the exact SHA and evidence in the existing work log or handoff. Preserve concurrent remote history; never force-push. Keep implementation changes on `3d-synV2`. Credentials must remain outside prompts and tracked files and must use secure credential storage.
+
+**Rationale:** The S-V2-10 workspace recycle demonstrated that a session-end push can lose completed implementation work. Immediate pushes make verified progress visible and recoverable. A local commit without verified remote presence is not durable progress.
+
+**Limits:** This does not permit knowingly broken commits, weakened tests, or recursive verification-only commits.
