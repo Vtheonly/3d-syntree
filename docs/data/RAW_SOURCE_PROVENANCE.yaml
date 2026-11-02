@@ -39,6 +39,27 @@ sources:
     # https://files.rcsb.org/download/<ID>.pdb (RCSB verified live;
     # X-ray/resolution parsed from the structure headers, crystallization
     # artifacts dropped).
+    #
+    # SUPERSEDED 2026-11-02 (S-V2-10): the `name` column is a
+    # protein-family *representative* PDB id, not the structure carrying
+    # the ligand — a measured 24-PDB / 367-row sample resolved only 49
+    # annotations (13%) against the named structure (the parquet was
+    # built from BindingMOAD's family-grouped every.csv; the per-row
+    # true PDB ids were dropped, see the dataset's moad.ipynb).  Retained
+    # for provenance; #16 DATA-01 consumes bindingmoad_final instead.
+  bindingmoad_final:
+    url: "https://raw.githubusercontent.com/Mugsie1969/BindingMOAD/main/BindingMOAD_data_for_PDB_1_31_2022.csv"
+    filename: "bindingmoad_final.csv"
+    hash_algo: null
+    expected_hash: null
+    # Verified 2026-11-02: HTTP 200, 523,117 bytes, 15,223 binding
+    # records with TRUE per-row PDB ids (15,026 unique PDBs, 11,474
+    # unique ligand components; Kd/Ki/ic50/Ka with units).  Public
+    # GitHub mirror of the final BindingMOAD binding data (site sunset
+    # 2024-07-01; PDB snapshot 2022-01-31).  Ligand bond-order templates
+    # from the RCSB chemcomp descriptor API (verified live; e.g. MTX
+    # returns stereo-preserving SMILES).  Structures per PDB id from
+    # https://files.rcsb.org/download/<ID>.pdb.
   enamine_building_blocks:
     url: "https://huggingface.co/datasets/Lin-Glory/Enamine_Rush-Delivery_Building_Blocks-US/resolve/main/Enamine_Rush-Delivery_Building_Blocks-US.zip"
     filename: "enamine_rush_delivery_bb.zip"
