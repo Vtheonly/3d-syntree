@@ -1373,3 +1373,187 @@ criteria CPU-verifiable and verified).
   the documented selectivity literature; #24's registry-mask
   cardinalities against the certified taxonomy). Training/validation
   on real data: not yet (data pipeline issues #16–#19 pending).
+
+---
+
+# Session S-V2-10 — 2026-11-02 — #16 DATA-01 closed; #12 catalog artifacts built full-scale (build code lost pre-commit — incident); continuation session pushed the surviving evidence
+
+## 1. Session parameters
+
+- Agent session identifier: S-V2-10 (autonomous continuation from the
+  S-V2-09 handoff; entry prompt = the permanent #45 pointer), plus an
+  S-V2-10c continuation (same date) executing the owner's "just push it"
+  directive after the primary session hit its context limit.
+- Repository: `Vtheonly/3d-syntree`, branch `3d-synV2`.
+- Starting commit: `01f3bc0` (S-V2-09 docs close; clean tree).
+- Baseline suite: 914 passed, 16 skipped (S-V2-09 close state).
+- Issues targeted (per the S-V2-09 handoff's continuation instruction):
+  #16 DATA-01 (primary, critical path), #12 CHEM-02 (the parallel-safe
+  alternative — the handoff noted the licensed-mirror blocker; the
+  mirror proved reachable).
+- Environment: CPU-only dev sandbox (Python 3.12.16, torch 2.15.0+cpu,
+  torch_geometric 2.8.1, rdkit 2026.09.1, numpy 2.1.3). **The sandbox
+  recycled twice mid-session** (~02:44 UTC after the #16 close, and
+  ~17:56 UTC during the #12 close-out) — this shaped the session's
+  outcome (see §2.3).
+
+## 2. Work performed
+
+### 2.1 #16 DATA-01 — multi-source preprocessing pipeline (CLOSED)
+
+**Implemented and executed full-scale**, committed `fccd670`, pushed
+(verified), issue closed with the full evidence comment (2026-11-02):
+
+- `src/syntree/data/preprocessing.py` — the canonical standardization
+  library: 10 Å pocket sphere policy (documented
+  water/additive/metal/modified-residue handling), ligand filters with
+  exact rejection codes (MW 150–800, ≥10 heavy atoms, mandatory
+  sanitization), PDB-ligand reconstruction via depositor CONECT
+  connectivity + annotation-SMILES bond-order templates
+  (`rdDetermineBonds` evaluated and REJECTED on RDKit 2026.09.1: wrong
+  bond orders — benzene → `c1c#cc#cc#cc#1` — and spurious
+  molecular-charge errors), full-chain sequence extraction (the #17
+  clustering input), atomic deterministic gzip artifacts, append-only
+  resumable manifest.
+- `scripts/preprocess_multidataset.py` — the issue-pinned driver:
+  streaming CrossDocked tar ingestion (no extraction), PDBbind zip with
+  mol2 fallback (676 non-kekulizable type-4 SDFs recovered),
+  BindingMOAD final CSV with TRUE per-row PDB ids (the old parquet's
+  `name` column is a protein-family representative — a 24-PDB/367-row
+  sample resolved only 13%; superseded, provenance updated), RCSB
+  entry-API resolution/method re-verification (PDBbind X-ray ≤ 2.5 Å
+  gate), bounded-parallel workers, resume-safe time budgets.
+- `tests/test_preprocessing.py` — 28 tests.
+- **Full-scale run:** 204,005 complexes across the three pinned mirrors
+  (checksums verified) → **170,954 accepted / 33,051 rejected with
+  exact reason codes, zero unhandled exceptions**; 341,913 atomic
+  artifacts; `processed_manifest.jsonl` with 204,005 complete records
+  (explicit documented nulls, never fabricated).
+- Suite after #16: **942 passed / 16 skipped**.
+
+### 2.2 #12 CHEM-02 — Enamine REAL 50k catalog: artifacts built full-scale and verified
+
+The licensed-mirror blocker resolved (Enamine Rush-Delivery BB US
+mirror reachable; SDF `..._290648cmpd_20260916.sdf`, sha256
+`e91a26c9…` verified against the provenance record). The build was
+**executed end-to-end at full scale**:
+
+- **Curation funnel** (all 290,648 source records): 290,647 sanitizable
+  → 290,356 unique → 191,639 basic-pass (MW ≤ 250, rotatable ≤ 3,
+  heavy ∈ [4,18]) → registry handle detection over all 19 certified
+  block classes → 152,489 certified pool → **39,150 chemoselectivity
+  exclusions** via the #40 `screen_block`/`screen_catalog` machinery
+  (competing_nucleophile 17,235; quenching_protic_group 7,397;
+  competing_identical_handles 4,310; competing_snar_position 1,022;
+  self_reactive_pair 771; seed_self_reactive_pair 757;
+  competing_electrophile 150; catalyst_poison 44).
+- **Stratified selection** (D-V2-023): 50,000 target — 35,000-saturated
+  stratum + aromatic refill in canonical-SMILES order, 5,000-row
+  reserve buffer; certified saturated supply is the measured binding
+  constraint (every certified saturated block admitted; no strata
+  fallback needed).
+- **`pharm3d` encoding:** 2,137-dim raw descriptor (2048 Morgan + 47
+  physicochemical + 6 3D-shape + 5 electrostatic + 30 handle direction
+  vectors + 1 norm) → per-feature z-normalization → orthonormalized QR
+  Johnson–Lindenstrauss projection (seed 2026) to 256 → L2-normalized;
+  ETKDGv3 conformers with full MMFF94 relaxation where parameterizable
+  (per-row `conformer_methods`: `etkdg3` 17,493 / `etkdg3+mmff94`
+  32,507); fail-closed encoding with named reasons (16 failures: 12
+  ETKDG-no-conformer, 4 MMFF-untypeable B/K outside the documented
+  coupling-handle fallback).
+- **Artifact:** `enamine_real_50k_pharm3d_d256.h5` — 67,797,608 bytes,
+  sha256 `8b8c13a0581ec91db6ace643e13d9d46c8b29211e1a264b2bdd62bb90bf2ab7e`,
+  schema `pharm3d-v2.0`/`catalog-v2.0`, pinned registry digest
+  `32ea6db9…`, immutable. **All four #12 acceptance criteria verified**
+  (50,000 unique entries; `[50000, 256]` all-finite; mean Fsp3 0.715094
+  ≥ 0.45; mean rotatable 1.5361 ≤ 1.8; 69.968% saturated) —
+  independently re-computed from the HDF5 during S-V2-10c, not just
+  read from the manifest.
+
+### 2.3 INCIDENT — sandbox recycle lost the #12 build code before commit
+
+The session developed the #12 build code
+(`syntree/chemistry/synthon_encoder.py` — handle detection + the
+`pharm3d` descriptor + QR projection; `scripts/build_synthon_catalog.py`
+— the resumable screen/select/encode driver; and its tests) in the
+workspace repo clone and completed the full-scale build at 17:44 UTC.
+The sandbox recycled at ~17:56 UTC **before the mandatory commit+push
+step**; the untracked working clone was lost with it. What survived:
+every build artifact (screen outcomes, selection, encode metadata, the
+HDF5, the manifest), all raw sources, and the already-pushed #40 screen
+machinery (`screen_block` / `screen_catalog` in
+`syntree/chemistry/chemoselectivity.py`).
+
+**S-V2-10c response (this continuation, under the owner's "just push
+it" directive):**
+
+1. Re-verified the artifact end-to-end: checksum match; independent
+   HDF5 re-computation of every acceptance number (§2.2); strata,
+   class-vocabulary, conformer-provenance and pinned-version audit.
+2. Uploaded the catalog + manifest + funnel + checksum to the pinned
+   artifact store — HF Hub dataset **`JJKK1212/3d-syntree-v2-catalog`**
+   (private; owned by the project owner's account `JJKK1212`).
+3. Committed the version-controllable evidence to the branch
+   (`docs/data/catalog/`: manifest, funnel, checksum sidecar, README)
+   together with this session record and the refreshed agent docs.
+4. Posted the honest #12 status comment (evidence + incident +
+   remaining scope). **#12 stays OPEN** — per #45 §18 the closure
+   requires the code deliverables in-repo; the remaining scope is the
+   re-landing of `synthon_encoder.py` + the build driver + tests,
+   pinned against the surviving artifacts (schema, funnel semantics,
+   selection order, and acceptance all pinned in the manifest).
+
+The #16 full-scale **output** artifacts were also hit by the recycles:
+47,483 of 170,954 accepted-complex artifact pairs survive plus the
+chemcomp cache; `processed_manifest.jsonl` (the #17 input) is lost.
+Regeneration is mechanical — the driver is in-repo (`fccd670`) and all
+three raw sources survive with checksums pinned in the provenance
+record (CrossDocked tar 1.6 GB, PDBbind zip 625 MB,
+`bindingmoad_final.csv`).
+
+## 3. Commits and pushes (this session)
+
+| Commit | Content | Pushed |
+|---|---|---|
+| `fccd670` | #16 DATA-01 implementation + tests (primary session) | ✓ origin `3d-synV2` |
+| (this commit) | S-V2-10 docs: #12 catalog evidence (`docs/data/catalog/`), DECISIONS D-V2-021/022/023 (artifact-pinned reconstruction), STATUS, DEPENDENCIES, HANDOFF, README | ✓ origin `3d-synV2` |
+
+## 4. GitHub issue updates
+
+- #16: full evidence comment; **closed as completed** (both acceptance
+  criteria verified at full scale).
+- #12: evidence + incident comment; **left OPEN** with the precise
+  remaining scope (re-land the build code against the surviving
+  artifacts).
+- #45: untouched (permanent constitution; never closed).
+
+## 5. Final state and next actions
+
+- Suite: **942 passed, 16 skipped** (was 914 at session start).
+- Clean-room closures: 17 of 40 (+1 implemented-awaiting-CUDA #25,
+  +1 artifacts-built-awaiting-code #12).
+- Next actions (see the refreshed HANDOFF): (1) re-land the #12 build
+  code and close #12; (2) re-run `scripts/preprocess_multidataset.py`
+  to regenerate `processed_manifest.jsonl` (raws + checksums survive);
+  (3) #17 DATA-02 (mmseqs 2-binary already staged at
+  `3d-syntree-work/tools/mmseqs` in the dev workspace); (4) #32 TEST-01;
+  #36 OPS-01 remains user-authorization-gated (and would also close
+  #25's CUDA criterion).
+
+## 6. Honest verification ledger
+
+- Attempted: #16, #12.
+- Implemented: #16 fully (code + tests + full-scale execution, closed).
+  #12: the deliverable **artifacts** were built at full scale and every
+  acceptance criterion re-verified; the build **code** was lost to the
+  sandbox recycle before commit and is NOT claimed as implemented —
+  #12 remains open with the re-landing scope.
+- Tested locally: #16 (28 new tests; suite 942/942 + 16 by-design
+  skips). #12's tests were part of the lost working tree.
+- Tested on T4: **none** — impossible in this sandbox (CPU-only); no
+  GPU claim is made anywhere.
+- Scientifically validated: data-level (#16's full-scale funnel with
+  exact rejection codes over 204,005 complexes; #12's measured curation
+  funnel over 290,648 source records with the #40 chemoselectivity
+  screen applied before admission, per the audit addendum). Training/
+  validation: not yet (#17–#20 pending).

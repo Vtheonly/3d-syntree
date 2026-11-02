@@ -935,3 +935,71 @@
 - **Affected modules/issues:** `syntree/chemistry/chemoselectivity.py`
   (#40 closed at `044adca`; #12 consumes the screen + manifest inside
   catalog curation; #41 may reuse the handle detectors).
+
+## D-V2-021/022/023 — 2026-11-02 — #12 catalog build decisions (artifact-pinned record; D-V2-021/022 rationale text lost to the S-V2-10 sandbox recycle)
+
+> **Provenance warning (recorded per #45 §19.1):** the S-V2-10 session
+> drafted these decisions but its working tree was recycled before the
+> docs commit. `catalog_manifest.json::decision_log_refs` pins the IDs
+> `["D-V2-021", "D-V2-022", "D-V2-023"]`; only D-V2-023's operative
+> text survives verbatim (inside the manifest). This entry pins every
+> binding fact that survives in the artifacts. When the build code is
+> re-landed (#12's remaining scope), the re-implementation MUST satisfy
+> these constraints and the restored rationale texts must be folded
+> back into this entry.
+
+- **D-V2-023 (survives verbatim in the manifest):** *"issue target 70%
+  saturated / 30% aromatic; the certified saturated supply is the
+  measured binding constraint: every certified saturated block is
+  admitted and the remainder refilled from the aromatic stratum in
+  canonical-SMILES order."* Selection arithmetic: 50,000 target =
+  35,000-saturated stratum + aromatic refill; 5,000-row reserve buffer
+  absorbed 16 fail-closed encode failures (`reserve_used: true`); final
+  34,984 saturated (69.968%) / 15,016 aromatic (30.032%);
+  `strata_fallback_used: false`.
+- **Artifact-pinned binding facts** (attribution to D-V2-021 vs
+  D-V2-022 to be restored with the code):
+  1. **d_raw = 2,137, not the issue body's "2138"**: 2048 (Morgan,
+     radius 2, normalized) + 47 (physicochemical scalars) + 6 (3D shape)
+     + 5 (electrostatics) + 30 (handle direction vectors) + 1 (norm)
+     = 2137 — the stated 2138 does not add up. Pinned by
+     `normalization/mean` shape 2137 and `projection/Q` shape
+     `[2137, 256]` in the HDF5.
+  2. **Projection protocol:** per-feature z-normalization (statistics
+     computed over the selected 50,000 rows and STORED in the h5
+     `normalization/` group) → orthonormalized QR Johnson–Lindenstrauss
+     matrix, **seed 2026** (`projection/seed`) → L2-normalization of the
+     projected row (the issue's e_B formula). The seed is part of the
+     frozen artifact identity; a rebuild must reproduce it bit-exactly.
+  3. **Conformer/encoding policy:** ETKDGv3 embedding with full MMFF94
+     relaxation where MMFF types the molecule; per-row provenance in
+     `catalog/conformer_methods` (`etkdg3` 17,493 / `etkdg3+mmff94`
+     32,507 — rows MMFF cannot type keep the ETKDG geometry, recorded
+     honestly). Encoding is fail-closed with named reasons; the 16
+     failures (12 ETKDG-no-conformer; 4 MMFF-untypeable `['B','K']`
+     outside the documented B/Zn/Sn coupling-handle fallback) were
+     replaced from the reserve, never silently dropped.
+  4. **Screen-before-admission is mandatory** (audit addendum): the #40
+     chemoselectivity screen (`screen_block`/`screen_catalog`) ran
+     inside the curation loop — 39,150 exclusions with per-rule counts
+     embedded in the manifest; basic filters alone never admit a
+     synthon-role record.
+  5. **The reaction-registry digest is part of the manifest**
+     (`32ea6db9ce9d56747c6a3cc957e3dfa0c2413fa02a6a583cd07e23ff6f4c3f3d`)
+     — the catalog is only valid against that certified taxonomy; any
+     registry change invalidates the certification and requires a
+     re-screen.
+  6. **The HDF5 artifact is immutable** (`artifact.immutable: true`):
+     any rebuild produces a NEW artifact version with a new checksum;
+     this one is never mutated in place.
+- **Evidence:** `docs/data/catalog/catalog_manifest.json` + the HDF5
+  checksum sidecar (this commit); independent re-verification of all
+  four acceptance criteria from the HDF5 (S-V2-10c, recorded in
+  `WORK_LOG.md` §2.2); HF dataset `JJKK1212/3d-syntree-v2-catalog`.
+  Unit tests to be re-landed with the build code (#12 open scope).
+- **Affected modules/issues:** #12 (remaining scope: re-land
+  `syntree/chemistry/synthon_encoder.py` +
+  `scripts/build_synthon_catalog.py` + tests against these pins);
+  consumers #18/#24/#39/#41/#44 (read the pinned schema; do not
+  re-derive the descriptor or projection); #37 (the HF dataset repo is
+  the catalog artifact channel).

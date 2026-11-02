@@ -12,11 +12,14 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-02 (session S-V2-09 close: #24 MODEL-04 and
-> #40 CHEM-06 implemented, verified, and closed; #25 MODEL-05 implemented
-> and verified on CPU, remaining OPEN pending the CUDA acceptance
-> criterion — decisions D-V2-018/019/020; clean-room closures now #5, #6,
-> #7, #8, #9, #10, #11, #13, #14, #15, #21, #22, #23, #24, #38, #40).
+> Last synchronized: 2026-11-02 (session S-V2-10 close: #16 DATA-01
+> implemented, executed full-scale, and CLOSED at `fccd670` (suite 942/16);
+> #12 CHEM-02 catalog artifacts built full-scale with all acceptance
+> criteria verified and synced to the HF artifact store — build code lost
+> to a sandbox recycle before commit, issue left OPEN on the re-landing
+> scope (decisions D-V2-021/022/023, artifact-pinned); clean-room closures
+> now #5, #6, #7, #8, #9, #10, #11, #13, #14, #15, #16, #21, #22, #23,
+> #24, #38, #40).
 
 ## Legend
 
@@ -35,12 +38,12 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 9 | MATH-03 | Continuous cosine cutoff envelopes | **Closed** (2026-11-01) | `syntree/models/cutoff.py` + `GaussianRadialBasis` integration | `bf735a6` | `tests/test_cosine_cutoff.py` 46/46; both #9 acceptance criteria verified (bitwise-zero radial vector at `d = r_cut + 1e-4`; gradient → 0 continuously as `d → r_cut⁻`); envelope integrated inside the RBF producer for the backbone (#21) and handle-head (#22) bases — D-V2-011; full suite 347/347 | — |
 | 10 | MATH-04 | Fail-closed FP32 precision engine | **Closed** (2026-11-02) | `syntree/utils/hardware.py` | `5ce4f5e` | `tests/test_fp32_enforcement.py` 35/35; both acceptance criteria verified (simulated Tesla T4 cc 7.5 forces `precision="fp32"` + `grad_scaler=False`; `mixed_precision="fp16"` on cc 7.5 logs the FAIL-CLOSED warning and executes pure FP32) — D-V2-014; AST ban on GradScaler/autocast/torch.amp across `src/syntree` | — |
 | 11 | CHEM-01 | Certified 32-reaction taxonomy | **Closed** (2026-11-02) | `syntree/chemistry/reactions.py` | `0e296b0` | `tests/test_32_reactions.py` 82/82; both acceptance criteria verified (100% round-trip forward replay on 48 standardized reagent pairs; 16 stereo pairs with CIP retention); `DEFAULT_REACTION_REGISTRY` = the certified taxonomy (interim superseded, D-V2-016) | — |
-| 12 | CHEM-02 | Enamine REAL 50k catalog + pharm3d | Blocked (catalog access; #11 and #40 satisfied 2026-11-02 — the chemoselectivity screen + manifest are ready to consume) | `syntree/chemistry/` | — | — | Mirror URL + SHA-256 pinned in provenance doc; remaining blocker: licensed catalog download |
+| 12 | CHEM-02 | Enamine REAL 50k catalog + pharm3d | **In Progress — artifacts built & verified** (2026-11-02, S-V2-10: full-scale build over 290,648 source records; all 4 acceptance criteria verified and independently re-checked; HDF5 + manifest synced to HF `JJKK1212/3d-syntree-v2-catalog`; evidence committed at `docs/data/catalog/`); **build code lost to the sandbox recycle before commit** — remaining scope: re-land `syntree/chemistry/synthon_encoder.py` + `scripts/build_synthon_catalog.py` + tests against the artifact pins | `syntree/chemistry/` (pending) | (this session, evidence only) | manifest acceptance block + independent HDF5 re-computation (50,000 unique; [50000,256] finite; Fsp3 0.7151; rot 1.5361; 69.97% saturated) | Re-land the code, pin tests to the surviving artifacts, then close |
 | 13 | CHEM-03 | Scaffold-constrained MMFF94 relaxation | **Closed** (2026-11-02) | `syntree/chemistry/conformer.py` + `finalize_terminal_molecule` opt-in flags | `472f4df` | `tests/test_conformer_relaxation.py` 18/18; both acceptance criteria verified (amide planarity ≤1.0° restored exactly post-MMFF — a measured MMFF94 finding; seed RMSD <0.15 Å; junction bond <0.02 Å of MMFF equilibrium; pocket static ≤0.05 Å) — D-V2-017 | — |
 | 14 | CHEM-04 | Soft-core LJ & volume floors | **Closed** (2026-11-02) | `syntree/chemistry/conformer.py` + engine wiring | `d61a7fc` | `tests/test_soft_core_chemistry.py` 50/50; both acceptance criteria verified (V(0.5)=484.85 kcal/mol < 500 for every supported element pair vs 1.58e9 rigid wall; 10-heavy-atom assembled molecule incurs the explicit heavy-atom penalty) — D-V2-015; full suite 534/534 incl. all 50 engine contracts | — |
 | 15 | CHEM-05 | Canonical assembly ordering / decompositions | **Closed** (2026-11-02) | `syntree/data/fragmenter.py` | `864530d` | `tests/test_canonical_fragmenter.py` 21/21; acceptance verified (identical trajectories under 12–20 atom renumberings per ligand incl. the symmetric biphenyl) | — |
-| 16 | DATA-01 | Multi-source preprocessing pipeline | Ready (deps: #5) | `syntree/data/` + `scripts/` | — | — | Provenance: `docs/data/RAW_SOURCE_PROVENANCE.yaml` |
-| 17 | DATA-02 | MMseqs2 30% clustered splits | Blocked (needs #16) | `syntree/data/` | — | — | |
+| 16 | DATA-01 | Multi-source preprocessing pipeline | **Closed** (2026-11-02) | `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` | `fccd670` | `tests/test_preprocessing.py` 28/28; both acceptance criteria verified at full scale: 204,005 complexes, zero unhandled exceptions (170,954 accepted / 33,051 exact-code rejections); manifest completeness (204,005 records, explicit documented nulls); suite 942/942 + 16 by-design skips — note: the run's output artifacts were partially lost to the sandbox recycle (47,483/170,954 pairs + `processed_manifest.jsonl`); regeneration is mechanical via the in-repo driver (raws + checksums survive) | — |
+| 17 | DATA-02 | MMseqs2 30% clustered splits | **Ready** (deps: #16 closed) — first regenerate `processed_manifest.jsonl` via the in-repo #16 driver (raws survive, checksums pinned); mmseqs binary staged in the dev workspace (`3d-syntree-work/tools/mmseqs`) | `syntree/data/` | — | — | External dep: mmseqs2 binary in the execution environment |
 | 18 | DATA-03 | Trajectory extraction + exact replay | Blocked (needs #12, #17, #41 — #11 and #15 satisfied 2026-11-02) | `syntree/data/` | — | — | |
 | 19 | DATA-04 | Compressed sharding engine | Blocked (needs #18) | `syntree/data/` | — | — | |
 | 20 | DATA-05 | Coordinate/dihedral augmentation | Blocked (needs #19) | `syntree/data/` | — | — | Train split only |
@@ -69,18 +72,18 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
 | 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: 16 (#5, #6, #7, #8,
-#9, #10, #11, #13, #14, #15, #21, #22, #23, #24, #38, #40 — clean-room
-era). Implemented-awaiting-verification: 1 (#25, CUDA criterion). #45
-excluded by standing rule.
+**Progress denominator: 40 issues (#5–#44).** Closed: 17 (#5, #6, #7, #8,
+#9, #10, #11, #13, #14, #15, #16, #21, #22, #23, #24, #38, #40 —
+clean-room era). Implemented-awaiting-verification: 1 (#25, CUDA
+criterion). Artifacts-built/awaiting-code: 1 (#12). #45 excluded by
+standing rule.
 
 ## Pre-existing failures
 
-None. The clean-room suite is 914/914 green (655 at S-V2-08 + 100
-hierarchical-heads (#24) + 48 policy-assembly (#25) + 111
-chemoselectivity (#40) tests, session S-V2-09; 16 #11 skips are by
-design — reactions without a dedicated stereo pair); there are no
-inherited failures.
+None. The clean-room suite is 942 passed / 16 skipped green (914 at
+S-V2-09 + 28 preprocessing (#16) tests, session S-V2-10; 16 #11 skips
+are by design — reactions without a dedicated stereo pair); there are
+no inherited failures.
 
 ## Session log pointer
 

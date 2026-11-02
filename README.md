@@ -332,13 +332,15 @@ tracker; last updated 2026-11-02, session S-V2-09):
 | Complete policy assembly (`SynTreePolicy`) + parameter audit | **Implemented, CPU-verified** — the CUDA forward-pass criterion awaits the authorized T4 runtime | `syntree/models/policy.py` @ `84fd3e7` (S-V2-09), 48/48 tests — one registered module with the full frozen stack (checkpointed backbone, handle head, decoder, #24 heads, #39 seed/anchor component); 10,880,719 params = 43.5 MB FP32 < the 50 MB bound (D-V2-019); full-profile forward zero-NaN/Inf on CPU; the tied table shared and counted once (#25) |
 | Learnable seed-fragment & pocket-anchor selection (policy side) | **Implemented** (via #25): deterministic rotation-equivariant anchor generator, factorized `P(anchor\|pocket)·P(seed\|anchor,pocket)` head, masks, TB log-prob contribution | `syntree/models/policy.py` @ `84fd3e7`, pinned in `tests/test_policy_assembly.py` — generator determinism/equivariance, subpocket separation, law validity, gradients through the checkpointed backbone into the tied table; the environment-side candidate-state rewiring and supervised seed labels remain #39's open scope (blocked on #12) |
 | Reaction-aware chemoselectivity & competing-handle curation screen | **Done, verified, closed** | `syntree/chemistry/chemoselectivity.py` @ `044adca` (S-V2-09), 111/111 tests — the free-group vocabulary with orthogonal protection passing by construction; the per-class exclusion matrix (self-reactive pairs, organometallic quenching, competing handles/electrophiles/SNAr positions, catalyst poisons); the asymmetric 2,4-dihalo-1,3-azine exemption; the catalog manifest with per-rule impact counts/percentages (#40, D-V2-020) |
-| Reaction catalog, geometry index | Not started (the taxonomy, relaxation, decomposition, and chemoselectivity layers above are done) | #12 (chemoselectivity satisfied — remaining blocker: licensed catalog access), #41 (needs #12) |
-| Data pipeline, splits, replay, sharding | Not started | #16–#20 |
+| Enamine REAL 50k synthon catalog + `pharm3d` d256 embeddings | **Artifacts built, verified; build code re-landing pending** | S-V2-10 full-scale build: 290,648 source records screened (sha256-pinned mirror) → 152,489 certified pool (registry handle detection) → #40 chemoselectivity screen (39,150 exclusions) → 50,000 selected (34,984 saturated / 15,016 aromatic; D-V2-023) → 2,137-dim `pharm3d` → QR-JL projection (seed 2026) → `[50000, 256]` all-finite; mean Fsp3 0.7151, mean rotatable 1.5361 — all four #12 acceptance criteria independently re-verified. Artifact: `enamine_real_50k_pharm3d_d256.h5` (67,797,608 B, sha256 `8b8c13a0…`, immutable) on HF `JJKK1212/3d-syntree-v2-catalog`; evidence at `docs/data/catalog/`. The build **code** was lost to a sandbox recycle before commit — #12 stays open until `synthon_encoder.py` + the driver + tests are re-landed against the artifact pins |
+| Hashed inverted synthon index | Not started | #41 (needs #12 code re-landing) |
+| Multi-source preprocessing pipeline (CrossDocked / PDBbind / BindingMOAD → uniform pocket+ligand artifacts + provenance manifest) | **Done, verified, closed** | `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` @ `fccd670` (S-V2-10), 28/28 tests — full-scale run over 204,005 complexes with zero unhandled exceptions (170,954 accepted / 33,051 exact-code rejections); CONECT+template ligand reconstruction (`rdDetermineBonds` evaluated and rejected on RDKit 2026.09.1); the MOAD annotations mirror superseded by the final binding-data CSV (measured 13% resolution of family-representative ids); suite 942/942 (#16) |
+| Clustered splits, exact replay, sharding, augmentation | Not started | #17–#20 (#17 dependency-ready once the #16 outputs are regenerated — the run's artifacts were partially lost to a sandbox recycle; the in-repo driver + surviving raws make it mechanical) |
 | Trainers, curriculum, transfer | Not started | #26–#28 |
 | Test suites A/B (full scope) | Not started (only issue-scoped tests exist) | #32, #33 |
 | Evaluation pipelines | Not started | #34, #35, #44 |
 | T4 GPU execution / training | **Never attempted** — requires authorized runtime | #36, #43 |
-| HF artifact synchronization | **Never attempted** | #37 |
+| HF artifact synchronization | **Partially exercised** — one-time preservation upload of the #12 catalog dataset to HF (`JJKK1212/3d-syntree-v2-catalog`, private) under the owner's directive; the automated sync pipeline is #37's gated scope | #37 |
 
 No training has been run, no benchmark numbers exist, and no scientific
 claim beyond the unit-tested contracts above is implied anywhere in this
@@ -353,8 +355,10 @@ repository.
   32-reaction taxonomy, the #13 junction-torsion/MMFF stages, the
   canonical decomposer, the decoupled hierarchical policy heads with the
   discrete torsion space, the complete `SynTreePolicy` assembly with the
-  seed/anchor selection component (CPU-verified; CUDA pending), and the
-  chemoselectivity curation screen are implemented; everything else in
+  seed/anchor selection component (CPU-verified; CUDA pending), the
+  chemoselectivity curation screen, and the multi-source preprocessing
+  pipeline are implemented; the #12 catalog **artifacts** are built and
+  verified (its build code is being re-landed); everything else in
   this README describes the *target* design, clearly marked as such.
 - The MDP/derivation-DAG semantics and the TB backward term are resolved
   (#38 closed with proofs and toy-DAG verification); the *trainer*

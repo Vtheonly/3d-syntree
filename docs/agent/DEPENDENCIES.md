@@ -25,12 +25,12 @@
 | #9 MATH-03 | #5 | #23 |
 | #10 MATH-04 | #5 | #26 — **closed 2026-11-02**: `syntree/utils/hardware.py` + 35 tests (D-V2-014) |
 | #11 CHEM-01 | #5 | #12, #18, #24, #40, #41 — **closed 2026-11-02**: `syntree/chemistry/reactions.py` + 82 tests (D-V2-016) |
-| #12 CHEM-02 | #11, #40 — **both closed** (#11 2026-11-02, #40 2026-11-02 `044adca`); remaining: licensed catalog access only — `screen_catalog` + `CurationManifest` are ready to consume | #18, #24 (satisfied), #39, #41, #44 |
+| #12 CHEM-02 | #11, #40 — **both closed**; **catalog artifacts built full-scale 2026-11-02** (S-V2-10: 290,648 screened → 50,000 selected + encoded; all acceptance criteria verified; HDF5 + manifest on HF `JJKK1212/3d-syntree-v2-catalog`, evidence at `docs/data/catalog/`); remaining: re-land the build code (`synthon_encoder.py` + driver + tests) lost to the sandbox recycle before commit | #18, #24 (satisfied), #39, #41, #44 |
 | #13 CHEM-03 | #11 — **closed 2026-11-02**: `conformer.py` stages + opt-in flags, 18 tests (D-V2-017) | #29, #42 |
 | #14 CHEM-04 | #5 | #30, #42 — **closed 2026-11-02**: `syntree/chemistry/conformer.py` + engine wiring + 50 tests (D-V2-015) |
 | #15 CHEM-05 | #11 — **closed 2026-11-02**: `syntree/data/fragmenter.py` + 21 tests | #18 (its #38 dependency was already satisfied by the reconciliation, D-V2-009) |
-| #16 DATA-01 | #5 | #17 |
-| #17 DATA-02 | #16 | #18 |
+| #16 DATA-01 | #5 — **closed 2026-11-02** (`fccd670`, 28 tests, full-scale run over 204,005 complexes; suite 942/16): `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` | #17 (satisfied) |
+| #17 DATA-02 | #16 — **closed 2026-11-02** (`fccd670`); dependency-ready once `processed_manifest.jsonl` is regenerated (the run's outputs were partially lost to the S-V2-10 sandbox recycle; the driver is in-repo and all raw sources + checksums survive); mmseqs binary staged in the dev workspace | #18 |
 | #18 DATA-03 | #11, #12, #15, #17, #41 — **#11 and #15 closed 2026-11-02**; remaining: #12, #17, #41 | #19 |
 | #19 DATA-04 | #18 | #26, #37 |
 | #20 DATA-05 | #19 | #26 |
@@ -92,29 +92,34 @@ taxonomy), #13 (junction-torsion + constrained MMFF stages), #15
 (canonical decomposer) implemented and verified (sessions S-V2-01 …
 S-V2-08), and #38 closed with its state-space spec, the engine layer of
 the reconciled two-level GFlowNet framework also exists
-(`syntree/engine/`, D-V2-009/D-V2-015):
+(`syntree/engine/`, D-V2-009/D-V2-015). With #16 closed (multi-source
+preprocessing, full-scale run verified) and #12's catalog artifacts
+built and verified (build code re-landing
+pending), the model side of the critical path is complete through the
+policy assembly and the data chain is unblocked through #17. The
+critical path now runs: **#17 → #18 (needs #12-code + #41) → #19 → #20
+→ #26**. Dependency-READY set (verified against the clean-room
+codebase):
 
-With #24 and #40 closed and #25 implemented (CUDA-gated), the model
-side of the critical path is complete through the policy assembly; the
-critical path now runs through DATA: #16 → #17 → #18 → #19 → #20 → #26.
-Dependency-READY set (verified against the clean-room codebase):
-
-- **#16 DATA-01** (multi-source preprocessing) — **the recommended next
-  task**: depends on #5 only (closed and verified); it unblocks the
-  entire data chain feeding #26 TRAIN-01. Provenance record exists
-  (`docs/data/RAW_SOURCE_PROVENANCE.yaml`).
+- **#12 code re-landing** (the highest-leverage open item): the
+  artifacts, manifest, checksums, and every acceptance number are
+  pinned (D-V2-021/022/023, `docs/data/catalog/`); the #40 screen
+  machinery is in-repo; re-implement `synthon_encoder.py` +
+  `scripts/build_synthon_catalog.py` + tests against those pins, then
+  close #12 (which unblocks #39's environment side, #41, #44, and the
+  #18 chemistry dependency).
+- **#17 DATA-02** (deps: #16 closed): regenerate
+  `processed_manifest.jsonl` first (in-repo driver + surviving raws
+  with pinned checksums), then MMseqs2 30%-identity clustered splits
+  (binary staged at `3d-syntree-work/tools/mmseqs` in the dev
+  workspace; external-dep row below).
 - **#32 TEST-01** (Suite A) — depends on #5 only; aggregates the
-  per-issue capability tests (914/914 across the test-carrying closed
-  issues) into the Suite A runner; parallel-safe with #16.
+  per-issue capability tests (942/942 across the test-carrying closed
+  issues) into the Suite A runner; parallel-safe.
 - **#36 OPS-01** — prepare-only (notebook + workflow docs); the remote
   session is user-authorization-gated. An authorized T4 session would
   ALSO close #25's remaining CUDA criterion — run the full-profile
   forward first.
-- **#12 CHEM-02** — unblocked on #40 (closed); remaining blocker is
-  licensed catalog access. If the mirror is reachable, consume
-  `syntree/chemistry/chemoselectivity.py::screen_catalog` after basic
-  molecular validation and embed the `CurationManifest` in the catalog
-  manifest.
 
 ## 4. External (non-issue) dependencies
 

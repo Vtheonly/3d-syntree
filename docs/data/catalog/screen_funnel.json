@@ -1,0 +1,31 @@
+{
+ "records_done": 290648,
+ "funnel": {
+  "total": 290648,
+  "sanitized": 290647,
+  "unique": 290356,
+  "mw_above": 76970,
+  "basic_pass": 191639,
+  "no_registry_handle": 141574,
+  "certified_blocks": 152489,
+  "role_seed_only": 118683,
+  "handle_bearing": 50065,
+  "rot_above": 21691,
+  "chemoscreen_excluded": 39150,
+  "role_synthon_and_seed": 20390,
+  "role_synthon_only": 13416,
+  "heavy_out": 56,
+  "duplicate_smiles": 291,
+  "unsanitizable": 1
+ },
+ "exclusion_counts": {
+  "competing_nucleophile": 17235,
+  "catalyst_poison": 44,
+  "quenching_protic_group": 7397,
+  "competing_identical_handles": 4310,
+  "self_reactive_pair": 771,
+  "seed_self_reactive_pair": 757,
+  "competing_snar_position": 1022,
+  "competing_electrophile": 150
+ }
+}
