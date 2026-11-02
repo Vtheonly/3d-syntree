@@ -1,0 +1,73 @@
+{
+ "schema_version": "2.0.0",
+ "created_utc": "2026-11-02T21:55:51Z",
+ "mmseqs_contract": {
+  "min_seq_id": "0.30",
+  "cov": "0.80",
+  "cov_mode": "0",
+  "cluster_mode": "2"
+ },
+ "split_fractions": {
+  "train": 0.8,
+  "val": 0.1,
+  "test": 0.1
+ },
+ "allocation_rule": "components sorted by (-size, min complex_id); greedy largest-deficit to 80/10/10; ties train>val>test",
+ "counts": {
+  "complexes": 170955,
+  "train": 136764,
+  "val": 17096,
+  "test": 17095
+ },
+ "component_statistics": {
+  "components": 14958,
+  "largest": 18458,
+  "singleton_components": 4919,
+  "top10_sizes": [
+   18458,
+   2439,
+   1241,
+   814,
+   718,
+   714,
+   711,
+   662,
+   661,
+   616
+  ]
+ },
+ "cluster_statistics": {
+  "clusters": 22387,
+  "multi_member_clusters": 11873
+ },
+ "leakage_check": {
+  "clusters_checked": 22387,
+  "clusters_spanning_splits": 0,
+  "component_check": "single-split components (by construction)"
+ },
+ "outputs": {
+  "split_table": "/home/z/my-project/work/data/splits/unified_splits_30seq_id.parquet",
+  "rows": 170955
+ },
+ "environment": {
+  "python": "3.12.16",
+  "pandas": "2.2.3"
+ },
+ "per_source_split_counts": {
+  "bindingmoad": {
+   "test": 1138,
+   "train": 9060,
+   "val": 1135
+  },
+  "crossdocked": {
+   "test": 15439,
+   "train": 123896,
+   "val": 15425
+  },
+  "pdbbind": {
+   "test": 518,
+   "train": 3808,
+   "val": 536
+  }
+ }
+}
