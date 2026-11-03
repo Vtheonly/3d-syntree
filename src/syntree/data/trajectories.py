@@ -115,6 +115,7 @@ FAILURE_CODES = (
     "no_matched_synthon",
     "replay_mismatch",
     "graft_failed",
+    "seed_fragment_unsanitizable",
     "dihedral_reference_missing",
 )
 
@@ -713,8 +714,25 @@ def extract_trajectory(
         )
 
     # -- the seed step ------------------------------------------------------
-    seed_mol = induced_submol(ligand, decomp.seed_atom_indices)
-    seed_smiles = Chem.MolToSmiles(seed_mol)
+    # A crystal ligand whose SDF encodes a non-ring aromatic bond (V2000
+    # bond type 4 outside any ring — observed live in pdbbind_1f5l, an
+    # amidine/guanidinium resonance form) can pass whole-molecule
+    # sanitization via the molblock parser yet fail when the isolated
+    # seed fragment is re-sanitized (Kekulize: "non-ring atom marked
+    # aromatic").  That is an un-reconstructible input, not a crash: it
+    # is rejected fail-closed with an explicit code (issue #18:
+    # discarded complexes are logged with explicit failure codes).
+    try:
+        seed_mol = induced_submol(ligand, decomp.seed_atom_indices)
+        seed_smiles = Chem.MolToSmiles(seed_mol)
+    except (TrajectoryExtractionError, Chem.rdchem.MolSanitizeException) as error:
+        return ExtractionFailure(
+            complex_id,
+            split,
+            ligand_smiles,
+            "seed_fragment_unsanitizable",
+            f"seed fragment re-sanitization failed: {error}",
+        )
     seed_centroid = tuple(
         float(x)
         for x in np.mean(
@@ -775,15 +793,21 @@ def extract_trajectory(
             F = induced_submol(ligand, fragment_atoms)
             M_r = apply_graft(M_prev, m_atom, spec.molecule)
             B_t = apply_graft(F, f_atom, spec.block)
-        except TrajectoryExtractionError as error:
+            accumulated |= set(step.removed_atom_indices)
+            # the final step's M_t is the WHOLE ligand: an exotic-aromatic
+            # input (see the seed guard above) fails here the same way, so
+            # this re-sanitization is guarded too (same failure class).
+            M_t = induced_submol(ligand, sorted(accumulated))
+            product_smiles = Chem.MolToSmiles(M_t)
+        except (
+            TrajectoryExtractionError,
+            Chem.rdchem.MolSanitizeException,
+        ) as error:
             return ExtractionFailure(
                 complex_id, split, ligand_smiles, "graft_failed", str(error)[:200]
             )
-        m_r_smiles = Chem.MolToSmiles(M_r)
         b_t_smiles = Chem.MolToSmiles(B_t)
-        accumulated |= set(step.removed_atom_indices)
-        M_t = induced_submol(ligand, sorted(accumulated))
-        product_smiles = Chem.MolToSmiles(M_t)
+        m_r_smiles = Chem.MolToSmiles(M_r)
 
         # -- indexed candidate discovery + exact stage ----------------------
         query_form = (

@@ -319,6 +319,61 @@ class TestExtraction:
         }
 
 
+# The crystal ligand of PDBbind 1f5l (a guanylurea aminochloropyrimidine),
+# verbatim from the processed artifact (its 22-atom SDF, V2000): the
+# amidine N=C:N bond (atoms 4-5) is encoded with bond type 4 ("aromatic")
+# OUTSIDE any ring — the real-data encoding that crashed the full-scale
+# #18 extraction run before the seed guard existed.
+PDBBIND_1F5L_MOLBLOCK = """pdbbind_1f5l
+     RDKit          3D
+
+ 22 22  0  0  0  0  0  0  0  0999 V2000
+   31.1120    7.6690   27.6830 N   0  0  0  0  0  0  0  0  0  0  0  0
+   30.5020    6.7410   28.4320 C   0  0  0  0  0  0  0  0  0  0  0  0
+   31.2400    5.3550   28.6010 C   0  0  0  0  0  0  0  0  0  0  0  0
+   32.5550    5.2790   28.1310 N   0  0  0  0  0  0  0  0  0  0  0  0
+   33.2510    4.1770   28.0800 C   0  0  0  0  0  0  0  0  0  0  0  0
+   32.7670    3.0180   28.4620 N   0  0  0  0  0  0  0  0  0  0  0  0
+   34.4700    4.2400   27.6300 N   0  0  0  0  0  0  0  0  0  0  0  0
+   30.6520    4.3960   29.1150 O   0  0  0  0  0  0  0  0  0  0  0  0
+   29.2610    7.0260   29.0190 C   0  0  0  0  0  0  0  0  0  0  0  0
+   28.5730    6.0860   29.8140 N   0  0  0  0  0  0  0  0  0  0  0  0
+   28.6930    8.2380   28.8250 N   0  0  0  0  0  0  0  0  0  0  0  0
+   29.3140    9.1790   28.0650 C   0  0  0  0  0  0  0  0  0  0  0  0
+   28.6660   10.4360   27.8950 N   0  0  0  0  0  0  0  0  0  0  0  0
+   30.5610    8.8800   27.4780 C   0  0  0  0  0  0  0  0  0  0  0  0  0
+   31.4320   10.0160   26.4870 Cl  0  0  0  0  0  0  0  0  0  0  0  0
+   31.8122    2.9555   28.8153 H   0  0  0  0  0  0  0  0  0  0  0  0
+   33.3458    2.1800   28.4055 H   0  0  0  0  0  0  0  0  0  0  0  0
+   34.8569    5.1345   27.3289 H   0  0  0  0  0  0  0  0  0  0  0  0
+   28.9768    5.1638   29.9777 H   0  0  0  0  0  0  0  0  0  0  0  0
+   27.6716    6.3284   30.2252 H   0  0  0  0  0  0  0  0  0  0  0  0
+   27.7632   10.6083   28.3373 H   0  0  0  0  0  0  0  0  0  0  0  0
+   29.1048   11.1638   27.3309 H   0  0  0  0  0  0  0  0  0  0  0  0
+ 14  1  2  0
+  1  2  1  0
+  2  9  2  0
+  2  3  1  0
+  3  8  2  0
+  3  4  1  0
+  4  5  4  0
+  5  7  2  0
+  5  6  1  0
+  9 11  1  0
+  9 10  1  0
+ 11 12  2  0
+ 12 14  1  0
+ 12 13  1  0
+ 14 15  1  0
+  6 16  1  0
+  6 17  1  0
+  7 18  1  0
+ 10 19  1  0
+ 10 20  1  0
+ 13 21  1  0
+ 13 22  1  0
+M  END"""
+
 class TestFailureCodes:
     def test_no_conformer(self):
         ligand = Chem.MolFromSmiles("CC(=O)Nc1ccc(N)cc1")
@@ -375,6 +430,78 @@ class TestFailureCodes:
         finally:
             trajectories.run_certified_reaction = real_run
         assert isinstance(out, ExtractionFailure) and out.failure_code == "replay_mismatch", out
+
+    def test_seed_fragment_unsanitizable(self):
+        # Real-data regression (observed live in the full-scale #18 run):
+        # pdbbind_1f5l's crystal SDF encodes bond type 4 (aromatic) on the
+        # EXOcyclic amidine N=C:N (a resonance-form artifact outside any
+        # ring).  The whole molecule sanitizes through the molblock parser,
+        # but the isolated seed fragment (= the whole ligand here) cannot
+        # re-sanitize (Kekulize: "non-ring atom marked aromatic").  The
+        # pipeline must reject it with the explicit code, never crash.
+        from rdkit import RDLogger
+        RDLogger.DisableLog("rdApp.*")
+        mol = Chem.MolFromMolBlock(PDBBIND_1F5L_MOLBLOCK, sanitize=True, removeHs=True)
+        assert mol is not None, "the regression molblock must parse"
+        index = _build_index(AMIDE_CATALOG)
+        out = extract_trajectory(
+            mol, complex_id="pdbbind_1f5l", split="train",
+            index=index, catalog=_view(AMIDE_CATALOG),
+        )
+        assert isinstance(out, ExtractionFailure), out
+        assert out.failure_code == "seed_fragment_unsanitizable", out.failure_code
+        assert "aromatic" in out.detail or "kekul" in out.detail.lower()
+
+    def test_induced_submol_raises_molsanitizeexception_on_exotic_aromaticity(self):
+        # Pins the exact exception class the guards must catch: the seed
+        # reconstruction of the 1f5l ligand raises RDKit's
+        # MolSanitizeException (AtomKekulizeException), so the except
+        # clause in extract_trajectory covers the observed failure class.
+        from rdkit import RDLogger
+        from rdkit.Chem import rdchem
+        RDLogger.DisableLog("rdApp.*")
+        mol = Chem.MolFromMolBlock(PDBBIND_1F5L_MOLBLOCK, sanitize=True, removeHs=True)
+        assert mol is not None
+        with pytest.raises(rdchem.MolSanitizeException):
+            induced_submol(mol, list(range(mol.GetNumAtoms())))
+
+    def test_assembly_stage_sanitize_failure_is_graft_failed_not_crash(self):
+        # Fault injection: a mid-assembly induced submol raising RDKit's
+        # MolSanitizeException (same class as the seed case — e.g. the
+        # FINAL-step product M_t is the whole exotic ligand) must be
+        # rejected as graft_failed, never crash the driver.
+        import syntree.data.trajectories as trajectories
+        from rdkit.Chem import rdchem
+
+        ligand = _embed("CCC(=O)Nc1ccc(NC(=O)c2ccccc2)cc1")
+        index = _build_index(AMIDE_CATALOG)
+
+        real = trajectories.induced_submol
+
+        def raising(mol, indices):
+            # only the FINAL-step product construction induces the whole
+            # ligand (len == N): raise exactly there, exactly like the
+            # observed exotic-aromatic case would
+            if len(set(indices)) == mol.GetNumAtoms():
+                raise rdchem.AtomKekulizeException("injected non-ring aromatic")
+            return real(mol, indices)
+
+        trajectories.induced_submol = raising
+        try:
+            out = extract_trajectory(
+                ligand, complex_id="x", split="train",
+                index=index, catalog=_view(AMIDE_CATALOG),
+            )
+        finally:
+            trajectories.induced_submol = real
+        assert isinstance(out, ExtractionFailure), out
+        assert out.failure_code == "graft_failed", out.failure_code
+
+    def test_failure_code_vocabulary_is_closed_over_documented_codes(self):
+        from syntree.data.trajectories import FAILURE_CODES
+        assert "seed_fragment_unsanitizable" in FAILURE_CODES
+        assert len(FAILURE_CODES) == len(set(FAILURE_CODES))
+
 
 
 class TestTorsionLabels:
