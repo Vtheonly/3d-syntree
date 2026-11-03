@@ -32,19 +32,38 @@ Stratification: 34,984 saturated (69.968%) / 15,016 aromatic (30.032%)
 (D-V2-023). Conformer provenance per row: `etkdg3` 17,493 /
 `etkdg3+mmff94` 32,507 (recorded in `catalog/conformer_methods`).
 
-## Status caveat (honest, per #45 §18)
+## Status caveat (honest, per #45 §18) — RESOLVED (S-V2-11, 2026-11-03)
 
 The build **artifacts and manifest are final and verified**, but the
-build **code** (`syntree/chemistry/synthon_encoder.py`,
-`scripts/build_synthon_catalog.py`, and their tests) was lost to a
-sandbox recycle **before it could be committed** (session S-V2-10
-incident, see `docs/agent/WORK_LOG.md`). Issue #12 therefore remains
-**OPEN** until the code is re-landed and pinned against these artifacts;
-do not treat the catalog as closed-scope until then. Consumers
-(`SynthonRetrievalHead` / `SeedAnchorHead` tied table, #18/#39/#41/#44)
-may already rely on the HDF5 **schema** pinned here (`pharm3d-v2.0` /
-`catalog-v2.0`): `catalog/` group (block ids, SMILES, class strings,
-strata, physicochemical scalars, conformer provenance),
-`embeddings [50000, 256]` float32, `projection/Q [2137, 256]` (QR
-Johnson–Lindenstrauss, seed 2026), `normalization/` (per-feature
-mean/std), `versions/` (pinned toolchain).
+original build **code** was lost to a sandbox recycle before it could be
+committed (session S-V2-10 incident, see `docs/agent/WORK_LOG.md`).
+
+**S-V2-11 re-landing (commits `b76422a` + `b8439bd`): the code is
+re-landed and verified against these artifacts at full scale.** The
+re-implemented pipeline (`syntree/chemistry/synthon_encoder.py` +
+`scripts/build_synthon_catalog.py` + `tests/test_synthon_encoder.py`,
+50 tests) reproduces:
+
+| Verification (full scale, 290,648 source records) | Result |
+|---|---|
+| Funnel: all 16 stage counts + all 8 per-rule exclusion counts | **24/24 exact** (incl. seed_self_reactive_pair 757 fired blocks / 760 pair-firings) |
+| Certification labels vs the 50,000 catalog rows (synthon + seed classes) | **0/50,000 mismatches** |
+| Strata assignment (`CalcNumAromaticRings > 0` → aromatic) | **0/50,000 mismatches** |
+| Buffered selection (35k saturated + 20k aromatic, canonical-SMILES order, saturated first) | **buffered_rows index list reproduced exactly** |
+| QR-JL projection (seed 2026, sign-normalized) | **projection/Q bit-exact (max Δ = 0.0)** |
+| Conformer-method decision tree (MMFF pre-embed typing + B/Zn/Sn/halide fallback) | **17,493/32,507 split reproduced with 0/50,000 row mismatches** |
+| Full rebuild: catalog size / embedding shape / finiteness / mean Fsp3 / mean rotatable | 50,000 / [50000,256] finite / 0.7151 / 1.5361 — all acceptance bounds pass |
+| Rebuilt catalog overlap with the immutable artifact | **49,998/50,000 (99.996%)** |
+
+Residual reconstruction ambiguities (documented in the module docstring
+and the rebuild manifest): 3 of 47 physchem functional-group positions
+(tertiary-amine slot: stored 0.070600 vs 0.079120; post-sulfone slot:
+stored 0.001240/62 rows vs sulfoxide 0.002520/64 rows; one provably
+all-zero slot), the 30-D handle-vector class list (identity-normalized in
+the artifact — statistically unrecoverable), and the original run's ETKDG
+seed (energies underdetermine it; the re-landed protocol is deterministic
+with seed 2026). The **immutable HDF5 above remains the authoritative
+catalog**; the rebuilt HDF5 is a new artifact version (sha256
+`00a556ef2e3427f03fb562fa612080f20ec9fb86b041cfea78620b51a466ea2a`).
+
+**#12 is closed.**

@@ -1564,3 +1564,157 @@ record (CrossDocked tar 1.6 GB, PDBbind zip 625 MB,
 Owner directive: commit each bounded, coherent unit immediately after its applicable checks pass and push to `origin/3d-synV2`; do not wait until session end. Push recovery checkpoints before risky work and delegation, and after each independently recoverable batch. Verify the remote ref after each push and record the SHA/evidence in existing session artifacts. Preserve concurrent history. Keep credentials out of tracked content. See D-V2-024 and the updated HANDOFF.
 
 Documentation-only session: no implementation issues #5–#44 were changed or closed. Issue #45 remains open.
+
+---
+
+# Session S-V2-11 — 2026-11-02/03 — #12 re-landed and closed (artifact-exact), #16 outputs regenerated, #17 closed, #32 closed
+
+- Agent session identifier: S-V2-11 (autonomous continuation from the
+  #45 entry point; read issue #45 in full, HANDOFF/STATUS/DEPENDENCIES/
+  DECISIONS + branch state first, per §25.1).
+- Starting commit: `160c9dc` (S-V2-10 close). Ending commits:
+  `02b09d2` (#17 code) → `83a629e` (#17 evidence) → `0e1bf30` (#32
+  Suite A) → `b76422a` (#12 code) → `b8439bd` (#12 artifact-exact
+  reconstruction) + this docs commit — all pushed and verified on
+  `origin/3d-synV2` (remote-ref inspection after every push, D-V2-024).
+
+## 1. What was done
+
+1. **Raw sources re-acquired** (the S-V2-10 workspace was lost to the
+   sandbox recycle): crossdocked tar 1,616,333,272 B md5
+   `59416d06...` ✓, PDBbind zip 625,493,784 B md5 `56c61303...` ✓,
+   `bindingmoad_final.csv` 523,117 B ✓, Enamine SDF zip sha256
+   `4942df33...` ✓ (all against `RAW_SOURCE_PROVENANCE.yaml`), the
+   immutable catalog HDF5 sha256 `8b8c13a0...` ✓ from the private HF
+   dataset, plus a static mmseqs binary.
+2. **#16 outputs regenerated full-scale** (~45 min, resumable driver):
+   204,005 manifest records — exact total match; per-source accepted
+   crossdocked 154,760 (exact), pdbbind 4,862 (exact), bindingmoad
+   11,333 vs 11,332 (+1 complex, attributed to upstream RCSB/chemcomp
+   API drift; recorded in `docs/data/splits/README.md`).
+3. **#17 DATA-02** (`02b09d2` + evidence `83a629e`): fasta extraction
+   (169,281 unique chain sequences, first-appearance order), MMseqs2
+   `easy-cluster --min-seq-id 0.30 -c 0.80 --cov-mode 0 --cluster-mode
+   2` (22,387 clusters / 11,873 multi-member), Union-Find over
+   complexes sharing homologous chains (14,958 components, largest
+   18,458), deterministic greedy largest-deficit 80/10/10 allocation
+   (components by `(-size, min complex_id)`, ties train>val>test):
+   **train 136,764 / val 17,096 / test 17,095; fail-closed
+   zero-leakage check: 0 of 22,387 clusters span splits.**
+   `unified_splits_30seq_id.parquet` + `split_manifest.json` (with
+   per-source counts). 18 unit tests. **Closed.**
+4. **#32 TEST-01** (`0e1bf30`): the five issue-pinned Suite A batteries
+   (293 tests) + the two canonical primitives they exercise:
+   `syntree/utils/seeding.py` (seed_everything / capture / restore —
+   the one authoritative seeding for #26/#43) and
+   `syntree/data/shards.py` (deterministic-gzip `.pt.gz` shard I/O +
+   sha256 fail-closed — the #19 format foundation). **Closed.**
+5. **#12 CHEM-02 re-landing** (`b76422a` + `b8439bd`) — the session's
+   core forensic reconstruction, every step verified against the
+   surviving artifacts at full scale:
+   - **Certification model**: synthon role = `screen_block(mol, cls,
+     handle_atom_idx=<first instance>)` pass (boronic classes without a
+     declared atom); seed role = **block-level** screen (any #40
+     `SELF_REACTIVE_PAIRS` firing between the molecule's *free* groups
+     and the 6 uncatalyzed electrophiles kills the whole seed role) —
+     **0/50,000 per-row mismatches** against the catalog labels.
+   - **Funnel: 24/24 counts exact** over all 290,648 records (incl.
+     seed_self_reactive_pair 757 fired blocks / 760 pair-firings; basic
+     filter stage order MW→rotatable→heavy).
+   - **Selection exact**: the 55k buffer (35k saturated + 20k aromatic,
+     canonical-SMILES ascending, saturated-first) reproduces the
+     artifact manifest's `buffered_rows` index list exactly.
+   - **Projection bit-exact**: `default_rng(2026)` → QR →
+     sign(diag(R)) reproduces `projection/Q` with max |Δ| = 0.0.
+   - **Conformer decision tree**: MMFF typing checked on the H-added
+     molecule pre-embedding; fallback {B,Zn,Sn} ∪ {F,Cl,Br,I} (coupling
+     handles + halide counterions) reproduces the stored 17,493/32,507
+     etkdg3/mmff94 split with **0/50,000 row mismatches**; potassium
+     trifluoroborates fail closed on `['B','K']` (deterministic).
+   - **Full rebuild**: 50,000 rows, [50000,256] float32 finite
+     L2-normalized, mean Fsp3 0.7151, mean rotatable 1.5361 (both
+     acceptance bounds pass), strata 34,986/15,014, methods 17,492/
+     32,508, **49,998/50,000 (99.996%) block-id overlap with the
+     immutable artifact**; rebuilt HDF5 sha256 `00a556ef...` recorded as
+     a NEW artifact version (the original stays authoritative).
+   - Documented residuals (quantified in the module docstring +
+     evidence README): 3 of 47 FG slots (tertiary-amine, post-sulfone,
+     provably-all-zero), the 30-D vector class list (identity
+     normalization — statistically unrecoverable), the original ETKDG
+     seed (energies underdetermine it; re-landed protocol deterministic
+     at seed 2026). 50 unit tests. **Closed.**
+
+## 2. Incidents / deviations
+
+- Background downloads launched with `nohup ... &` did NOT survive the
+  tool-call boundary (killed; partials vanished) — all large downloads
+  were re-run in foreground bounded calls (fast: ~11 MB/s). Lesson
+  recorded: no long-lived processes across tool calls in this sandbox.
+- First funnel run had 3 count deltas (filter order + the per-class
+  seed screen); second run 3 deltas (the block-level discovery); third
+  run **24/24 exact**. Every iteration was full-scale (215 s/run).
+- One encode overshoot (50,058 rows — the 50k cap was not enforced
+  inside the pooled batch flush) — fixed, re-assembled from the encode
+  cache without re-encoding.
+- Owner pushed D-V2-024 (continuous commit-and-push) mid-session; the
+  local branch was rebased onto it and every subsequent unit was
+  committed and push-verified immediately.
+
+## 3. Commands and verification (the exact evidence)
+
+- Raw checksum verifications: `md5sum`/`sha256sum` against
+  `RAW_SOURCE_PROVENANCE.yaml` (all OK).
+- `python scripts/preprocess_multidataset.py --source ...` (full run,
+  resumable): 204,005 records; per-source counts above.
+- `MMSEQS_BIN=... bash scripts/run_mmseqs_split.sh ...`: 30 s;
+  split_manifest.json + zero-leakage check in-run.
+- `pytest tests/suite_a/ -q` → **293 passed**; full suite →
+  **1303 passed / 16 skipped**.
+- `python scripts/build_synthon_catalog.py --sdf ... --stage all`:
+  funnel + selection + encode (chunked bounded calls; caches resumed).
+- Funnel comparison: 24/24 counts exact vs `docs/data/catalog/
+  screen_funnel.json`; certification-label check: 0/50,000 mismatches;
+  `buffered_rows` list comparison: exact; `projection/Q`: max |Δ| = 0.0;
+  conformer-method prediction: 17,493/32,507 exact, 0/50,000
+  mismatches; rebuilt-artifact audit: [50000,256] finite, norms 1.0,
+  overlap 49,998/50,000.
+
+## 4. GitHub issue updates
+
+- #12: full evidence comment; **closed as completed** (acceptance
+  criteria verified with evidence + honest residual documentation).
+- #17: full evidence comment; **closed as completed**.
+- #32: full evidence comment; **closed as completed**.
+- #45: untouched (permanent constitution).
+
+## 5. Final state and next actions
+
+- Suite: **1303 passed / 16 skipped**. Clean-room closures: **20 of
+  40** (+1 implemented-awaiting-CUDA #25).
+- Next dependency-ready: **#41 DATA-06** (deps #11+#12 closed — hashed
+  inverted index over the catalog), then **#18 DATA-03** (deps #11,
+  #12, #15, #17 closed + #41) — the data chain's next critical path;
+  #39's environment-side rewiring unblocks with #12; #36 OPS-01
+  prepare-only remains user-authorization-gated (would also close
+  #25's CUDA criterion).
+- Workspace artifacts (not in git, per policy): the regenerated
+  `processed_manifest.jsonl` + pocket/ligand artifacts
+  (`work/data/processed/`), `unified_splits_30seq_id.parquet`
+  (`work/data/splits/`), the rebuilt catalog HDF5 + manifest
+  (`work/catalog/`), raw sources (`work/raw/`), mmseqs binary
+  (`work/tools/`). #37 (HF sync) uploads them when its deps close.
+
+## 6. Honest verification ledger
+
+- Attempted: #12 (re-landing), #16 (output regeneration), #17, #32.
+- Implemented: all four (code + tests landed and push-verified).
+- Tested locally: #12 (50 tests + full-scale funnel/selection/label/
+  projection/conformer verification vs the artifacts), #17 (18 tests +
+  full-scale run + in-run fail-closed leakage check), #32 (293 Suite A
+  tests; full suite 1303/16).
+- Tested on T4: **none** — CPU-only sandbox; no GPU claim is made.
+- Scientifically validated: data/chemistry-level (#12's 24/24 funnel
+  counts + 0/50,000 label checks + bit-exact projection + exact
+  conformer-method split; #17's zero-leakage clustered splits at 30%
+  identity over 169,281 sequences). Training/validation: not yet
+  (#18–#20, #26+ pending).

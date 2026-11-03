@@ -1014,3 +1014,61 @@
 **Rationale:** The S-V2-10 workspace recycle demonstrated that a session-end push can lose completed implementation work. Immediate pushes make verified progress visible and recoverable. A local commit without verified remote presence is not durable progress.
 
 **Limits:** This does not permit knowingly broken commits, weakened tests, or recursive verification-only commits.
+
+---
+
+## D-V2-025 — 2026-11-03 — #12 re-landing: the artifact-recovered curation semantics (S-V2-11)
+
+**Status:** accepted (artifact-pinned reconstruction; every pin verified at full scale).
+
+**Decision:** The re-landed catalog build implements the curation
+semantics exactly as recovered from the surviving S-V2-10 artifacts:
+
+1. **Seed-role chemoselectivity is block-level.** A molecule carrying ANY
+   free-group/electrophile self-reactive pair (the #40
+   `SELF_REACTIVE_PAIRS` matrix evaluated between the molecule's *free*
+   groups — the #40 free-form vocabulary — and the six uncatalyzed
+   electrophiles: acid/sulfonyl/carbamoyl chlorides, chloroformate,
+   alkyl bromide, aldehyde) loses the **entire** seed role, not just the
+   firing class. Reproduces the pinned 757 fired blocks (760
+   pair-firings) and the 118,683/39,150 seed-only/excluded counts
+   exactly. Consequence: an amidine "amine" seed beside a certified
+   alkyl bromide is safe (its N is not the free form), while a free
+   primary amine beside any alkyl bromide is not.
+2. **Synthon certification declares the first instance.** Each detected
+   registry handle class is screened with
+   `screen_block(mol, cls, handle_atom_idx=<lowest atom index>)`; the
+   two programmatic boronic classes are screened without a declared atom
+   (their cross-field validation is unsupported by `handle_class_of_atom`).
+3. **Basic-filter stage order: MW → rotatable → heavy** (pinned by the
+   76,970/21,691/56 count split).
+4. **MMFF typing decision (pre-embedding, hydrogen-added molecule)**:
+   relax iff `MMFFHasAllMoleculeParams` passes; otherwise keep the first
+   ETKDG geometry iff the atoms outside the organic coverage fall within
+   {B, Zn, Sn} (coupling handles) ∪ {F, Cl, Br, I} (halide counterions
+   of the catalog's salt forms); anything else (e.g. potassium
+   trifluoroborates, `['B','K']`) fails closed. Reproduces the stored
+   17,493/32,507 etkdg3/mmff94 split with 0/50,000 row mismatches.
+5. **Descriptor reconstruction residuals** (quantified, bounded): 3 of
+   the 47 physchem functional-group slots (tertiary-amine, post-sulfone
+   rare slot, one provably all-zero slot), the 30-D handle-vector class
+   list (identity normalization in the artifact — no per-feature
+   statistics exist to recover it), and the original run's ETKDG seed
+   (stored energies underdetermine the protocol). The re-landed encoder
+   is deterministic (seed 2026, 10 conformers, prune 0.5) and the
+   immutable HDF5 remains the authoritative catalog.
+
+**Rationale:** the surviving artifacts (screen funnel counts, catalog
+labels, `buffered_rows` indices, stored Q/normalization, conformer
+methods) form a complete oracle; the reconstruction was iterated at
+full scale until every recoverable quantity matched exactly, and the
+unrecoverable ones are explicitly bounded rather than guessed silently.
+
+**Evidence:** 24/24 funnel counts exact over 290,648 records; 0/50,000
+certification-label mismatches; `buffered_rows` reproduced exactly;
+`projection/Q` bit-exact; conformer-method split exact (0/50,000);
+rebuilt catalog 49,998/50,000 block-id overlap; `docs/data/catalog/`
+README verification table; commits `b76422a` + `b8439bd`.
+
+**Affected modules/issues:** #12 (closed), consumers #18/#24/#39/#41/#44
+(consume the pinned schema + semantics; do not re-derive).
