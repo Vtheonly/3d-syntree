@@ -1072,3 +1072,97 @@ README verification table; commits `b76422a` + `b8439bd`.
 
 **Affected modules/issues:** #12 (closed), consumers #18/#24/#39/#41/#44
 (consume the pinned schema + semantics; do not re-derive).
+
+## D-V2-026 — 2026-11-03 — Registry-digest residual reconciled: the index binds the live digest + catalog sha256 (S-V2-12)
+
+**Problem:** the re-landed `registry_digest()` (`08c9fb08…`) cannot
+reproduce the immutable catalog's pinned `registry_digest` attribute
+(`32ea6db9…`); a strict index↔catalog digest check would fail forever.
+
+**Investigation:** forensics over 40+ plausible payload formats (field
+subsets, orderings, whole-dataclass dumps) found no reproduction — the
+original digest payload format was lost with the S-V2-10 build code
+(the same residual class as the ETKDG seed, D-V2-025). The registry
+**source** is provably unchanged since `0e296b0` (its only commit,
+`git log --follow` verified), so certification validity is not in
+question — only the historical hash format differs.
+
+**Decision:** the #41 index binds (a) the catalog file **sha256**
+(exact, unambiguous), (b) the **live** `registry_digest()` at build
+time (any future registry change invalidates the index), and (c)
+build-time justification of every certified class against the live
+registry's block-side classes. The catalog's historical `32ea6db9`
+attribute is preserved in the index metadata as provenance, not as an
+active check.
+
+**Affected:** #41 (closed), #12 (historical note), #44 (the stock-export
+track inherits the same binding policy).
+
+## D-V2-027 — 2026-11-03 — rxn_14/rxn_15 junction-pattern orientation defect corrected; attachment atoms are located by map number (S-V2-12)
+
+**Problem:** #18's reactant reconstruction exposed that rxn_14/rxn_15's
+junction patterns anchored `:1` on the **block** side (the aryl),
+violating the registry's documented `:1 = molecule-side` convention
+(the reaction SMARTS themselves map `:1` to the molecule-side atom). The
+silent accomplice: RDKit `GetSubstructMatches` returns matches in
+*template position* order, and all other patterns are written `[:1]`
+first, so the positional assumption `match[0] == :1` cooperated with the
+defect. rxn_23's symmetric `[c:1][c:2]` (orientation-agnostic, like
+rxn_09) is not a defect.
+
+**Decision:** corrected the two patterns to `:1`-first branch form
+(`[CH1:1]([c:2])=[CH2]`, `[CX4;H1,H2:1]([c:2])~[#6]`) and exported
+`junction_pattern_attachment_atoms()` as the one authoritative
+map-number locator; the fragmenter and the trajectory extractor now
+locate `:1`/`:2` by map number (behavior unchanged for the other 25
+reactions). The registry **digest is unchanged** (the digest payload
+covers smarts/mol_class/block_class, not junction patterns), so the #12
+catalog certification and the #41 index bindings are unaffected. The
+graft-spec derivation (`derive_junction_specs`) is itself a fail-closed
+orientation check: a mis-oriented pattern can no longer derive specs.
+
+**Evidence:** `tests/test_trajectories.py` (orientation regression
+test); 27/27 specs derive; full suite 1384/16.
+
+**Affected:** #11 (closed — defect correction, no digest change), #15
+consumer path, #18.
+
+## D-V2-028 — 2026-11-03 — The seed pose is a deterministic covariant environment-side function of (B_0, h_0) (#39)
+
+**Problem:** #39 requires explicit pose/orientation variables "with a
+probability measure consistent with the rest of the policy"; the policy
+is strictly categorical (constitution §12.3 forbids continuous
+densities in the TB sum).
+
+**Decision:** the placed pose carries **no probability measure**: like
+the #42 sub-bin torsion refinement, it is a deterministic
+environment-side geometry operation of the categorical
+`(B_0, h_0)` action. Rule: seed centroid at the anchor position; the
+template's intrinsic frame aligned to an anchor frame built only from
+covariantly-selected pocket vectors (farthest-assigned-atom rules with
+charge/atomic-number/index tie-breaks — invariant under rigid motions
+of a fixed atom list), giving exact equivariance up to the documented
+collinear fallback (`_deterministic_perpendicular`). Pocket-free
+fixtures keep the block's template pose bit-exactly (no conditioning
+context exists).
+
+**Evidence:** equivariance, determinism, centroid-at-anchor, and
+extendability tests in `tests/test_seed_anchor_selection.py`.
+
+**Affected:** #39 (closed), #29 (the TB accounting consumes the seed
+step; no pose density ever enters).
+
+## D-V2-029 — 2026-11-03 — Observation (not yet acted on): rxn_15's junction pattern is looser than its reactant template
+
+The 11 `replay_mismatch` cases of the bounded run are all rxn_15
+junctions on **secondary** alkyl carbons: the junction pattern
+`[CX4;H1,H2:1](…)` recognises H1 centres, but the certified reactant
+template is primary-only (`[CX4;H2,H3:1][Zn:4][Cl:5]`, documented "no
+beta-hydride stereochemistry"). The reverse reconstruction builds the
+secondary organozinc, the forward replay correctly rejects it, and the
+complex fails closed with an explicit code — the system behaves as
+designed. A future registry alignment refinement could tighten the
+pattern to `H2` (matching the template exactly) so such bonds are never
+claimed; **not changed this session** (scope discipline — it only
+changes which failure code a complex receives). Recorded for the owner
+and for #11's audit trail.

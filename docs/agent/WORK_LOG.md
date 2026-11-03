@@ -1718,3 +1718,132 @@ Documentation-only session: no implementation issues #5–#44 were changed or cl
   conformer-method split; #17's zero-leakage clustered splits at 30%
   identity over 169,281 sequences). Training/validation: not yet
   (#18–#20, #26+ pending).
+
+---
+
+# Session S-V2-12 — 2026-11-03 — #41 closed, #39 closed, #18 implemented + bounded-run verified
+
+- Agent session identifier: S-V2-12 (autonomous continuation from the
+  #45 entry point; read issue #45 in full, HANDOFF/STATUS/DEPENDENCIES/
+  DECISIONS + branch state first, per §25.1).
+- Starting commit: `4dddaa1` (S-V2-11 close). Ending commits:
+  `dea8809` (#41 index) → `35b54ba` (#18 engine) → `95c12f2` (#18
+  driver) → `d1a9167` (#39 environment side) + this docs commit — all
+  pushed and remote-verified on `origin/3d-synV2` (D-V2-024).
+
+## 1. What was done
+
+1. **#41 DATA-06 CLOSED** (`dea8809`): the versioned hashed inverted
+   index — `(family, handle_class, formula_hash)` postings + the seed
+   namespace, salt→parent canonicalization, Hill-formula sha256/16,
+   exact canonical-parent stage, brute-force reference; byte-
+   deterministic atomic JSON; fail-closed schema/hash-version/catalog-
+   sha/live-registry guards. Full-scale: build 8.26 s, 9,987 keys /
+   64,451 postings, **exhaustive self-retrieval 68,417 checks / 0
+   lost**, **brute-force equivalence 2,000 sampled queries / 0
+   mismatches**, lookup 1.34 µs, **888.7× mean candidate reduction**,
+   artifact sha `ea57e867…`. 28 tests.
+2. **Registry forensics (D-V2-026/027)**: the re-landed
+   `registry_digest()` cannot reproduce the immutable catalog's
+   historical attribute (lost original payload format; registry source
+   provably unchanged since `0e296b0`) — the index binds the live
+   digest + catalog sha256 instead. #18's development then exposed the
+   **rxn_14/rxn_15 junction-pattern orientation defect** (`:1` anchored
+   on the block side) plus the deeper RDKit trap (match tuples are
+   template-position-ordered, silently cooperating with the defect):
+   corrected both patterns, exported
+   `junction_pattern_attachment_atoms()` (map-number locator), and
+   rewired the fragmenter + extractor to it. Registry digest unchanged
+   (patterns are not in the digest payload).
+3. **#18 DATA-03 implemented + verified** (`35b54ba` + `95c12f2`):
+   the trajectory-extraction engine (auto-derived, cross-pair-verified
+   leaving-group graft specs 27/27 — Cl/Br/B(OH)2/ZnCl/SnMe3/Li/
+   aldehydic-O; index-backed discovery; **exact forward replay as the
+   final acceptance**; closed failure vocabulary; crystal dihedral →
+   36-bin torsion labels; documented rxn_13 protonated-form handling;
+   seed_centroid for #39) + the resumable bounded driver. 29 tests.
+   **Bounded real-data run** (CrossDocked md5-verified → 5,000 → 3,894
+   accepted complexes → 688 MMseqs2 clusters / 0 leakage):
+   **239.8 complexes/s**, 0/3,894 accepted — the honest scientific
+   finding that certified-Enamine-BB reconstructibility is the binding
+   constraint (95.7% `no_matched_seed`, 4.0% `no_matched_synthon`, 0.3%
+   `replay_mismatch` — all 11 = rxn_15 secondary-alkyl junctions
+   correctly rejected; D-V2-029 note). Evidence:
+   `docs/data/trajectories/README.md`. **Stays open** for the
+   full-scale run.
+4. **#39 MODEL-06 environment side CLOSED** (`d1a9167`):
+   `reset()` → the pre-seed candidate state (SeedMenu: anchors from the
+   ONE authoritative generator × the seed pool); the explicit
+   `SeedAction(B_0, h_0)` via `place_seed()` (step/stop/observe fail
+   closed before it — no hidden heuristic on the production path); the
+   deterministic covariant pose rule (D-V2-028; exact rigid-motion
+   equivariance, pinned); placed-seed-leaves-growth-menu; the TB 'seed'
+   step (forward log-prob in, backward term zero by the unique-parent
+   proof — Property 3b added to MDP_STATE_SPACE.md);
+   `supervised_anchor_label` (nearest-anchor to the crystal seed
+   centroid, documented tie-breaks, supervision never pins inference).
+   24 acceptance tests; 26 existing call sites rewired.
+5. **Issue updates**: #41 + #39 closed with full evidence comments; #18
+   updated with the implementation/bounded-run evidence and exact
+   remaining scope. #45 untouched.
+
+## 2. Incidents / deviations
+
+- GitHub release-asset downloads 404 from this sandbox (mmseqs binary)
+  — resolved via the official `mmseqs.com/latest` host.
+- `GetSubstructMatches` uniquify=True silently dedupes symmetry-related
+  matches AND the map-number/orientation trap (D-V2-027) — both now
+  documented at the call sites that must not repeat them.
+- An RWMol built from a cached template inherits its conformer: the
+  placed-pose conformer must replace (not append to) it — caught by the
+  centroid-at-anchor test, fixed with `RemoveAllConformers`.
+
+## 3. Commands and verification (the exact evidence)
+
+- `pytest tests/ -q` with `SYNTREE_CATALOG_H5=…h5` → **1384 passed /
+  16 skipped** (baseline 1303/16 + 28 #41 + 29 #18 + 24 #39).
+- `python scripts/build_synthon_index.py --catalog …h5 --out …
+  --manifest … --sample-queries 2000` → the benchmark numbers above
+  (manifest at `work/catalog/synthon_index_manifest.json`).
+- `preprocess_multidataset.py --source crossdocked --limit 5000` →
+  3,894/1,106; `run_mmseqs_split.sh` → 688 clusters, 0 leakage;
+  `build_trajectories.py --max-seconds 420 --finalize` → 239.8/s,
+  the failure histogram, `trajectories_{train,val,test}.pt` (0/0/0
+  records — honest).
+
+## 4. GitHub issue updates
+
+- #41: full evidence comment; **closed as completed**.
+- #39: full evidence comment; **closed as completed**.
+- #18: implementation + bounded-run evidence comment; **open** (the
+  full-scale run remains).
+- #45: untouched (permanent constitution).
+
+## 5. Final state and next actions
+
+- Suite: **1384 passed / 16 skipped**. Clean-room closures: **22 of
+  40** (+ #25 awaiting its CUDA criterion on #36; #42 awaiting T4
+  benchmarking; #18 awaiting the full-scale run).
+- Next dependency-ready: **#18 full-scale data chain** (re-acquire
+  pdbbind + bindingmoad raws; full preprocessing; full splits; the
+  resumable extraction driver to completion) — see HANDOFF; then #19
+  (DATA-04, blocked only on #18) unblocks the whole TRAIN chain (#26 →
+  #27 → #28/#29…).
+- Workspace artifacts (not in git): the catalog HDF5 + index
+  (`work/catalog/`, checksums verified), crossdocked tar
+  (`work/raw/`), mmseqs binary (`work/tools/`), the bounded-run
+  processed data + splits + trajectory outputs
+  (`work/data/…` — re-creatable via `docs/data/trajectories/README.md`).
+
+## 6. Honest verification ledger
+
+- Attempted: #41, #18 (implementation + bounded real-data run), #39.
+- Implemented: all three (code + tests landed and push-verified).
+- Tested locally: #41 (28 tests + full-scale benchmark), #18 (29 tests
+  + driver smoke + the 3,894-complex bounded run), #39 (24 tests +
+  26 rewired call sites).
+- Tested on T4: **none** — CPU-only sandbox; no GPU claim is made.
+- Scientifically validated: chemistry/data-level (#41's exhaustive
+  retrieval equivalence at full catalog scale; #18's replay acceptance
+  invariant + the honest 0-acceptance census of the bounded subset;
+  #39's anchor/pose semantics). Training/validation: not yet.

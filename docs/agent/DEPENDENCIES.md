@@ -31,7 +31,7 @@
 | #15 CHEM-05 | #11 — **closed 2026-11-02**: `syntree/data/fragmenter.py` + 21 tests | #18 (its #38 dependency was already satisfied by the reconciliation, D-V2-009) |
 | #16 DATA-01 | #5 — **closed 2026-11-02** (`fccd670`, 28 tests, full-scale run over 204,005 complexes; suite 942/16): `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` | #17 (satisfied) |
 | #17 DATA-02 | #16 — **closed 2026-11-03** (`02b09d2`/`83a629e`, S-V2-11: #16 outputs regenerated full-scale first (204,005 records, exact total; +1 MOAD acceptance vs the original run attributed to upstream API drift); 22,387 clusters → 14,958 components; 80.0/10.0/10.0; zero leakage, fail-closed check; evidence at `docs/data/splits/`) | #18 (satisfied) |
-| #18 DATA-03 | #11, #12, #15, #17, #41 — **#11, #12, #15, #17 closed** (2026-11-03); remaining: #41 | #19 |
+| #18 DATA-03 | #11, #12, #15, #17, #41 — **all closed** (#41 closed 2026-11-03, S-V2-12); **implemented + verified** (`35b54ba`+`95c12f2`: engine + resumable driver, 29 tests, bounded real-data run at 239.8/s with the honest 0-acceptance census — `docs/data/trajectories/README.md`); remaining: the FULL-SCALE run (data chain, resumable) | #19 (unblocks on the full-scale run) |
 | #19 DATA-04 | #18 | #26, #37 |
 | #20 DATA-05 | #19 | #26 |
 | #21 MODEL-01 | #6, #7 | #23, #24, #39 |
@@ -52,9 +52,9 @@
 | #36 OPS-01 | — (user authorization required) | #37, #43 |
 | #37 OPS-02 | #19, #26, #31, #35, #36 | — (final milestone) |
 | #38 FLOW-04 | implied: #15, #24 (from their `Blocks` lists) | — (**closed 2026-11-01**: spec delivered ahead of the cycle via the owner-directed reconciliation, D-V2-009; its deliverables live in `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/`) |
-| #39 MODEL-06 | implied: #12, #21, #23, #25 — the **policy-side component is implemented** (2026-11-02 via #25: generator + factorized head + tied table + log-prob, `84fd3e7`); remaining: environment-side candidate-state rewiring + supervised labels + TB accounting, blocked on #12 | — |
+| #39 MODEL-06 | implied: #12, #21, #23, #25 — **closed 2026-11-03** (S-V2-12: policy side via #25 `84fd3e7`; environment side `d1a9167` — pre-seed candidate state, explicit SeedAction, covariant pose D-V2-028, TB seed accounting Property 3b, supervised anchor labels; 24 tests) | #25's #39 dependency fully satisfied; #29's remaining deps: #25, #26 |
 | #40 CHEM-06 | implied: #11 — **closed 2026-11-02** (`044adca`, 111 tests, D-V2-020) | #12 (satisfied), #44 |
-| #41 DATA-06 | implied: #11, #12 — **both closed 2026-11-03**; **dependency-READY** (the catalog HDF5 + the certified pool are available; benchmark against a brute-force reference per the issue) | — |
+| #41 DATA-06 | implied: #11, #12 — **closed 2026-11-03** (S-V2-12, `dea8809`: full-scale benchmark — exhaustive self-retrieval 68,417/0, brute-force equivalence 2,000/0, 888.7× reduction; the #18 consumer criterion demonstrated on real data) | #18 (satisfied) |
 | #42 CHEM-07 | implied: #13, #14, #24 — **all satisfied 2026-11-02** (#24 closed `74133c8`); remaining scope: T4 benchmarking + integrated-generation wiring | — |
 | #43 OPS-03 | implied: #26, #36 | — |
 | #44 EVAL-03 | implied: #12, #34 — **#12 closed 2026-11-03**; remaining: #34 | — |
