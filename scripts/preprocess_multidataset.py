@@ -692,27 +692,63 @@ def fetch_chemcomp_smiles(
             json.dump(cache, handle)
         os.replace(tmp, cache_path)
 
-    def fetch(comp: str) -> Tuple[str, str]:
-        try:
-            request = urllib.request.Request(
-                f"https://data.rcsb.org/rest/v1/core/chemcomp/{comp}",
-                headers={"User-Agent": USER_AGENT},
-            )
-            data = json.loads(urllib.request.urlopen(request, timeout=60).read())
-            descriptor = data.get("rcsb_chem_comp_descriptor") or {}
-            return comp, descriptor.get("SMILES_stereo") or descriptor.get("SMILES") or ""
-        except Exception:  # noqa: BLE001 - recorded, never fatal here
+    def fetch(comp: str) -> Tuple[str, Optional[str]]:
+        """One component id -> SMILES; ``None`` = transient failure (defer).
+
+        A definitive RCSB verdict is cached, including an honest empty
+        SMILES (200 without a descriptor, or 404 = unknown component).
+        Transient failures (timeouts, 5xx, rate-limiting) are retried
+        with backoff and, if they persist, returned as ``None`` so they
+        are *never* cached: a temporary outage must not fabricate a
+        permanent ``LIGAND_BOND_PERCEPTION_FAILURE`` verdict (fail
+        closed, constitution #45 §11 — record, never guess).
+        """
+        url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{comp}"
+        # A multi-component assembly name (e.g. "HEM SO4", peptide chains)
+        # has no per-component template by construction — it is rejected
+        # upstream with LIGAND_MULTI_COMPONENT and must not be fetched
+        # (a space in the path is a deterministic URL error, not a
+        # transient failure).  Definitive empty SMILES, never deferred.
+        if not comp or any(ch.isspace() for ch in comp):
             return comp, ""
+        last_error: Optional[BaseException] = None
+        for attempt in range(3):
+            try:
+                request = urllib.request.Request(
+                    url, headers={"User-Agent": USER_AGENT}
+                )
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    data = json.loads(response.read())
+                descriptor = data.get("rcsb_chem_comp_descriptor") or {}
+                return (
+                    comp,
+                    descriptor.get("SMILES_stereo")
+                    or descriptor.get("SMILES")
+                    or "",
+                )
+            except urllib.error.HTTPError as error:
+                if error.code == 404:
+                    return comp, ""  # definitive: unknown component
+                last_error = error
+            except Exception as error:  # noqa: BLE001 - retried below
+                last_error = error
+            time.sleep(1.0 * (attempt + 1))
+        log(f"chemcomp fetch deferred after retries: {comp} ({last_error})")
+        return comp, None
 
     if todo:
         log(f"chemcomp SMILES lookups: {len(todo)} components to fetch")
         deadline = None if max_seconds is None else time.monotonic() + max_seconds
         done = 0
+        deferred = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for comp, smiles in pool.map(fetch, todo):
+                if smiles is None:
+                    deferred += 1
+                    continue
                 cache[comp] = smiles
                 done += 1
-                if done % 500 == 0:
+                if done % 100 == 0:
                     flush()
                     log(f"chemcomp cache: {done}/{len(todo)} fetched")
                 if deadline is not None and time.monotonic() > deadline:
@@ -726,6 +762,12 @@ def fetch_chemcomp_smiles(
                     )
                     break
         flush()
+        if deferred:
+            complete = False
+            log(
+                f"chemcomp: {deferred} components deferred "
+                f"(transient failures; re-run retries them)"
+            )
         log(f"chemcomp cache: {len(cache)} components "
             f"({sum(1 for v in cache.values() if not v)} without SMILES)")
     return cache, complete
