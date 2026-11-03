@@ -94,6 +94,7 @@ __all__ = [
     "JUNCTION_PRIORITY_GENERIC",
     "JUNCTION_PRIORITY_REDUCTIVE",
     "canonical_product_smiles",
+    "junction_pattern_attachment_atoms",
     "run_certified_reaction",
     "certify_reaction",
     "certify_registry",
@@ -510,7 +511,7 @@ _REACTIONS: List[CertifiedReaction] = [
         (
             ReagentPair(("C=CBr", "OB(O)c1ccccc1"), "C=Cc1ccccc1", "vinyl bromide + phenylboronic acid -> styrene"),
         ),
-        "[c:1][CH1:2]=[CH2]", JUNCTION_PRIORITY_GENERIC,
+        "[CH1:1]([c:2])=[CH2]", JUNCTION_PRIORITY_GENERIC,
     ),
     _rxn(
         "rxn_15", "alkyl Negishi coupling (alkylzinc + aryl bromide)",
@@ -525,7 +526,7 @@ _REACTIONS: List[CertifiedReaction] = [
         (
             ReagentPair(("Cl[Zn]CC", "Brc1ccccc1"), "CCc1ccccc1", "ethylzinc chloride + bromobenzene -> ethylbenzene"),
         ),
-        "[c:1][CX4;H1,H2:2]~[#6]", JUNCTION_PRIORITY_GENERIC,
+        "[CX4;H1,H2:1]([c:2])~[#6]", JUNCTION_PRIORITY_GENERIC,
     ),
     # -- C-O/C-S couplings (rxn_16..rxn_21) -----------------------------------
     _rxn(
@@ -922,6 +923,31 @@ def canonical_product_smiles(mol: Chem.Mol) -> str:
     Chem.SanitizeMol(mol)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
     return Chem.MolToSmiles(mol)
+
+
+def junction_pattern_attachment_atoms(pattern: Chem.Mol) -> Tuple[int, int]:
+    """The template-atom indices of map ``:1`` and ``:2`` in a junction pattern.
+
+    ``GetSubstructMatches`` returns matches in *template position* order,
+    which coincides with the map order only when patterns are written
+    ``[:1]``-first.  Consumers must locate the molecule-side/block-side
+    attachment atoms by **map number** through this helper (the
+    positional assumption was the root cause of the rxn_14/rxn_15
+    orientation defect corrected with #18).
+    """
+    map_one = map_two = None
+    for atom in pattern.GetAtoms():
+        number = atom.GetAtomMapNum()
+        if number == 1 and map_one is None:
+            map_one = atom.GetIdx()
+        elif number == 2 and map_two is None:
+            map_two = atom.GetIdx()
+    if map_one is None or map_two is None:
+        raise ReactionRegistryError(
+            "a junction pattern must carry exactly the map numbers :1 and :2 "
+            "(molecule-side and block-side attachment atoms)"
+        )
+    return map_one, map_two
 
 
 def run_certified_reaction(

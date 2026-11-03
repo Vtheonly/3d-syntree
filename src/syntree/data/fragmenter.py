@@ -69,7 +69,11 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from rdkit import Chem
 
-from syntree.chemistry.reactions import POLICY_REACTIONS, CertifiedReaction
+from syntree.chemistry.reactions import (
+    POLICY_REACTIONS,
+    CertifiedReaction,
+    junction_pattern_attachment_atoms,
+)
 
 __all__ = [
     "CanonicalDecomposition",
@@ -99,7 +103,17 @@ class FragmentRecord:
 
 @dataclass(frozen=True)
 class DisconnectionStep:
-    """One periphery-to-core disconnection (reverse of assembly)."""
+    """One periphery-to-core disconnection (reverse of assembly).
+
+    ``removed_atom_indices`` (original-ligand atom indices of the peeled
+    fragment) and ``junction`` ``(molecule_atom, block_atom)`` (the cut
+    bond's endpoints, molecule-side attachment first — original indices)
+    are the atom-level view added for #18 (DATA-03): they let the
+    trajectory extractor rebuild every intermediate product as an induced
+    subgraph of the crystal ligand.  The indices refer to the *cut* graph,
+    which preserves the input numbering (bonds are only removed, never
+    renumbered).
+    """
 
     order: int                      # 1-based, periphery first
     removed_fragment_smiles: str    # canonical SMILES of the peeled synthon
@@ -108,6 +122,8 @@ class DisconnectionStep:
     molecule_handle_class: Optional[str]  # the remaining side's handle class
     block_handle_class: str         # the removed synthon side's class
     remaining_smiles: str           # the remaining molecule after the peel
+    removed_atom_indices: Tuple[int, ...] = ()
+    junction: Tuple[int, int] = (-1, -1)
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,7 @@ class CanonicalDecomposition:
     steps: Tuple[DisconnectionStep, ...]          # periphery -> core
     assembly_order: Tuple[Tuple[str, Optional[str]], ...]  # core -> periphery:
     # (fragment_smiles, reaction_id that attached it)
+    seed_atom_indices: Tuple[int, ...] = ()      # original indices (#18)
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +256,12 @@ def legal_disconnection_bonds(mol: Chem.Mol) -> List[Tuple[int, int, str]]:
             raise FragmenterError(
                 f"{reaction.reaction_id}: unparseable junction pattern"
             )
-        for match in mol.GetSubstructMatches(pattern):
-            a1, a2 = int(match[0]), int(match[1])
+        # attachment atoms are located BY MAP NUMBER (:1 molecule side,
+        # :2 block side) — the template position order is not the contract
+        # (junction_pattern_attachment_atoms).
+        p1, p2 = junction_pattern_attachment_atoms(pattern)
+        for match in mol.GetSubstructMatches(pattern, uniquify=False):
+            a1, a2 = int(match[p1]), int(match[p2])
             bond = mol.GetBondBetweenAtoms(a1, a2)
             if bond is None or bond.IsInRing():
                 continue
@@ -253,12 +274,14 @@ def legal_disconnection_bonds(mol: Chem.Mol) -> List[Tuple[int, int, str]]:
     resolved: List[Tuple[int, int, str]] = []
     for (lo, hi), candidates in claims.items():
         priority, reaction_id = sorted(candidates, key=lambda c: (-c[0], c[1]))[0]
-        # orientation: a1 = molecule side (:1), a2 = block side (:2)
+        # orientation: a1 = molecule side (:1), a2 = block side (:2) —
+        # located by map number, not template position.
         reaction = POLICY_REACTIONS[reaction_id]
         pattern = Chem.MolFromSmarts(reaction.junction_pattern)
+        p1, p2 = junction_pattern_attachment_atoms(pattern)
         oriented: Optional[Tuple[int, int]] = None
-        for match in mol.GetSubstructMatches(pattern):
-            x, y = int(match[0]), int(match[1])
+        for match in mol.GetSubstructMatches(pattern, uniquify=False):
+            x, y = int(match[p1]), int(match[p2])
             if {x, y} == {lo, hi}:
                 oriented = (x, y)
                 break
@@ -433,6 +456,18 @@ def canonical_decomposition(mol: Chem.Mol) -> CanonicalDecomposition:
         candidates_bond.sort(key=lambda b: (b[2], b[0], b[1]))
         bond = candidates_bond[0]
         reaction = POLICY_REACTIONS[bond[2]]
+        junction_a1, junction_a2 = bond[0], bond[1]
+        if junction_a1 in chosen:
+            # orientation guard: the molecule-side map-:1 atom must lie on
+            # the remaining (parent) side, the block-side map-:2 atom on the
+            # peeled fragment (fail-closed on any inversion).
+            junction_a1, junction_a2 = junction_a2, junction_a1
+        if junction_a2 not in chosen or junction_a1 in chosen:
+            raise FragmenterError(
+                f"junction orientation invariant violated at order "
+                f"{order_index + 1}: ({junction_a1}, {junction_a2}) vs "
+                f"peeled fragment {sorted(chosen)}"
+            )
         order_index += 1
         remaining_smiles = _fragment_smiles(
             cut_mol, sorted(current_atoms - set(chosen))
@@ -446,6 +481,8 @@ def canonical_decomposition(mol: Chem.Mol) -> CanonicalDecomposition:
                 molecule_handle_class=reaction.molecule_handle_class,
                 block_handle_class=reaction.block_handle_class,
                 remaining_smiles=remaining_smiles,
+                removed_atom_indices=tuple(sorted(chosen)),
+                junction=(junction_a1, junction_a2),
             )
         )
         remaining.discard(chosen)
@@ -462,4 +499,5 @@ def canonical_decomposition(mol: Chem.Mol) -> CanonicalDecomposition:
         seed_ring_system_atoms=seed_record.ring_system_atoms,
         steps=tuple(steps),
         assembly_order=tuple(assembly_order),
+        seed_atom_indices=tuple(sorted(seed_atoms)),
     )
