@@ -1166,3 +1166,136 @@ pattern to `H2` (matching the template exactly) so such bonds are never
 claimed; **not changed this session** (scope discipline — it only
 changes which failure code a complex receives). Recorded for the owner
 and for #11's audit trail.
+
+## D-V2-030 — 2026-11-03 — Supervised states are crystal intermediates in the ligand-centroid frame; pockets are capped by centroid-distance pruning (#26)
+
+Stage-1 behavioural cloning trains on the **crystallographic
+intermediates** — the induced subgraphs of the crystal ligand over the
+atoms placed at each assembly step (the #20 motivation names the
+pristine-crystal training distribution explicitly), re-derived from the
+#15 canonical decomposition and cross-checked against the #18 record at
+every step (seed graph, step count, each step's `product_smiles` — a
+disagreeing record/artifact pair fails closed as corrupted).  The
+pocket tensors come from the processed pocket artifact, centred on the
+crystal ligand's centroid (the #45 §11 extraction frame) and capped at
+the profile limit (Profile A: 700 atoms) by keeping the
+centroid-nearest atoms (documented centroid-distance pruning, #45 §5.2).
+The supervised anchor label is computed **on the trimmed pocket** so it
+always refers to the anchor decomposition the state actually carries.
+Pocket charges are deterministic per-element Gasteiger base values
+(D-V2-035: the documented deterministic interim for the schema's pH-7.4
+formal charges — raw PDB pocket lines carry no bond topology to compute
+true partial charges on).
+
+**Evidence:** `tests/test_supervised_dataset.py` (context
+cross-checks, cap trimming, states pass the frozen tensor contract).
+
+**Affected:** #26 (closed once T4-verified), #20 (the augmentation
+operates on these states).
+
+## D-V2-031 — 2026-11-03 — The intermediate's growth-handle pool = molecule-side reaction-template matches at non-junction atoms (#26)
+
+The #22 handle head consumes the *active handle pool* of the
+intermediate.  On crystal intermediates (no `BuildingBlock` templates
+exist there) the pool is defined as: a growth handle exists at atom
+`a` for reaction `r` iff `r`'s **molecule-side reactant template**
+matches at `a` — the attachment atom located **by map number** (the
+D-V2-027 rule; verified to resolve uniquely for all 27 policy
+reactions) — **and** `a` is not already a junction atom of a formed
+assembly bond (the environment's capacity bookkeeping mirrored on the
+crystal side; the #40 curation guarantees one coupling per handle).
+Pool rows are `(atom, molecule_handle_class)` pairs, deduplicated, in
+deterministic reaction-id/atom order.  The block-side class vocabulary
+(`ALL_HANDLE_CLASSES`) is *not* used for intermediates — it is the
+catalog side; the dual molecule-side detection goes through the
+certified reactant templates (exact reagent-level constraints, not
+functional-group nicknames).
+
+**Engineering hazard pinned:** RDKit **reaction-template** mols
+(`rxn.GetReactantTemplate(0)`) segfault `GetSubstructMatches` in this
+build (all 27 reactions, rc=-11); the safe equivalent is parsing the
+reactant SMARTS *string* directly (`MolFromSmarts`) — pinned by test.
+
+**Evidence:** `tests/test_supervised_dataset.py::TestHandlePool`.
+
+**Affected:** #26; any future consumer of intermediate-side handle
+semantics (#29, #34).
+
+## D-V2-032 — 2026-11-03 — The state's canonical `handle_features` row is the *primary handle* (#26)
+
+The frozen state contract carries one `handle_features [B, 64]` row
+per graph.  For growth states it is the 64-D descriptor of the
+**primary handle** — the next assembly step's junction atom under the
+#15 canonical order (deterministic; the same junction the #18 record
+consumed) — with `handle_pos` its position.  Terminal states with no
+next step carry zeros (documented degenerate: the policy's STOP path
+does not consume the primary-handle channel).  The full pool for the
+#22 head travels beside the state (not inside it) as flat
+`[H, 64]/[H, 3]/[H]/[H]` tensors with batched-ligand atom indexing.
+
+**Affected:** #26.
+
+## D-V2-033 — 2026-11-03 — Empty-pool terminal states: STOP is structurally forced and carries no stop loss (#26)
+
+A completed ligand whose handle pool is empty admits only STOP; the
+#22 head refuses empty pools by design ("only STOP is legal on such
+states").  The dataset marks such terminal samples `forced=True` and
+the trainer attaches **no stop-head loss** to them (the masked law is
+deterministic — P(STOP)=1 by mask, no learned mass, no gradient);
+non-forced terminal states with non-empty pools carry the normal STOP
+cross-entropy (that is where the STOP decision is a real choice).  A
+*step* row with an empty pool is a data inconsistency and fails
+closed.
+
+**Affected:** #26 (the STOP supervision semantics).
+
+## D-V2-034 — 2026-11-03 — Parity labels are derived from the crystal CIP at the junction atom (#26)
+
+The #18 record carries no parity label.  The supervised parity label
+is the junction atom's CIP code under `AssignStereochemistryFrom3D` on
+the crystal intermediate `M_t`, with `required=True` iff the junction
+atom **becomes** a stereocentre in `M_t` while it was not one in
+`M_{t-1}` (a junction that merely retains an existing centre carries
+no parity action).
+
+**Affected:** #26.
+
+## D-V2-035 — 2026-11-03 — Naive σ=0.15 Å jitter inverts stereocentres; the augmenter is stereo-preserving by rejection resampling (#20)
+
+**Measured finding (S-V2-14):** the chirality volume of a typical sp3
+centre (~0.39 Å³ at ~1.5 Å bonds) is only ~2.5× the noise-induced
+volume σ at the issue-pinned jitter level, and plain iid Gaussian
+jitter **flipped the 3D CIP signature on 2 of 50 seeds** on the
+fixture `C/C=C/C[C@H](N)C(=O)O` (RDKit `AssignStereochemistryFrom3D`).
+Issue #20's acceptance ("does not invert chiral stereocenters") is
+therefore **violated by naive jitter**.  Resolution: the composed
+augmenter draws jitter until the full 3D stereo signature (per-atom
+CIP labels + the isomeric SMILES from 3D, covering E/Z) matches the
+pristine crystal signature — bounded redraws (~1.05 expected at the
+measured ~4% flip rate), fail-closed if no preserving draw is found.
+The rigid dihedral stage needs no such guard (provably
+chirality-preserving: every stereocentre sits wholly on one side of
+the rotation cut, or is centred on the axis atom whose fixed bond
+vector lies along the rotation axis).
+
+**Evidence:** `tests/test_augmentation.py` (the flip finding is
+pinned as a regression test; the composed path is verified on 200
+seeds).
+
+**Affected:** #20 (closed), #26 (the loader consumes the composed
+augmenter).
+
+## D-V2-036 — 2026-11-03 — The trainer's legality masks come from the immutable catalog artifact; seed-only rows are never legal retrieval targets (#26)
+
+The synthon-legality mask and the seed-eligibility mask are built from
+the immutable #12 catalog HDF5 at CLI load time: per-row block handle
+class (the first certified synthon class; seed-only rows carry the
+out-of-vocab sentinel `len(BLOCK_HANDLE_CLASS_VOCAB)` so they can
+never match a reaction's block class), the seed-eligibility row mask
+(inverted into the True=illegal mask convention — the polarity bug
+was caught by the CLI smoke: a masked selected seed produced the
+9999 mask-fill loss), and the distinct available block classes.  The
+policy's tied catalog table is sized to the artifact row count
+exactly.
+
+**Affected:** #26.

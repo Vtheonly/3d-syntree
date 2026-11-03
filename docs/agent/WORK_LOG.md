@@ -1847,3 +1847,106 @@ Documentation-only session: no implementation issues #5–#44 were changed or cl
   retrieval equivalence at full catalog scale; #18's replay acceptance
   invariant + the honest 0-acceptance census of the bounded subset;
   #39's anchor/pose semantics). Training/validation: not yet.
+
+---
+
+## Session S-V2-14 — 2026-11-03 — #20 closed, #26 implemented + CPU-verified, #36 prepared (auth gate)
+
+### 0. State discovery (per #45 §25.1)
+
+Read #45 in full; branch `3d-synV2` HEAD `b9b043e` (S-V2-13 had landed
+#18's full-scale run `12b3a9f` and #19 `b9b043e` and closed both issues
+on GitHub — the agent docs were stale at S-V2-12 state; reconciled this
+session). Baseline suite: **1408 passed / 19 skipped** (catalog-artifact
+skips only; the `work/` artifacts were lost to the sandbox recycle —
+expected, re-creatable via the committed drivers).
+
+### 1. Work performed
+
+**#20 DATA-05 — implemented, verified, CLOSED** (`bc41319`):
+`syntree/data/augmentation.py` + 34 tests. Issue-pinned σ=0.15 Å
+ligand-only Gaussian jitter (pocket = fixed conditioning context,
+bit-identical); rigid ±5° non-junction rotatable-dihedral perturbation
+(Gauss-Seidel exact pristine+delta targeting — coupled rotations
+handled; fail-closed bound verification; amide/ester/imidoyl
+resonance-locked bonds excluded; junction bonds — the supervised torsion
+actions — never deliberately rotated); train-split only (fail-closed on
+val/test); single-graph state hook `augment_single_state`.
+**Measured finding (D-V2-035):** naive jitter flips stereocentres (2/50
+seeds on the E/Z fixture) → stereo-signature rejection resampling in
+the composed augmenter (the finding is pinned as a regression test).
+
+**#26 TRAIN-01 — implemented + CPU-verified, T4-gated** (`e009127`):
+`syntree/data/supervised.py` (crystal-intermediate supervised states,
+D-V2-030..034), `syntree/engine/trainer.py` (Profile A: B=12×6, pocket
+cap 700, strict FP32 through the #10 gate, AdamW 3e-4/1e-5, clip 1.0;
+fail-closed divergence — no nan-shield/batch-skipping; separate
+host-RAM/GPU-VRAM telemetry; atomic SHA-256 checkpoints with exact
+continuation state; time-budget graceful stop), `configs/
+train_colab_t4.json`, `scripts/train_stage1.py` (the canonical CLI —
+catalog-driven masks from the immutable #12 H5, fail-closed without it)
++ 40 tests incl. the end-to-end CLI smoke. RDKit hazard pinned:
+reaction-template mols segfault `GetSubstructMatches` (D-V2-031).
+
+**#36 OPS-01 — prepared, auth-gated** (`39e9a41`):
+`notebooks/run_3d_syntree.ipynb` (fail-closed T4 preflight, aria2/
+libxrender1/openssh-server, sshd start, exact-commit checkout, separate
+RAM/VRAM preflight, GPU smoke, canonical training launch) +
+`docs/ops/colab_ssh_workflow.md` (the operator's `colab ssh` CLI
+patterns + the §29.1 authentication handoff). README status table
+reconciled. **No connection established; none claimed** — the operator
+was given the exact commands; the session criteria remain open.
+
+### 2. Incidents / deviations
+
+- The seed-legality mask polarity bug (eligibility vs True=illegal) was
+  caught by the CLI smoke (a 9999 mask-fill loss) and fixed + pinned.
+- S-V2-13 left the agent docs stale (closed #18/#19 without the session
+  record); reconciled here — #18's evidence lives in
+  `docs/data/trajectories/README.md`.
+
+### 3. Commands and verification (the exact evidence)
+
+- `python -m pytest tests/ -q` → **1482 passed / 19 skipped**
+  (baseline 1408 + 34 #20 + 17 supervised + 23 trainer incl. the CLI
+  smoke).
+- `python scripts/train_stage1.py … --max-epochs 2` (the fixture
+  end-to-end smoke) → RC 0; `telemetry.jsonl` + `trainer_state.pt` +
+  `.sha256` written; final total loss 3.21 (seed 0.89, step 2.33,
+  stop 0.0 forced-path).
+- Loss-descent CPU smoke (6-epoch variant in-test): epoch-0 mean >
+  last-epoch mean on the tiny fixture (the T4 criterion itself is
+  gated, not claimed).
+
+### 4. GitHub issue updates
+
+- #20: full evidence comment; **closed as completed**.
+- #26: full evidence comment (implemented + CPU-verified; T4 criteria
+  explicitly pending); **open**.
+- #36: preparation comment with the operator authentication
+  instructions; **open**.
+- #45: untouched (permanent constitution).
+
+### 5. Final state and next actions
+
+- Suite: **1482 passed / 19 skipped**. Clean-room closures: **23 of
+  40** (+ #25/#26 implemented — T4-gated; #42 partially; #36 prepared —
+  auth-gated).
+- Next: **the authorized Colab T4 session (#36)** closes #25's CUDA
+  criterion, #26's two T4 criteria and #36's session criteria in one
+  run (then #27 → #33/#43…). CPU-side: #27 TRAIN-02 (needs #26 —
+  implementable now against the CPU-verified trainer).
+
+### 6. Honest verification ledger
+
+- Attempted: #20, #26, #36 (preparation).
+- Implemented: all three (code + tests landed and push-verified at
+  `bc41319` / `e009127` / `39e9a41`).
+- Tested locally: #20 (34 tests), #26 (40 tests + CLI smoke), #36 (no
+  code tests — notebook/workflow docs; the runtime cells are for the
+  authorized session).
+- Tested on T4: **none** — CPU-only sandbox; no GPU claim is made.
+- Scientifically verified: #20's augmentation invariants (chirality
+  preservation guarantee, dihedral bounds, rigidity) and the measured
+  flip finding; #26's supervised-state/label contracts (fail-closed
+  record/artifact cross-checks) and checkpoint continuation state.

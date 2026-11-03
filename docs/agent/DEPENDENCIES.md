@@ -31,15 +31,15 @@
 | #15 CHEM-05 | #11 — **closed 2026-11-02**: `syntree/data/fragmenter.py` + 21 tests | #18 (its #38 dependency was already satisfied by the reconciliation, D-V2-009) |
 | #16 DATA-01 | #5 — **closed 2026-11-02** (`fccd670`, 28 tests, full-scale run over 204,005 complexes; suite 942/16): `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` | #17 (satisfied) |
 | #17 DATA-02 | #16 — **closed 2026-11-03** (`02b09d2`/`83a629e`, S-V2-11: #16 outputs regenerated full-scale first (204,005 records, exact total; +1 MOAD acceptance vs the original run attributed to upstream API drift); 22,387 clusters → 14,958 components; 80.0/10.0/10.0; zero leakage, fail-closed check; evidence at `docs/data/splits/`) | #18 (satisfied) |
-| #18 DATA-03 | #11, #12, #15, #17, #41 — **all closed** (#41 closed 2026-11-03, S-V2-12); **implemented + verified** (`35b54ba`+`95c12f2`: engine + resumable driver, 29 tests, bounded real-data run at 239.8/s with the honest 0-acceptance census — `docs/data/trajectories/README.md`); remaining: the FULL-SCALE run (data chain, resumable) | #19 (unblocks on the full-scale run) |
-| #19 DATA-04 | #18 | #26, #37 |
-| #20 DATA-05 | #19 | #26 |
+| #18 DATA-03 | #11, #12, #15, #17, #41 — **all closed**; **CLOSED 2026-11-03** (S-V2-13: the full-scale run over all 170,955 accepted complexes — **194 accepted trajectories** (train 111 / val 50 / test 33), 176.8/s mean, closed failure vocabulary over 170,761 rejects; evidence `docs/data/trajectories/README.md` + `extraction_manifest_full_scale.json`) | #19 (satisfied) |
+| #19 DATA-04 | #18 — **CLOSED 2026-11-03** (S-V2-13: `syntree/data/sharded.py` + `scripts/shard_and_upload.py` @ `b9b043e` — byte-bounded packing with fail-closed size verification, SHA-256 manifests, HF streaming, shard-aware unbiased sampler) | #26 (satisfied), #37 |
+| #20 DATA-05 | #19 — **CLOSED 2026-11-03** (S-V2-14: `syntree/data/augmentation.py` @ `bc41319` — σ=0.15 Å ligand-only jitter + rigid ±5° non-junction dihedral perturbation, train-split only, stereo-preserving rejection resampling per D-V2-035; 34 tests) | #26 (satisfied) |
 | #21 MODEL-01 | #6, #7 | #23, #24, #39 |
 | #22 MODEL-02 | #6, #21 | #23 — **closed 2026-11-01**: `syntree/models/handle_head.py` + 44 tests (D-V2-010) |
 | #23 MODEL-03 | #9, #21, #22 — **closed 2026-11-01 (session S-V2-06)**: `syntree/models/policy.py` + 58 tests (D-V2-012); all three deps were closed and inspected before implementation | #24, #39 |
 | #24 MODEL-04 | #11, #8, #23 — **closed 2026-11-02** (`74133c8`, 100 tests, D-V2-018): `syntree/models/policy.py` hierarchical heads + `torsion_head.py` 36-bin categorical | #25 (satisfied), #29, #38 (satisfied), #42 |
 | #25 MODEL-05 | #21, #22, #23, #24, #39* — **implemented 2026-11-02** (`84fd3e7`, 48 tests, D-V2-019; the #39 dependency satisfied by the integrated seed/anchor component); **remaining: the CUDA acceptance criterion (#36 gate)** | #26, #29 |
-| #26 TRAIN-01 | #10, #19, #20, #25 — **#10 closed 2026-11-02** (`syntree/utils/hardware.py`, D-V2-014; `RuntimeConfig` ready); remaining open deps: #19, #20, #25 | #27, #33, #43 |
+| #26 TRAIN-01 | #10 (closed 2026-11-02, D-V2-014), #19 (closed S-V2-13), #20 (closed S-V2-14), #25 (implemented — only its CUDA forward criterion is gated on the authorized #36 session); **implemented + CPU-verified 2026-11-03** (S-V2-14: `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` @ `e009127`; 40 tests + the end-to-end CLI smoke; the two T4 acceptance criteria — monotonic 2-epoch descent on T4, peak reserved VRAM < 9.5 GB — await the authorized #36 runtime) | #27, #33, #43 |
 | #27 TRAIN-02 | #26 | #28 |
 | #28 TRAIN-03 | #11, #12, #27 | #29 |
 | #29 FLOW-01 | #13, #25, #26, #38, #39* — **#13 closed 2026-11-02** (D-V2-017); **#38 closed 2026-11-01** (D-V2-009); remaining: #25, #26, #39 | #30, #31 |
@@ -49,7 +49,7 @@
 | #33 TEST-02 | #7, #8, #21, #25, #26, #32 | #34 |
 | #34 EVAL-01 | #29 | #35, #44 |
 | #35 EVAL-02 | #34, #44 | #37 |
-| #36 OPS-01 | — (user authorization required) | #37, #43 |
+| #36 OPS-01 | — (no code deps; the **user authorization gate** is a hard external dependency, #45 §6/§29) — **prepared 2026-11-03** (S-V2-14: `notebooks/run_3d_syntree.ipynb` + `docs/ops/colab_ssh_workflow.md` @ `39e9a41`; the runtime-side init, the fail-closed T4 preflight, the operator `colab ssh` CLI flow and the §29.1 authentication handoff are ready; **no connection established — none claimed**) | #37, #43 (both ride the authorized session) |
 | #37 OPS-02 | #19, #26, #31, #35, #36 | — (final milestone) |
 | #38 FLOW-04 | implied: #15, #24 (from their `Blocks` lists) | — (**closed 2026-11-01**: spec delivered ahead of the cycle via the owner-directed reconciliation, D-V2-009; its deliverables live in `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/`) |
 | #39 MODEL-06 | implied: #12, #21, #23, #25 — **closed 2026-11-03** (S-V2-12: policy side via #25 `84fd3e7`; environment side `d1a9167` — pre-seed candidate state, explicit SeedAction, covariant pose D-V2-028, TB seed accounting Property 3b, supervised anchor labels; 24 tests) | #25's #39 dependency fully satisfied; #29's remaining deps: #25, #26 |

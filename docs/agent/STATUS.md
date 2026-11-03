@@ -12,20 +12,24 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-03 (session S-V2-12 close: **#41 DATA-06
-> implemented, run full-scale, CLOSED** — exhaustive self-retrieval
-> 68,417/0 lost, brute-force equivalence 2,000/0, 888.7× candidate
-> reduction, 1.34 µs lookups, index sha `ea57e867…`; **#39 MODEL-06
-> environment side implemented and CLOSED** — explicit SeedAction,
-> pre-seed candidate state, covariant pose rule, TB seed accounting,
-> supervised anchor labels; #18 DATA-03 **implemented + verified**
-> (auto-derived graft specs 27/27, indexed retrieval, exact forward
-> replay, resumable driver, 29 tests) with a bounded real-data run
-> (3,894 CrossDocked complexes, 239.8/s, honest 0-acceptance finding —
-> `docs/data/trajectories/README.md`); registry defects rxn_14/rxn_15
-> corrected (D-V2-027); suite **1384 passed / 16 skipped**; clean-room
-> closures now 22 of 40: #5–#17, #21–#25*, #32, #38, #39, #40, #41
-> (*#25 implemented — CUDA criterion gated on #36).)
+> Last synchronized: 2026-11-03 (session S-V2-14 close: **#20 DATA-05
+> CLOSED** — σ=0.15 Å ligand-only jitter + rigid ±5° non-junction
+> dihedral perturbation, train-split only, stereo-preserving by
+> rejection resampling after the measured naive-jitter stereocentre-flip
+> finding (D-V2-035), commit `bc41319`, 34 tests; **#26 TRAIN-01
+> implemented + CPU-verified** — the supervised training loader
+> (crystal-intermediate states, D-V2-030..034) + the pure-FP32
+> ResilientTrainer (Profile A: B=12×6, cap 700, fail-closed divergence,
+> separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints,
+> time-budget graceful stop) + the canonical CLI `scripts/
+> train_stage1.py`, commit `e009127`, 40 tests incl. the end-to-end
+> smoke — the two T4 acceptance criteria await the authorized #36
+> session; **#36 OPS-01 prepared** — `notebooks/run_3d_syntree.ipynb` +
+> `docs/ops/colab_ssh_workflow.md`, commit `39e9a41`, awaiting the
+> operator's `colab ssh` authentication; #18/#19 were closed by S-V2-13
+> (docs reconciled this session); suite **1482 passed / 19 skipped**;
+> clean-room closures now 23 of 40: #5–#21, #22–#25*, #32, #38–#41
+> (*#25/#26 implemented — T4 criteria gated on #36).)
 
 ## Legend
 
@@ -50,15 +54,15 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 15 | CHEM-05 | Canonical assembly ordering / decompositions | **Closed** (2026-11-02) | `syntree/data/fragmenter.py` | `864530d` | `tests/test_canonical_fragmenter.py` 21/21; acceptance verified (identical trajectories under 12–20 atom renumberings per ligand incl. the symmetric biphenyl) | — |
 | 16 | DATA-01 | Multi-source preprocessing pipeline | **Closed** (2026-11-02) | `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` | `fccd670` | `tests/test_preprocessing.py` 28/28; both acceptance criteria verified at full scale: 204,005 complexes, zero unhandled exceptions (170,954 accepted / 33,051 exact-code rejections); manifest completeness (204,005 records, explicit documented nulls); suite 942/942 + 16 by-design skips — note: the run's output artifacts were partially lost to the sandbox recycle (47,483/170,954 pairs + `processed_manifest.jsonl`); regeneration is mechanical via the in-repo driver (raws + checksums survive) | — |
 | 17 | DATA-02 | MMseqs2 30% clustered splits | **Closed** (2026-11-03, S-V2-11: #16 outputs regenerated full-scale first — 204,005 records exact total; then full-scale clustering + splits: 22,387 clusters, 14,958 components, **zero leakage**, train 136,764 / val 17,096 / test 17,095; evidence at `docs/data/splits/`) | `scripts/split_clusters.py` + `scripts/run_mmseqs_split.sh` | `02b09d2` (evidence `83a629e`) | `tests/test_split_clusters.py` 18/18; both acceptance criteria verified (programmatic zero-leakage graph check fails closed; split manifest with exact counts + cluster statistics + per-source counts) | — |
-| 18 | DATA-03 | Trajectory extraction + exact replay | **Implemented — Awaiting Full-Scale Run** (engine + driver + 29 tests landed 2026-11-03; bounded real-data run: 3,894 complexes, 239.8/s, all failure codes explicit, honest 0-acceptance finding — `docs/data/trajectories/README.md`; remaining: the full 204,005-record run over all three sources via the resumable driver) | `syntree/data/trajectories.py` + `scripts/build_trajectories.py` | `35b54ba` + `95c12f2` | `tests/test_trajectories.py` 29/29; driver smoke + bounded run evidence; acceptance 1 verified by construction + tests (every emitted step replayed); acceptance 2 verified (closed failure vocabulary, real-data histogram) | Full-scale data chain (pdbbind+moad raws re-download) |
-| 19 | DATA-04 | Compressed sharding engine | Blocked (needs #18) | `syntree/data/` | — | — | |
-| 20 | DATA-05 | Coordinate/dihedral augmentation | Blocked (needs #19) | `syntree/data/` | — | — | Train split only |
+| 18 | DATA-03 | Trajectory extraction + exact replay | **Closed** (2026-11-03, S-V2-13: the full-scale run over all 170,955 accepted complexes — 176.8/s mean; **194 accepted trajectories** (train 111 / val 50 / test 33), every step exact-replay-verified + an independent 20/20 re-replay audit; closed failure vocabulary over 170,761 rejects — 97.78% `no_matched_seed`, the honest certified-BB reconstructibility census; evidence `docs/data/trajectories/README.md` + `extraction_manifest_full_scale.json`) | `syntree/data/trajectories.py` + `scripts/build_trajectories.py` | `35b54ba`+`95c12f2` (+S-V2-13 fixes `00ba1b8`/`3cf5345`) | `tests/test_trajectories.py` 33/33; full-scale run evidence | — |
+| 19 | DATA-04 | Compressed sharding engine | **Closed** (2026-11-03, S-V2-13: `syntree/data/sharded.py` + `scripts/shard_and_upload.py` — byte-bounded greedy packing with exact compressed-size verification per shard, fail-closed; deterministic-gzip SHA-256 manifests; HF streaming loader; epoch-seeded shard-aware unbiased sampler) | `syntree/data/sharded.py` | `b9b043e` | `tests/test_sharded_dataset.py` (S-V2-13, all green) | — |
+| 20 | DATA-05 | Coordinate/dihedral augmentation | **Closed** (2026-11-03, S-V2-14: σ=0.15 Å ligand-only Gaussian jitter (pocket bit-identical) + rigid ±5° non-junction rotatable-dihedral perturbation (Gauss-Seidel exact targets, fail-closed ±5° bound verification, resonance-locked bonds excluded, junction bonds never rotated); **train-split only, fail-closed on val/test**; the composed augmenter is stereo-preserving by rejection resampling after the measured naive-jitter stereocentre flip (2/50 seeds on the E/Z fixture — D-V2-035)) | `syntree/data/augmentation.py` | `bc41319` | `tests/test_augmentation.py` 34/34; both acceptance criteria verified (connectivity+CIP preservation incl. the flip-finding regression; the training loader emits jittered coordinates when `augment=True` — end-to-end in `tests/test_supervised_dataset.py`) | — |
 | 21 | MODEL-01 | BipartitePaiNN backbone | **Closed** (2026-11-01) | `syntree/models/bipartite.py` | `e76d955` | `tests/test_bipartite_painn.py` 69/69 (both pinned acceptance criteria: scalar invariance + vector equivariance at ≤3e-13 over 36 rigid-motion trials; clean pocket-only N_l=0); full suite 207/207 | — |
 | 22 | MODEL-02 | Handle selection head | **Closed** (2026-11-01) | `syntree/models/handle_head.py` | `433d303` | `tests/test_handle_selection.py` 44/44; #22 acceptance verified (valid normalized distributions over active handle sets for H > 1, on real `AssemblyEnvironment` menus at t=0 and grown intermediates); rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32); frozen profile 224,896 params; full suite 301/301 | — |
 | 23 | MODEL-03 | Cross-attention decoder | **Closed** (2026-11-01) | `syntree/models/policy.py` | `dc4921e` | `tests/test_cross_attention_decoder.py` 58/58; both #23 acceptance criteria verified ([B,1,256]×[B,N,256]→[B,256]; padded atoms masked exactly — bit-identical under pad junk); SE(3) invariance 8.882e-16 (FP64) / 4.768e-07 (FP32); frozen profile 1,219,328 params; full suite 405/405 | — |
 | 24 | MODEL-04 | Hierarchical heads + torsion space | **Closed** (2026-11-02) | `syntree/models/policy.py` + `syntree/models/torsion_head.py` | `74133c8` | `tests/test_hierarchical_heads.py` 100/100; both #24 acceptance criteria verified (STOP-isolation by forward hooks + stop-law invariance; all action components pure categorical laws whose logs compose in TB — kappa/mu invariance pinned); the three pre-V2 bugs pinned dead; full suite 755/755 — D-V2-018 | — |
 | 25 | MODEL-05 | SynTreePolicy assembly + audit | **Implemented — Awaiting Verification** (CPU-verified 2026-11-02; the CUDA acceptance criterion is gated on the authorized Colab/Kaggle T4 runtime, #36) | `syntree/models/policy.py` | `84fd3e7` | `tests/test_policy_assembly.py` 48/48; parameter memory 43.5 MB < 50 MB verified by exact arithmetic (10,880,719 params, D-V2-019); full frozen-profile forward zero-NaN/Inf on CPU; the #39 seed/anchor component integrated (generator + factorized head + tied table); full suite 803/803 | CUDA/T4 execution pending #36 authorization |
-| 26 | TRAIN-01 | Pure FP32 T4 trainer | Blocked (needs #19, #20, #25 — #10 closed 2026-11-02) | `syntree/engine/` | — | — | #10 satisfied (`RuntimeConfig` contract ready); T4 verification requires authorized Colab/Kaggle |
+| 26 | TRAIN-01 | Pure FP32 T4 trainer | **Implemented — Awaiting T4 Verification** (2026-11-03, S-V2-14: supervised training loader `syntree/data/supervised.py` — crystal-intermediate states from #18 records + processed artifacts with fail-closed cross-checks, molecule-side handle pool (D-V2-031, incl. the pinned RDKit reaction-template segfault hazard), parity labels from crystal CIP (D-V2-034), pocket cap 700 by centroid-distance pruning; `syntree/engine/trainer.py` — Profile A (B=12×6, strict FP32 via the #10 gate, AdamW 3e-4/1e-5, clip 1.0), fail-closed divergence (TrainingDivergenceError, no nan-shield/batch-skipping), the full Stage-1 loss stack, separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints with exact continuation state, time-budget graceful stop (#43 contract); canonical CLI `scripts/train_stage1.py` with catalog-driven masks) | `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` | `e009127` | 40 tests + the end-to-end CLI smoke green; CPU loss-descent smoke verified; **acceptance criteria (2-epoch monotonic descent on T4; peak reserved VRAM < 9.5 GB) require the authorized T4 runtime — NOT claimed** | Authorized #36 session (also closes #25's CUDA criterion) |
 | 27 | TRAIN-02 | Quantile curriculum (Approach C) | Blocked (needs #26) | `syntree/engine/` | — | — | |
 | 28 | TRAIN-03 | 2D→3D transfer pretraining | Blocked (needs #12, #27 — #11 satisfied) | `syntree/engine/` | — | — | Requires licensed reaction data |
 | 29 | FLOW-01 | GFlowNet TB engine | Blocked (needs #25, #26, #39 — #13 satisfied 2026-11-02) | `syntree/engine/gflownet.py` | — | TB mathematics + uniform-leaf backward semantics implemented and flow-accounting-verified (D-V2-009); #38 closed; trainer + logZ conditioning remain | |
@@ -68,7 +72,7 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 33 | TEST-02 | Suite B invariant tests | Blocked (needs #7, #8, #21, #25, #26, #32) | `tests/` | — | — | |
 | 34 | EVAL-01 | Independent AiZynthFinder evaluation | Blocked (needs #29) | `scripts/` | — | — | AiZynthFinder availability unverified |
 | 35 | EVAL-02 | Comparative SBDD benchmark | Blocked (needs #34, #44) | `scripts/` | — | — | |
-| 36 | OPS-01 | Colab SSH remote workflow | Pending (no code dep; **user authorization gate**) | `docs/`, notebook | — | — | Prepare workflow; do NOT claim any connection |
+| 36 | OPS-01 | Colab SSH remote workflow | **Prepared — Awaiting Operator Authentication** (2026-11-03, S-V2-14: `notebooks/run_3d_syntree.ipynb` — fail-closed Tesla-T4 preflight (#45 §29.2), aria2/libxrender1/openssh-server install, sshd start, exact branch/commit checkout, repo-declared environment, the mandatory separate host-RAM/GPU-VRAM preflight, GPU forward/backward smoke, the canonical training launch; `docs/ops/colab_ssh_workflow.md` — the owner's `colab ssh` CLI patterns + the exact §29.1 authentication handoff) | `notebooks/run_3d_syntree.ipynb` + `docs/ops/colab_ssh_workflow.md` | `39e9a41` | No runtime tests yet — **the session criteria (authorized connection, T4 via nvidia-smi AND PyTorch ~15 GB, separate RAM/VRAM capture, remote fwd/bwd test, remote training launch) all require the operator's `colab ssh` authentication**; no connection established, none claimed | Operator runs `colab ssh`, authenticates with their Google account, confirms; then the agent connects and executes the §29.2 verification |
 | 37 | OPS-02 | Hugging Face artifact sync | Blocked (needs #19, #26, #31, #35, #36) — final milestone | `syntree/utils/` | — | — | |
 | 38 | FLOW-04 | MDP state / derivation DAG semantics | **Closed** (2026-11-01) | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` | (this session) | All 5 acceptance criteria: written spec distinguishing MDP vs DAG; proven + implemented uniform-leaf `P_B` (STOP term zero by proof); multi-path/symmetric flow tests; toy-DAG `P(x) = R(x)/Z` verification (19 states / 31 trajectories, residuals < 1e-9); #29 references #38's semantics | — |
 | 39 | MODEL-06 | Learned seed/anchor selection | **Closed** (2026-11-03: environment side landed at `d1a9167` — pre-seed candidate state, explicit `SeedAction`, covariant pose rule D-V2-028, TB seed accounting with the zero-backward proof (MDP_STATE_SPACE.md Property 3b), supervised anchor labels; policy side previously landed with #25) | `syntree/engine/environment.py` + `syntree/data/seed_labels.py` | `d1a9167` | `tests/test_seed_anchor_selection.py` 24/24 (multi-subpocket enumeration, invalid combos, equivariance, extendability, TB accounting, labels) | — |
@@ -78,19 +82,20 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
 | 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: 22 (#5, #6, #7,
-#8, #9, #10, #11, #12, #13, #14, #15, #16, #17, #21, #22, #23, #24,
-#32, #38, #39, #40, #41 — clean-room era). Implemented-awaiting: #25
-(CUDA criterion — #36 gate), #18 (full-scale run), #42 (T4
-benchmarking + #24 production integration). #45 excluded by standing
-rule.
+**Progress denominator: 40 issues (#5–#44).** Closed: 23 (#5–#21, #22,
+#23, #24, #32, #38, #39, #40, #41 — clean-room era; #18/#19/#20 closed
+S-V2-13/14). Implemented-awaiting: #25 (CUDA forward criterion), #26
+(two T4 criteria), #42 (T4 benchmarking + #24 production integration)
+— all three ride the authorized #36 session. Prepared-awaiting: #36
+(operator `colab ssh` authentication). #45 excluded by standing rule.
 
 ## Pre-existing failures
 
-None. The clean-room suite is **1384 passed / 16 skipped** green (1303 at
-S-V2-11 + 29 #18 + 24 #39 + 28 #41 tests, session S-V2-12 with the
-catalog artifact present; 16 #11 skips are by design — reactions without
-a dedicated stereo pair); there are no inherited failures.
+None. The clean-room suite is **1482 passed / 19 skipped** green (S-V2-14
+without the catalog artifact present; 19 skips = 16 by-design #11 stereo
+pairs + 3 catalog-artifact-gated, re-enabling with
+`SYNTREE_CATALOG_H5` pointed at a verified catalog); there are no
+inherited failures.
 
 ## Session log pointer
 
