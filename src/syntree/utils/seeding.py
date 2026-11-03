@@ -22,7 +22,14 @@ from typing import Optional
 import numpy as np
 import torch
 
-__all__ = ["SeedState", "seed_everything", "capture_rng_state", "restore_rng_state"]
+__all__ = [
+    "SeedState",
+    "seed_everything",
+    "capture_rng_state",
+    "restore_rng_state",
+    "rng_state_to_dict",
+    "rng_state_from_dict",
+]
 
 
 @dataclass(frozen=True)
@@ -99,3 +106,62 @@ def restore_rng_state(snapshot: _RngSnapshot) -> None:
     torch.set_rng_state(snapshot.torch)
     np.random.set_state(snapshot.numpy)
     random.setstate(snapshot.python)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint (de)serialization of RNG states (#26 trainer / #43 resume)
+# ---------------------------------------------------------------------------
+
+def rng_state_to_dict(snapshot: _RngSnapshot) -> dict:
+    """The JSON-able/torch-saveable form of one RNG snapshot.
+
+    The NumPy state tuple is normalised to built-in lists/tuples so the
+    dict survives ``torch.save`` round-trips without pickle protocol
+    surprises on the consumer side (#26's checkpoint payload).
+    """
+    if not isinstance(snapshot, _RngSnapshot):
+        raise TypeError(
+            f"expected a capture_rng_state() snapshot, got {type(snapshot).__name__}"
+        )
+    numpy_state = snapshot.numpy
+    return {
+        "torch": snapshot.torch,
+        "numpy": (
+            str(numpy_state[0]),
+            [int(v) for v in numpy_state[1]],
+            int(numpy_state[2]),
+            float(numpy_state[3]),
+            float(numpy_state[4]),
+        ),
+        "python": [
+            list(entry) if isinstance(entry, tuple) else entry
+            for entry in snapshot.python
+        ],
+    }
+
+
+def rng_state_from_dict(data: dict) -> _RngSnapshot:
+    """Rebuild a snapshot from :func:`rng_state_to_dict` output (exact)."""
+    if not isinstance(data, dict) or set(data) != {"torch", "numpy", "python"}:
+        raise TypeError(
+            "rng_state_from_dict expects the rng_state_to_dict payload "
+            f"(torch/numpy/python keys), got {type(data).__name__}"
+        )
+    numpy_state = data["numpy"]
+    python_state = data["python"]
+    if len(numpy_state) != 5 or len(python_state) != 3:
+        raise ValueError("malformed RNG state payload (fail-closed)")
+    return _RngSnapshot(
+        torch=data["torch"],
+        numpy=(
+            str(numpy_state[0]),
+            [int(v) for v in numpy_state[1]],
+            int(numpy_state[2]),
+            float(numpy_state[3]),
+            float(numpy_state[4]),
+        ),
+        python=tuple(
+            tuple(entry) if isinstance(entry, list) else entry
+            for entry in python_state
+        ),
+    )
