@@ -1950,3 +1950,170 @@ was given the exact commands; the session criteria remain open.
   preservation guarantee, dihedral bounds, rigidity) and the measured
   flip finding; #26's supervised-state/label contracts (fail-closed
   record/artifact cross-checks) and checkpoint continuation state.
+
+## Session S-V2-15 — 2026-11-04 — #27 closed, #33 implemented + CPU-verified, #20 re-audited, #36 auth handoff re-issued
+
+### 0. State discovery (per #45 §25.1)
+
+Read #45 in full (the whole constitution, all 29 sections); fresh clone
+of `3d-synV2` at `600c1ae` (S-V2-14 close). Read every open issue's
+body (#25–#37, #42–#44) and #36's comment trail; read
+STATUS/HANDOFF/DEPENDENCIES/DECISIONS + the S-V2-14 work-log entry.
+Confirmed the S-V2-14 claims against the tree: `syntree/data/
+augmentation.py` + `tests/test_augmentation.py` present (34/34 green),
+the #36 notebook (11 cells) + workflow doc present, the trainer + CLI
+present. **Independent re-audit of #20 (the user's explicit request):
+the closure is genuine** — fresh run `pytest tests/test_augmentation.py
+-q` → 34 passed; baseline suite reproduced exactly
+(1482 passed / 19 skipped) before any edit.
+
+### 1. Work performed
+
+**#27 TRAIN-02 — implemented, verified, CLOSED** (`9197619`):
+`syntree/engine/curriculum.py` — the five issue-named difficulty axes
+per supervised item (pocket atoms, rotatable bonds of the crystal
+intermediate, rings, pocket charge magnitude, handle rarity;
+z-scored, equal-weight, D-V2-037); 9 quantile-balanced level bins
+(fail-closed below 9 items); the 6-stage level distribution
+`p = (1−9ε)·kernel + ε`, ε = 0.03 exactly (the floor-exact mixture,
+D-V2-038); `CurriculumSampler` drawing exactly N samples per epoch
+from deterministic (seed, stage, epoch) NumPy streams (bit-identical
+re-iteration — the exact-resume property); the milestone machine
+(running-best reference, improvement ≥ 0.005 advances, patience-2
+fallback, no regression, stage cap 6, non-finite val loss fails
+closed); schema-versioned `state_dict`/`load_state_dict` with
+config-mismatch fail-closed. Trainer integration in
+`syntree/engine/trainer.py`: wiring guards (sampler-wired loader, val
+split, curriculum ⇒ val loader), per-epoch `_validation_loss`
+(eval-mode, no-grad, fail-closed on non-finite), curriculum telemetry
+records (level histogram + probabilities + stage), checkpoint payload
+key `"curriculum"` with symmetric fail-closed restore. Canonical CLI
+`--curriculum` (additive; the #26 pinned launch unchanged — D-V2-039).
+`tests/test_curriculum.py`: 40 tests — ingestion (real amide fixture +
+split guard), balanced bins, floor exactness at every stage incl. the
+extreme centres, exact-N, all-9-levels-per-epoch histograms at all six
+stages, empirical frequency match, determinism/re-iteration, the
+milestone machine incl. the 40-epoch smooth-progression acceptance,
+state round-trips (JSON-able), trainer wiring guards, checkpoint
+round-trip + both mismatch refusals, and the end-to-end
+`--curriculum` CLI smoke (subprocess; checkpoint carries the
+curriculum state).
+
+**#33 TEST-02 — implemented + CPU-verified, one battery T4-gated** (`7a6ea3b`):
+`tests/suite_b/` (a package — the issue-specified basenames would
+otherwise collide with the root batteries):
+(1) `test_mathematical_singularities.py` — coincident atoms d=0 finite
+with exactly-zero gradients (`safe_norm`/`safe_unit_vector`), the von
+Mises backward == the bounded Amos ratio A(κ) ∈ [0,1) over κ ∈ [0,100]
+(extremes/monotonicity/asymptotics), the cosine cutoff bitwise-zero at
+r_cut with continuous decay + the integrated RBF vanishing past it;
+(2) `test_se3_equivariance.py` — scalar invariance + vector covariance
+under 36 random proper SO(3) rotations and translations through
+`BipartitePaiNN` (fp64), pure-translation, pocket-only N_l=0, batched;
+(3) `test_tensor_contracts.py` — 64-D handle descriptors separate from
+3-D coordinates; legacy 67-D Franken tensors rejected with the exact
+schema message, incl. a literally-glued `[descriptors|xyz]` tensor;
+(4) `test_t4_memory_boundary.py` — Profile-A CPU contracts (B=12/6/700,
+budget 9.5 GiB, parameter arithmetic 10,880,719 params = 43.5 MB) +
+the B=12×cap-700 full-profile fwd/bwd peak-reserved-VRAM measurement
+that executes ONLY on the authorized Tesla T4 (loud, reason-pinned
+skip elsewhere; non-T4 CUDA also refused per #45 §29.2);
+(5) `test_gflownet_flow.py` — the deterministic uniform-leaf reverse
+step on linear/symmetric fragment fixtures (seed exclusion, connected
+predecessors, exactly 1/k) + the TB loss behaviour (exact identity,
+seed/STOP zero backward, log(4/3) leaf sensitivity, zero loss at
+exact flow, log-Z gradients, bit determinism, fail-closed set, batch
+invariance, symmetric-ordering shared optimum).
+`pytest tests/suite_b/ -v` → **47 passed / 1 skipped**.
+
+**#20 DATA-05 — independent re-audit** (no code change needed):
+fresh 34/34 + the full-suite baseline reproduction (1482/19 before
+this session's additions). The user's session prompt asked to
+"implement #20"; the honest finding is that S-V2-14 genuinely
+implemented and closed it — this session verified it independently
+rather than redoing it.
+
+**#36 OPS-01 — verified prepared, auth handoff re-issued**: the
+notebook (11 cells, fail-closed T4 preflight, sshd, exact-commit
+checkout, separate RAM/VRAM preflight, GPU smoke, canonical launch)
+and `docs/ops/colab_ssh_workflow.md` re-inspected; nothing further is
+codeable — the remaining criterion is the operator's `colab ssh`
+authentication (#45 §29.1: the agent must not fabricate or preempt the
+link). The exact operator commands were re-issued in the session
+reply.
+
+### 2. Incidents / deviations
+
+- Author-name mismatch on the #27 commit (`3D-SynTree V2 Agent` vs the
+  repo's `autonomous-agent`; same email) — the amend ran after the
+  author config change without `--reset-author`; pushed anyway
+  (never force-push, D-V2-024). Cosmetic only.
+- Three of my own test-side math errors were caught by the first
+  curriculum run (patience semantics, 1-row z-score degeneracy,
+  guard-order match) and two fixture/tolerance errors in Suite B
+  (star-fragment id, FP32-vs-1e-7 tolerances, a sign, a log-prob
+  mapping) — all fixed in the same session; the *implementation*
+  needed no change after the initial write except the trainer/CLI
+  integration which passed unchanged.
+
+### 3. Commands and verification (the exact evidence)
+
+- Baseline (before edits): `python -m pytest tests/ -q` → **1482
+  passed / 19 skipped**; `python -m pytest tests/test_augmentation.py
+  -q` → **34 passed** (the #20 audit).
+- After #27: `python -m pytest tests/test_curriculum.py -q` → **40
+  passed**; full suite → **1522 passed / 19 skipped**.
+- After #33: `python -m pytest tests/suite_b/ -v` → **47 passed / 1
+  skipped** (skip = the T4 memory measurement, reason pinned); full
+  suite → **1569 passed / 20 skipped** (0 failures, no regressions;
+  46 s–85 s runtime).
+- Both #27 acceptance criteria verified in-test: all 9 levels sampled
+  every epoch (histograms at all 6 stages) and the 40-epoch schedule
+  transitioning smoothly through all 6 stages (monotone, no skips,
+  5 transitions).
+- `git diff --check` clean before every commit (D-V2-024 flow);
+  remote ref verified after each push.
+
+### 4. GitHub issue updates
+
+- #27: full evidence comment; **closed as completed**.
+- #33: full evidence comment (implemented + CPU-verified; the single
+  remaining criterion is the on-T4 execution of the memory battery);
+  **open** — mirrors #25/#26 treatment.
+- #36: no new comment this session (the S-V2-14 comment remains the
+  accurate prepared-awaiting-auth record; the handoff commands were
+  re-issued in the chat reply).
+- #20: no comment (re-audit evidence lives here + STATUS.md).
+- #45: untouched (permanent constitution).
+
+### 5. Final state and next actions
+
+- Suite: **1569 passed / 20 skipped**. Clean-room closures: **24 of
+  40** (+ #33 implemented — one battery gated on #36; #25/#26/#42
+  unchanged).
+- Commits this session: `9197619` (#27) and `7a6ea3b` (#33), both
+  pushed and remote-verified; decisions D-V2-037/038/039 recorded.
+- Next: **the authorized Colab T4 session (#36) is the single
+  highest-value step** — it closes #25's CUDA criterion, #26's two T4
+  criteria, #33's memory battery (`pytest tests/suite_b/ -v` → 48/48
+  → close), #36's session criteria, and unblocks #43's measured
+  profiling + cross-session resume. CPU-side if still unauthenticated:
+  #29 FLOW-01's remaining scope is the logZ MLP + trainer integration
+  (its TB mathematics + backward semantics are closed by #38/D-V2-009
+  and now pinned by Suite B battery 5); #28 is externally blocked on
+  licensed reaction data (owner decision).
+
+### 6. Honest verification ledger
+
+- Attempted: #27, #33, #20 (re-audit), #36 (verification + handoff).
+- Implemented: #27 (code + tests + integration, closed), #33 (five
+  batteries, one hardware-gated measurement).
+- Tested locally: #27 (40 tests + CLI smoke), #33 (47 CPU tests),
+  #20 (34 re-run), full suite 1569/20.
+- Tested on T4: **none** — CPU-only sandbox; no GPU claim is made
+  anywhere (the Suite-B memory battery and #25/#26/#42 criteria are
+  explicitly gated).
+- Scientifically verified: the curriculum's statistical contracts
+  (floor exactness, balanced bins, all-level coverage, deterministic
+  streams, milestone semantics) and Suite B's mathematical invariants
+  (singularity behaviour, SE(3), schema separation, TB identities).

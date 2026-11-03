@@ -12,24 +12,22 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-03 (session S-V2-14 close: **#20 DATA-05
-> CLOSED** — σ=0.15 Å ligand-only jitter + rigid ±5° non-junction
-> dihedral perturbation, train-split only, stereo-preserving by
-> rejection resampling after the measured naive-jitter stereocentre-flip
-> finding (D-V2-035), commit `bc41319`, 34 tests; **#26 TRAIN-01
-> implemented + CPU-verified** — the supervised training loader
-> (crystal-intermediate states, D-V2-030..034) + the pure-FP32
-> ResilientTrainer (Profile A: B=12×6, cap 700, fail-closed divergence,
-> separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints,
-> time-budget graceful stop) + the canonical CLI `scripts/
-> train_stage1.py`, commit `e009127`, 40 tests incl. the end-to-end
-> smoke — the two T4 acceptance criteria await the authorized #36
-> session; **#36 OPS-01 prepared** — `notebooks/run_3d_syntree.ipynb` +
-> `docs/ops/colab_ssh_workflow.md`, commit `39e9a41`, awaiting the
-> operator's `colab ssh` authentication; #18/#19 were closed by S-V2-13
-> (docs reconciled this session); suite **1482 passed / 19 skipped**;
-> clean-room closures now 23 of 40: #5–#21, #22–#25*, #32, #38–#41
-> (*#25/#26 implemented — T4 criteria gated on #36).)
+> Last synchronized: 2026-11-04 (session S-V2-15 close: **#27 TRAIN-02
+> CLOSED** — the Approach C quantile curriculum engine `syntree/engine/
+> curriculum.py` — 9 quantile-balanced difficulty bins over the five
+> issue-named axes, 6-stage floor-exact level distribution (ε=0.03),
+> exactly-N deterministic epoch draws, milestone machine (0.005 /
+> patience-2), full checkpointable state — + trainer/CLI integration,
+> commit `9197619`, 40 tests incl. the `--curriculum` CLI smoke, both
+> acceptance criteria verified; **#33 TEST-02 implemented + CPU-verified**
+> — the five Suite-B batteries under `tests/suite_b/`, commit `7a6ea3b`,
+> `pytest tests/suite_b/ -v` → 47 passed / 1 skipped — the single skip is
+> the battery-4 T4 memory measurement, gated on the authorized #36
+> session by the issue's own scope; #20 was independently re-audited
+> (34/34 + suite reproduction); suite **1569 passed / 20 skipped**;
+> clean-room closures now 24 of 40: #5–#25, #27, #32, #38–#41
+> (*#25/#26 implemented — T4 criteria gated on #36; #33 implemented —
+> its memory battery rides the same session).)
 
 ## Legend
 
@@ -62,14 +60,14 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 23 | MODEL-03 | Cross-attention decoder | **Closed** (2026-11-01) | `syntree/models/policy.py` | `dc4921e` | `tests/test_cross_attention_decoder.py` 58/58; both #23 acceptance criteria verified ([B,1,256]×[B,N,256]→[B,256]; padded atoms masked exactly — bit-identical under pad junk); SE(3) invariance 8.882e-16 (FP64) / 4.768e-07 (FP32); frozen profile 1,219,328 params; full suite 405/405 | — |
 | 24 | MODEL-04 | Hierarchical heads + torsion space | **Closed** (2026-11-02) | `syntree/models/policy.py` + `syntree/models/torsion_head.py` | `74133c8` | `tests/test_hierarchical_heads.py` 100/100; both #24 acceptance criteria verified (STOP-isolation by forward hooks + stop-law invariance; all action components pure categorical laws whose logs compose in TB — kappa/mu invariance pinned); the three pre-V2 bugs pinned dead; full suite 755/755 — D-V2-018 | — |
 | 25 | MODEL-05 | SynTreePolicy assembly + audit | **Implemented — Awaiting Verification** (CPU-verified 2026-11-02; the CUDA acceptance criterion is gated on the authorized Colab/Kaggle T4 runtime, #36) | `syntree/models/policy.py` | `84fd3e7` | `tests/test_policy_assembly.py` 48/48; parameter memory 43.5 MB < 50 MB verified by exact arithmetic (10,880,719 params, D-V2-019); full frozen-profile forward zero-NaN/Inf on CPU; the #39 seed/anchor component integrated (generator + factorized head + tied table); full suite 803/803 | CUDA/T4 execution pending #36 authorization |
-| 26 | TRAIN-01 | Pure FP32 T4 trainer | **Implemented — Awaiting T4 Verification** (2026-11-03, S-V2-14: supervised training loader `syntree/data/supervised.py` — crystal-intermediate states from #18 records + processed artifacts with fail-closed cross-checks, molecule-side handle pool (D-V2-031, incl. the pinned RDKit reaction-template segfault hazard), parity labels from crystal CIP (D-V2-034), pocket cap 700 by centroid-distance pruning; `syntree/engine/trainer.py` — Profile A (B=12×6, strict FP32 via the #10 gate, AdamW 3e-4/1e-5, clip 1.0), fail-closed divergence (TrainingDivergenceError, no nan-shield/batch-skipping), the full Stage-1 loss stack, separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints with exact continuation state, time-budget graceful stop (#43 contract); canonical CLI `scripts/train_stage1.py` with catalog-driven masks) | `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` | `e009127` | 40 tests + the end-to-end CLI smoke green; CPU loss-descent smoke verified; **acceptance criteria (2-epoch monotonic descent on T4; peak reserved VRAM < 9.5 GB) require the authorized T4 runtime — NOT claimed** | Authorized #36 session (also closes #25's CUDA criterion) |
-| 27 | TRAIN-02 | Quantile curriculum (Approach C) | Blocked (needs #26) | `syntree/engine/` | — | — | |
-| 28 | TRAIN-03 | 2D→3D transfer pretraining | Blocked (needs #12, #27 — #11 satisfied) | `syntree/engine/` | — | — | Requires licensed reaction data |
+| 26 | TRAIN-01 | Pure FP32 T4 trainer | **Implemented — Awaiting T4 Verification** (2026-11-03, S-V2-14: supervised training loader `syntree/data/supervised.py` — crystal-intermediate states from #18 records + processed artifacts with fail-closed cross-checks, molecule-side handle pool (D-V2-031, incl. the pinned RDKit reaction-template segfault hazard), parity labels from crystal CIP (D-V2-034), pocket cap 700 by centroid-distance pruning; `syntree/engine/trainer.py` — Profile A (B=12×6, strict FP32 via the #10 gate, AdamW 3e-4/1e-5, clip 1.0), fail-closed divergence (TrainingDivergenceError, no nan-shield/batch-skipping), the full Stage-1 loss stack, separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints with exact continuation state (+ the #27 curriculum state since S-V2-15), time-budget graceful stop (#43 contract); canonical CLI `scripts/train_stage1.py` with catalog-driven masks + `--curriculum`) | `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` | `e009127` + `9197619` | 40 tests + the end-to-end CLI smoke green (S-V2-15 adds the curriculum CLI smoke); CPU loss-descent smoke verified; **acceptance criteria (2-epoch monotonic descent on T4; peak reserved VRAM < 9.5 GB) require the authorized T4 runtime — NOT claimed** | Authorized #36 session (also closes #25's CUDA criterion) |
+| 27 | TRAIN-02 | Quantile curriculum (Approach C) | **Closed** (2026-11-04, S-V2-15: `syntree/engine/curriculum.py` @ `9197619` — the five issue-named difficulty axes per item (D-V2-037), 9 quantile-balanced bins, the 6-stage floor-exact mixture distribution ε=0.03 (D-V2-038), exactly-N deterministic epoch draws, the milestone machine (val improvement ≥ 0.005, patience-2 fallback, no regression, cap 6), full checkpointable state in the trainer payload; trainer wiring guards + per-epoch validation-loss advancement + curriculum telemetry (level histograms); canonical CLI `--curriculum` (D-V2-039); both acceptance criteria verified — all 9 levels sampled every epoch via histograms at every stage, and the 40-epoch schedule transitioning smoothly through all 6 stages) | `syntree/engine/curriculum.py` + `syntree/engine/trainer.py` + `scripts/train_stage1.py` | `9197619` | `tests/test_curriculum.py` 40/40 incl. the CLI smoke | — |
+| 28 | TRAIN-03 | 2D→3D transfer pretraining | **Ready (code deps #12 + #27 closed) — externally blocked on licensed reaction data** (the owner must supply/authorize a provenance-tracked reaction dataset; per #45 §12.2 no pretraining claim may be made without it) | `syntree/engine/` | — | — | Owner decision: supply licensed reaction data (or authorize deferring #28 and proceeding on the honest 194-trajectory Stage-1 set) |
 | 29 | FLOW-01 | GFlowNet TB engine | Blocked (needs #25, #26, #39 — #13 satisfied 2026-11-02) | `syntree/engine/gflownet.py` | — | TB mathematics + uniform-leaf backward semantics implemented and flow-accounting-verified (D-V2-009); #38 closed; trainer + logZ conditioning remain | |
 | 30 | FLOW-02 | Stationary multi-objective reward | Blocked (needs #29 — #14 closed 2026-11-02) | `syntree/engine/rl.py` | — | Stationary reward core + #14 volume floors implemented and tested (D-V2-009/D-V2-015): batch-invariant signature, cavity ratio + heavy-atom floors, complete telemetry; docking-surrogate production closure remains | `#14` satisfied |
 | 31 | FLOW-03 | Stage-2 CLI + checkpoint state | Blocked (needs #29, #30) | `main.py` | — | — | |
 | 32 | TEST-01 | Suite A capability regression | **Closed** (2026-11-03, S-V2-11: the five issue-pinned batteries under `tests/suite_a/` — reaction execution + isotope provenance (all 32 reactions), posebusters filters, conformer snapping (scaffold restraints), shard I/O (deterministic gzip + sha256 fail-closed), seeding determinism) | `tests/suite_a/` + `syntree/utils/seeding.py` + `syntree/data/shards.py` | `0e1bf30` | `pytest tests/suite_a/ -q` **293/293 green**; the seeding module + shard primitive are the canonical modules #26/#43 and #19 consume (no duplication) | — |
-| 33 | TEST-02 | Suite B invariant tests | Blocked (needs #7, #8, #21, #25, #26, #32) | `tests/` | — | — | |
+| 33 | TEST-02 | Suite B invariant tests | **Implemented — Awaiting T4 Verification** (2026-11-04, S-V2-15: the five issue-pinned batteries under `tests/suite_b/` @ `7a6ea3b` — mathematical singularities (coincident atoms/von Mises backward/cosine cutoff), SE(3) scalar invariance + vector covariance over 36 random rigid motions, tensor-contract separation with legacy 67-D rejection, the T4 memory boundary (CPU contracts everywhere + the B=12×cap-700 peak-VRAM measurement executing only on the authorized T4), and the GFlowNet deterministic reverse step + TB loss behaviour; `pytest tests/suite_b/ -v` → 47 passed / 1 skipped — the skip is the hardware-gated measurement, reason pinned) | `tests/suite_b/` | `7a6ea3b` | 47/47 CPU-runnable tests green; full suite 1569/20 | Run `pytest tests/suite_b/ -v` on the authorized #36 T4 → 48/48 → close |
 | 34 | EVAL-01 | Independent AiZynthFinder evaluation | Blocked (needs #29) | `scripts/` | — | — | AiZynthFinder availability unverified |
 | 35 | EVAL-02 | Comparative SBDD benchmark | Blocked (needs #34, #44) | `scripts/` | — | — | |
 | 36 | OPS-01 | Colab SSH remote workflow | **Prepared — Awaiting Operator Authentication** (2026-11-03, S-V2-14: `notebooks/run_3d_syntree.ipynb` — fail-closed Tesla-T4 preflight (#45 §29.2), aria2/libxrender1/openssh-server install, sshd start, exact branch/commit checkout, repo-declared environment, the mandatory separate host-RAM/GPU-VRAM preflight, GPU forward/backward smoke, the canonical training launch; `docs/ops/colab_ssh_workflow.md` — the owner's `colab ssh` CLI patterns + the exact §29.1 authentication handoff) | `notebooks/run_3d_syntree.ipynb` + `docs/ops/colab_ssh_workflow.md` | `39e9a41` | No runtime tests yet — **the session criteria (authorized connection, T4 via nvidia-smi AND PyTorch ~15 GB, separate RAM/VRAM capture, remote fwd/bwd test, remote training launch) all require the operator's `colab ssh` authentication**; no connection established, none claimed | Operator runs `colab ssh`, authenticates with their Google account, confirms; then the agent connects and executes the §29.2 verification |
@@ -82,19 +80,21 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
 | 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: 23 (#5–#21, #22,
-#23, #24, #32, #38, #39, #40, #41 — clean-room era; #18/#19/#20 closed
-S-V2-13/14). Implemented-awaiting: #25 (CUDA forward criterion), #26
-(two T4 criteria), #42 (T4 benchmarking + #24 production integration)
-— all three ride the authorized #36 session. Prepared-awaiting: #36
+**Progress denominator: 40 issues (#5–#44).** Closed: 24 (#5–#25,
+#27, #32, #38, #39, #40, #41 — clean-room era; #18/#19/#20 closed
+S-V2-13/14; #27 closed S-V2-15). Implemented-awaiting: #25 (CUDA
+forward criterion), #26 (two T4 criteria), #33 (the Suite-B T4 memory
+battery), #42 (T4 benchmarking + #24 production integration) — all
+four ride the authorized #36 session. Prepared-awaiting: #36
 (operator `colab ssh` authentication). #45 excluded by standing rule.
 
 ## Pre-existing failures
 
-None. The clean-room suite is **1482 passed / 19 skipped** green (S-V2-14
-without the catalog artifact present; 19 skips = 16 by-design #11 stereo
+None. The clean-room suite is **1569 passed / 20 skipped** green (S-V2-15
+without the catalog artifact present; 20 skips = 16 by-design #11 stereo
 pairs + 3 catalog-artifact-gated, re-enabling with
-`SYNTREE_CATALOG_H5` pointed at a verified catalog); there are no
+`SYNTREE_CATALOG_H5` pointed at a verified catalog, + 1 Suite-B T4
+memory measurement gated on the authorized #36 session); there are no
 inherited failures.
 
 ## Session log pointer

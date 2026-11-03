@@ -5,23 +5,31 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-03, session S-V2-14 close (**#20 DATA-05
-closed** — augmentation with the measured stereocentre-flip finding and
-the rejection-resampling guarantee, `bc41319`; **#26 TRAIN-01
-implemented + CPU-verified** — the supervised training loader + the
-pure-FP32 Profile-A `ResilientTrainer` + the canonical CLI
-`scripts/train_stage1.py`, `e009127`, 40 tests + end-to-end CLI smoke;
-**#36 OPS-01 prepared** — `notebooks/run_3d_syntree.ipynb` +
-`docs/ops/colab_ssh_workflow.md`, `39e9a41`, awaiting the operator's
-`colab ssh` authentication; #18/#19 were closed by S-V2-13 and the docs
-are now reconciled; suite **1482/19**; clean-room closures **23/40**).
+**Last updated:** 2026-11-04, session S-V2-15 close (**#27 TRAIN-02
+CLOSED** — the Approach C quantile curriculum engine
+`syntree/engine/curriculum.py` + trainer/CLI integration, `9197619`,
+40 tests incl. the `--curriculum` CLI smoke, both acceptance criteria
+verified, D-V2-037/038/039; **#33 TEST-02 implemented + CPU-verified**
+— the five Suite-B batteries under `tests/suite_b/`, `7a6ea3b`,
+`pytest tests/suite_b/ -v` → 47 passed / 1 skipped, the single skip
+being the battery-4 T4 memory measurement gated on the authorized #36
+session; **#20 independently re-audited** (fresh 34/34 + baseline
+suite reproduction — the S-V2-14 closure is genuine); **#36 verified
+prepared** — the auth handoff re-issued to the operator; suite
+**1569/20**; clean-room closures **24/40**).
 
 ## 1. Continuation instruction
 
 ```
-Next session: the single highest-value step is the AUTHORIZED COLAB T4
-SESSION (#36). The operator has been given the exact commands (final
-reply of S-V2-14 + docs/ops/colab_ssh_workflow.md):
+Next session: the single highest-value step is STILL the AUTHORIZED
+COLAB T4 SESSION (#36) — it is now even denser: one authorized run
+closes #25's CUDA forward criterion, #26's two T4 criteria (monotonic
+2-epoch descent; peak reserved VRAM < 9.5 GB — measure, never
+assume), #33's remaining criterion (run `pytest tests/suite_b/ -v` on
+the T4 → expect 48/48 → close #33 with the measured peak-VRAM figure),
+#36's session criteria, and unblocks #43's measured profiling +
+cross-session resume. The operator was re-issued the exact commands
+(S-V2-15 final reply + docs/ops/colab_ssh_workflow.md):
 
   1. The operator runs `colab ssh` (or the ProxyCommand form) in their
      LOCAL terminal, authenticates with their own Google account via
@@ -34,23 +42,31 @@ reply of S-V2-14 + docs/ops/colab_ssh_workflow.md):
          --trajectories <dir> --processed <dir> --catalog <h5> \
          --run-dir /content/runs/stage1_t4 --device cuda \
          --time-budget-seconds 8400
-  3. That one session closes: #25's CUDA forward criterion, #26's two
-     T4 criteria (monotonic 2-epoch descent; peak reserved VRAM < 9.5 GB
-     — measure, never assume), #36's session criteria, and unblocks
-     #27/#33/#43. If the T4 run diverges: TrainingDivergenceError is
-     fail-closed BY DESIGN — diagnose, fix in source, push, re-pull;
-     never add a shield.
-  4. If the operator has NOT authenticated: work #27 TRAIN-02 (needs
-     #26 — implementable now against the CPU-verified trainer; the
-     quantile curriculum engine with per-level floor >= 0.03), then
-     #33 TEST-02 (needs #7/#8/#21/#25/#26/#32 — #25/#26 are implemented
-     + CPU-verified; its Suite-B batteries over the trainer are
-     runnable on CPU, the T4 memory profile rides #36).
+     (add `--curriculum` for the #27 production form — D-V2-039; the
+     bare form above is the pinned #26 acceptance launch).
+  3. If the T4 run diverges: TrainingDivergenceError is fail-closed BY
+     DESIGN — diagnose, fix in source, push, re-pull; never add a
+     shield.
 
-Do NOT redo: #20/#18/#19/#41/#39 (closed with evidence), the #26
-implementation (landed + CPU-verified; only the T4 criteria remain),
-the #36 preparation (landed; only the authorized session remains), or
-anything from S-V2-13 and earlier (§3).
+If the operator has NOT authenticated, the CPU-side critical path is:
+
+  a. #29 FLOW-01's remaining scope: the seed-conditioned logZ MLP +
+     GFlowNet trainer integration (its TB mathematics + uniform-leaf
+     backward semantics are closed — #38/D-V2-009 — and are now pinned
+     by Suite B battery 5; #25/#26 are implemented + CPU-verified, so
+     the hard blockers are gone in practice).
+  b. #28 TRAIN-03 is code-ready but EXTERNALLY BLOCKED on licensed,
+     provenance-tracked reaction data — an owner decision, not an
+     engineering task.
+  c. #43's resume contract is already implemented in the trainer
+     (atomic checkpoints with RNG + curriculum state); only its
+     measured T4 demonstration remains, riding #36.
+
+Do NOT redo: #27/#20/#18/#19/#41/#39 (closed with evidence), the #26
+implementation (only the T4 criteria remain), the #33 batteries
+(only the on-T4 execution remains), the #36 preparation (only the
+authorized session remains), or anything from S-V2-13 and earlier
+(WORK_LOG §S-V2-14/13).
 ```
 
 ## 2. Binding context for every future session
@@ -83,30 +99,37 @@ anything from S-V2-13 and earlier (§3).
 - **#20 semantics are binding** (D-V2-035): the composed augmenter is
   stereo-preserving by rejection resampling — naive σ=0.15 Å jitter
   measurably inverts stereocentres; never remove the guard.
-- **#26 contracts are binding** (D-V2-030..036): supervised states are
-  crystal intermediates in the ligand-centroid frame with fail-closed
-  record/artifact cross-checks; the growth-handle pool is
-  molecule-side reaction-template matches at non-junction atoms (RDKit
-  reaction-template mols SEGFAULT GetSubstructMatches — parse the
-  reactant SMARTS string instead); parity labels come from the crystal
-  CIP; empty-pool terminal states carry no stop loss (forced STOP);
-  the trainer's masks come from the immutable catalog H5 (seed-only
-  rows are never legal retrieval targets).
+- **#26/#27 contracts are binding** (D-V2-030..036 + 037/038/039):
+  supervised states are crystal intermediates in the ligand-centroid
+  frame; the growth-handle pool is molecule-side reaction-template
+  matches at non-junction atoms (RDKit reaction-template mols SEGFAULT
+  GetSubstructMatches — parse the reactant SMARTS string instead);
+  parity labels come from the crystal CIP; empty-pool terminal states
+  carry no stop loss; the trainer's masks come from the immutable
+  catalog H5 (seed-only rows are never legal retrieval targets); the
+  curriculum's milestone machine consumes ONLY the val split
+  (fail-closed wiring), its checkpoint state rides the trainer payload
+  key `"curriculum"` with symmetric fail-closed restore, and its
+  epoch draws are stateless-deterministic per (seed, stage, epoch).
 - Backbone/decoder contracts (D-V2-007/008/011/012), the engine/MDP
   contracts (D-V2-009/015/016/017 + Property 3b), the S-V2-09 decisions
   (D-V2-018/019/020), the catalog decisions (D-V2-021/022/023/025) and
-  the S-V2-12/13 records (D-V2-026..029) are unchanged — see
+  the S-V2-12/13/14 records (D-V2-026..036) are unchanged — see
   DECISIONS.md.
 
 ## 3. What the next agent must NOT redo
 
-- Everything in the S-V2-13 handoff's section 3 (S-V2-12 and earlier).
-- The S-V2-14 work: #20 (closed with evidence), the #26 implementation
-  (trainer + supervised loader + config + CLI; only the T4 criteria
-  remain — rerun `pytest tests/test_trainer.py tests/test_supervised_dataset.py`
-  if in doubt: 40/40), the #36 preparation (notebook + workflow docs),
-  the README status reconciliation, and this session's decisions
-  (D-V2-030..036).
+- Everything in the S-V2-13/S-V2-14 handoffs' section 3 (S-V2-12 and
+  earlier).
+- The S-V2-14 work: #20 (closed with evidence; re-audited green at
+  S-V2-15), the #26 implementation (trainer + supervised loader +
+  config + CLI; only the T4 criteria remain — rerun
+  `pytest tests/test_trainer.py tests/test_supervised_dataset.py` if
+  in doubt: 63/63), the #36 preparation (notebook + workflow docs).
+- The S-V2-15 work: #27 (closed; rerun `pytest tests/test_curriculum.py
+  -q` if in doubt: 40/40), the #33 batteries (rerun
+  `pytest tests/suite_b/ -v` if in doubt: 47 passed / 1 hardware-gated
+  skip), and this session's decisions (D-V2-037/038/039).
 
 ## 4. Known debts / open risks
 
@@ -114,17 +137,19 @@ anything from S-V2-13 and earlier (§3).
 |---|---|---|
 | **#25's CUDA forward criterion is unverified** | #25/#36 | One full-profile forward on the authorized T4 closes it (the #26 smoke cell in the notebook does exactly this) |
 | **#26's two T4 criteria are unverified** | #26/#36 | Monotonic 2-epoch descent + peak reserved VRAM < 9.5 GB — measured on the authorized session only |
-| Stage-1 training set is 194 trajectories (the honest census) | #28/owner | The #28 two-tier pretraining is the designed scale path; catalog extension is the owner's call |
+| **#33's memory battery is unexecuted** | #33/#36 | `tests/suite_b/test_t4_memory_boundary.py` — CPU contracts green; the peak-VRAM measurement needs the T4 (runs there unchanged) |
+| Stage-1 training set is 194 trajectories (the honest census) | #28/owner | The #28 two-tier pretraining is the designed scale path; **externally blocked on licensed reaction data — owner decision** |
 | Docking surrogate (`S_dock`/`S_contact`) is a documented interim | #30/eval | Production closure is #30's remaining scope (needs #29) |
 | #42's T4 benchmarking acceptance item is unmeasured | #42/#43 gate | The #24 torsion head integration is available |
 | rxn_15 pattern looser than its reactant template (D-V2-029) | owner/#11 audit | Only changes which failure code a complex gets; not acted on |
-| Dev environment not pinned in a lockfile | #26/#43 | Pin when the trainer lands on the T4 (next session) |
+| Dev environment not pinned in a lockfile | #26/#43 | Pin when the trainer lands on the T4 |
 | The 19 accepted 0-step trajectories (whole-ligand seeds) | #29 | SeedAction+STOP under #39 semantics — they enter TB accounting naturally; noted for the #29 implementation |
+| Commit-author name drift on `9197619` | cosmetic | `3D-SynTree V2 Agent` vs `autonomous-agent` (same email) — do not force-push to fix |
 
 ## 5. Remote runtime / workspace state
 
-No Colab/Kaggle session has been opened (the operator was given the
-exact `colab ssh` commands at S-V2-14 close; #36 gate). No V2
+No Colab/Kaggle session has been opened (the operator was re-issued
+the exact `colab ssh` commands at S-V2-15 close; #36 gate). No V2
 checkpoints exist. One HF artifact synced: the #12 catalog dataset
 `JJKK1212/3d-syntree-v2-catalog` (private, S-V2-10). No secrets are
 stored in the repository (session tokens used only via git remote
@@ -147,8 +172,9 @@ copies (`docs/data/…`) pin the expected outputs (counts + SHA-256s).
    https://download.pytorch.org/whl/cpu && pip install -e ".[test]"`
    && `pip install torch_geometric h5py pandas pyarrow psutil`.
 3. Baseline the suite with `python -m pytest tests/ -q` — expected
-   **1482 passed / 19 skipped** as of S-V2-14 (3 catalog-artifact skips
-   re-enable with `SYNTREE_CATALOG_H5` pointing at a verified catalog).
+   **1569 passed / 20 skipped** as of S-V2-15 (3 catalog-artifact skips
+   re-enable with `SYNTREE_CATALOG_H5` pointing at a verified catalog;
+   1 Suite-B skip = the T4 memory measurement, gated on #36).
 4. Work per the #45 §18 per-issue protocol; follow D-V2-024
    (commit+push each verified unit immediately); end with the
    mandatory git diff review, commit+push (report exact SHAs), issue

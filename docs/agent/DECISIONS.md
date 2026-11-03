@@ -1299,3 +1299,86 @@ policy's tied catalog table is sized to the artifact row count
 exactly.
 
 **Affected:** #26.
+
+## D-V2-037 — 2026-11-04 — The #27 difficulty axes, their combination, and the per-item ingestion point
+
+The five issue-named physical/chemical difficulty axes are computed
+**per supervised item** (the state the policy actually sees, not per
+complex): `pocket_atoms` (the capped pocket count), `rotatable_bonds`
+(RDKit strict count of the crystal *intermediate*), `rings` (SSSR of
+the intermediate; both via the sanitized `induced_submol` views),
+`pocket_charge_magnitude` (`Σ|q|` over the pocket), and `handle_rarity`
+(`1 − count(class)/max_count` of the item's primary handle class over
+the train split's items; the pre-seed and terminal STOP items are
+handle-free and sit at the common end `0.0`).  The axes are z-scored
+over the training split — a constant column contributes nothing (an
+axis on which the split is uniform carries no difficulty information)
+— and combined with **equal weights** (the plain mean): the issue names
+the axes but not weights, and only the induced *ranking* matters for
+quantile binning.  Levels are a *train-split* device:
+`difficulty_features` fails closed on any non-train split, mirroring
+the #20 augmentation split guard.
+
+**Alternatives considered:** per-complex features (rejected — coarser
+than the state actually consumed; the per-item view naturally places
+seed/early states at the easy end, matching #27's "bias early training
+toward rigid, low-clash fragments"); learned difficulty (rejected —
+not in the issue scope and unfalsifiable at Stage-1 scale).
+
+**Evidence:** `tests/test_curriculum.py::TestDifficultyIngestion`,
+`TestScoresAndBins` (balanced ±1 quantile counts, monotone levels,
+degenerate-axis behaviour, tie determinism).
+
+**Affected:** #27 (closed), #28 (consumes the sampler), #43 (the
+checkpoint payload carries the sampler state).
+
+## D-V2-038 — 2026-11-04 — The floor-exact level distribution and the milestone semantics (#27)
+
+The stage distribution is `p(ℓ) = (1 − Lε)·kernel(ℓ; μ(s), σ=2) + ε`
+with `L = 9`, `ε = 0.03`, and `μ(s) = 1 + (s−1)·8/5` — a **mixture
+with the uniform distribution**: it sums to 1 *by construction* and
+keeps every level at *exactly* `ε` or above at every stage, including
+the extreme centres μ=1 and μ=9.  The naive alternative
+(`max(kernel, ε)` then renormalize) can silently dilute the floor
+below the promised bound (up to ε/1.27 when many levels sit at the
+floor) and is rejected.  Milestone semantics: the running *minimum*
+validation loss is the reference (it only tightens); improvement
+`≥ 0.005` advances the stage and resets patience; two consecutive
+non-improving epochs advance by the documented fallback; the stage
+never regresses and is capped at 6.  Epoch draws are **stateless
+deterministic** per `(seed, stage, epoch)` (NumPy `default_rng`
+derivation mirroring the dataset's per-item streams), so an epoch
+re-iterates bit-identically — the trainer's exact resume needs no
+mid-epoch generator state, and the checkpointable state is exactly
+`(stage, epoch, best, patience, transitions, histograms, config)`.
+
+**Evidence:** `TestLevelDistribution` (floor exactness at every stage
+incl. extremes, mass shift monotonicity), `TestMilestoneMachine`
+(including the 40-epoch smooth-progression acceptance),
+`TestEpochDraws` (exact N, all-9-levels per epoch, empirical
+frequencies), `TestCurriculumState` (round-trip + fail-closed).
+
+**Affected:** #27 (closed), #26 (the trainer's `fit` consumes the
+milestone machine and persists the state), #43.
+
+## D-V2-039 — 2026-11-04 — `--curriculum` is an additive CLI flag; the pinned #26 acceptance launch is unchanged (#27)
+
+The canonical Stage-1 CLI gains `--curriculum` (builds the sampler
+from the train split, wires `DataLoader(sampler=curriculum)`, passes
+it to the trainer) as **the recommended production form** — but the
+default remains off and the #36 notebook's Cell-8 launch command is
+deliberately untouched: the #26 T4 acceptance run (monotonic 2-epoch
+descent; peak reserved VRAM < 9.5 GB) must stay reproducible exactly
+as prepared, and mixing its evidence with a curriculum-modified data
+order would muddy the criterion.  The trainer enforces the wiring
+fail-closed (sampler-driven loader + val-split validation signal +
+curriculum⇒val_loader) and the checkpoint payload carries the
+curriculum state with symmetric fail-closed restore — a curriculum
+run cannot silently resume as a plain run or vice versa.
+
+**Evidence:** `TestTrainerIntegration`, `TestCanonicalCLIWithCurriculum`
+(end-to-end subprocess smoke; checkpoint carries the curriculum
+state).
+
+**Affected:** #27 (closed), #26 (trainer/CLI), #36 (notebook Cell 8
+unchanged), #43.
