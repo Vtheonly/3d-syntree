@@ -63,6 +63,7 @@ from syntree.models.policy import (
     build_continuation_masks,
 )
 from syntree.models.torsion_head import torsion_circular_loss
+from syntree.engine.curriculum import CurriculumSampler
 from syntree.utils.hardware import RuntimeConfig, configure_runtime_environment
 from syntree.utils.seeding import (
     capture_rng_state,
@@ -274,6 +275,7 @@ class ResilientTrainer:
         catalog_block_handle_classes: Optional[torch.Tensor] = None,
         catalog_seed_rows: Optional[torch.Tensor] = None,
         available_block_classes: Optional[Sequence[str]] = None,
+        curriculum: Optional[CurriculumSampler] = None,
         resume: bool = False,
     ) -> None:
         self.profile = profile
@@ -319,6 +321,9 @@ class ResilientTrainer:
         else:
             self.catalog_seed_rows = None
         self.available_block_classes = available_block_classes
+
+        # -- the #27 Approach C curriculum (optional; train-split only) -----
+        self.curriculum = curriculum
 
         self.progress = _Progress()
         self.history: List[Dict[str, Any]] = []
@@ -534,6 +539,9 @@ class ResilientTrainer:
             "history": self.history,
             "rng": rng_state_to_dict(self._rng_snapshot),
             "runtime_summary": self.runtime.summary(),
+            "curriculum": (
+                self.curriculum.state_dict() if self.curriculum is not None else None
+            ),
             "extra": extra or {},
         }
         tmp = path + ".tmp"
@@ -585,6 +593,24 @@ class ResilientTrainer:
         self.progress = _Progress(**payload["progress"])
         self.history = list(payload["history"])
         restore_rng_state(rng_state_from_dict(payload["rng"]))
+        # the sampler/curriculum state (#45 s12.1/s13.6): a symmetric
+        # fail-closed check — a curriculum run must resume its exact
+        # curriculum state, and a non-curriculum run must not silently
+        # ingest one
+        curriculum_state = payload.get("curriculum", None)
+        if self.curriculum is not None:
+            if not curriculum_state:
+                raise TrainerStateError(
+                    "the checkpoint carries no curriculum state while a "
+                    "curriculum sampler is active — refusing to silently "
+                    "restart the curriculum from stage 1 (fail-closed, #27)"
+                )
+            self.curriculum.load_state_dict(curriculum_state)
+        elif curriculum_state:
+            raise TrainerStateError(
+                "the checkpoint carries curriculum state but no curriculum "
+                "sampler is active (wiring mismatch — fail-closed, #27)"
+            )
         return payload.get("extra", {})
 
     # -- the training loop ------------------------------------------------------
@@ -609,6 +635,24 @@ class ResilientTrainer:
                 "the train loader's dataset must be the train split "
                 "(augmentation is train-only; fail-closed)"
             )
+        if self.curriculum is not None:
+            if val_loader is None:
+                raise TrainerStateError(
+                    "the curriculum requires a validation loader — stage "
+                    "advancement is validation-milestone-driven (#27; "
+                    "fail-closed)"
+                )
+            if getattr(val_loader.dataset, "split", None) != "val":
+                raise TrainerStateError(
+                    "the curriculum's validation signal must come from the "
+                    "val split (fail-closed)"
+                )
+            if train_loader.sampler is not self.curriculum:
+                raise TrainerStateError(
+                    "the train loader must be wired with the curriculum "
+                    "sampler (DataLoader(dataset, sampler=curriculum, ...)); "
+                    "got a different sampler (fail-closed, #27)"
+                )
         deadline = (
             time.monotonic() + float(self.profile.time_budget_seconds)
             if self.profile.time_budget_seconds is not None
@@ -623,6 +667,8 @@ class ResilientTrainer:
                 break
             if hasattr(train_loader.dataset, "set_epoch"):
                 train_loader.dataset.set_epoch(epoch)
+            if self.curriculum is not None:
+                self.curriculum.set_epoch(epoch)
             self.progress.epoch = epoch
             batches = list(train_loader)
             for batch_index, batch in enumerate(batches):
@@ -666,6 +712,23 @@ class ResilientTrainer:
                 self.progress.batch_in_epoch = 0
                 if val_loader is not None and stop_reason == "max_epochs_reached":
                     self._log({"phase": "validation", **self.telemetry()})
+                if self.curriculum is not None:
+                    val_loss = self._validation_loss(val_loader)
+                    advanced = self.curriculum.observe_validation_loss(val_loss)
+                    self._log(
+                        {
+                            "phase": "curriculum",
+                            **self.telemetry(),
+                            "validation_loss": val_loss,
+                            "stage": self.curriculum.stage,
+                            "stage_advanced": advanced,
+                            "level_counts": self.curriculum.last_level_counts,
+                            "level_probabilities": [
+                                round(float(value), 6)
+                                for value in self.curriculum.level_probabilities()
+                            ],
+                        }
+                    )
                 continue
             break  # time-budget break inside the batch loop
         self.save_checkpoint(extra={"stop_reason": stop_reason})
@@ -675,10 +738,52 @@ class ResilientTrainer:
             "global_step": self.progress.global_step,
             "final_losses": self.history[-1] if self.history else None,
             "checkpoint": self.checkpoint_path,
+            "curriculum": (
+                {
+                    "stage": self.curriculum.stage,
+                    "transitions": len(self.curriculum.transitions),
+                }
+                if self.curriculum is not None
+                else None
+            ),
         }
 
     def _to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         return batch  # tensors are moved per-sub-batch in the loss methods
+
+    def _validation_loss(self, val_loader: DataLoader) -> float:
+        """The mean total loss over the pristine validation split.
+
+        Eval-mode, no-grad, fail-closed on any non-finite value (#45 s8 —
+        a diverging validation loss is a bug to surface, never to hide).
+        Drives the #27 curriculum's milestone stage advancement.
+        """
+        if val_loader is None:
+            raise TrainerStateError("a validation loader is required (fail-closed)")
+        was_training = self.policy.training
+        self.policy.eval()
+        total = 0.0
+        count = 0
+        try:
+            with torch.no_grad():
+                for batch in val_loader:
+                    losses = self.compute_loss(batch)
+                    value = float(losses["total"].detach())
+                    if not math.isfinite(value):
+                        raise TrainingDivergenceError(
+                            f"non-finite validation loss ({value}) — failing "
+                            "closed (#45 s8)"
+                        )
+                    total += value
+                    count += 1
+        finally:
+            if was_training:
+                self.policy.train()
+        if count == 0:
+            raise TrainerStateError(
+                "the validation loader yielded no batches (fail-closed)"
+            )
+        return total / count
 
     def _optimizer_step(self) -> None:
         grads = [p.grad for p in self.policy.parameters() if p.grad is not None]

@@ -9,9 +9,20 @@ D-V2-009; issues #24/#29/#30/#38/#42):
 * :mod:`syntree.engine.rl` — the stationary multi-objective terminal
   reward ``R(x)``;
 * :mod:`syntree.engine.gflownet` — the Trajectory Balance loss with the
-  exact uniform-leaf backward policy.
+  exact uniform-leaf backward policy;
+* :mod:`syntree.engine.curriculum` — the #27 Approach C quantile
+  curriculum sampler (9 levels / 6 stages / 0.03 floor).
 """
 
+from syntree.engine.curriculum import (
+    CurriculumError,
+    CurriculumSampler,
+    CURRICULUM_FEATURE_NAMES,
+    CURRICULUM_NUM_LEVELS,
+    CURRICULUM_NUM_STAGES,
+    CURRICULUM_PROBABILITY_FLOOR,
+    CURRICULUM_SPLIT,
+)
 from syntree.engine.environment import (
     AssemblyAction,
     AssemblyEnvironment,
@@ -43,6 +54,13 @@ from syntree.engine.gflownet import (
 from syntree.engine.rl import RewardError, ThreeDReward
 
 __all__ = [
+    "CurriculumError",
+    "CurriculumSampler",
+    "CURRICULUM_FEATURE_NAMES",
+    "CURRICULUM_NUM_LEVELS",
+    "CURRICULUM_NUM_STAGES",
+    "CURRICULUM_PROBABILITY_FLOOR",
+    "CURRICULUM_SPLIT",
     "AssemblyAction",
     "AssemblyEnvironment",
     "AssemblyError",

@@ -10,7 +10,8 @@ implemented in the repository and documented in the README")::
         --trajectories work/data/trajectories \
         --processed work/data/processed \
         --run-dir runs/stage1_t4 \
-        [--time-budget-seconds 8400] [--resume] [--device cuda]
+        [--time-budget-seconds 8400] [--resume] [--device cuda] \
+        [--curriculum]
 
 The command:
 
@@ -22,7 +23,10 @@ The command:
    complex, per the manifest), rebuilding the supervised contexts with
    fail-closed record/artifact cross-checks;
 3. builds the train loader with the #20 augmentation (train split only)
-   and the pristine validation loader;
+   and the pristine validation loader; with ``--curriculum`` the train
+   loader is driven by the #27 Approach C quantile curriculum sampler
+   (9 levels / 6 stages / 0.03 floor, milestone-driven advancement on
+   the validation loss — the recommended production form, D-V2-039);
 4. runs :class:`~syntree.engine.trainer.ResilientTrainer` — fail-closed
    on divergence, atomic checkpoints with SHA-256 sidecars, complete
    host-RAM/GPU-VRAM telemetry — honoring the time budget with a
@@ -46,6 +50,7 @@ from syntree.data.supervised import (  # noqa: E402
     build_complex_context,
 )
 from syntree.data.trajectories import CatalogView  # noqa: E402
+from syntree.engine.curriculum import CurriculumSampler  # noqa: E402
 from syntree.engine.environment import PocketDefinition  # noqa: E402
 from syntree.engine.trainer import (  # noqa: E402
     ResilientTrainer,
@@ -156,6 +161,13 @@ def main(argv=None) -> int:
     parser.add_argument("--time-budget-seconds", type=int, default=None)
     parser.add_argument("--max-epochs", type=int, default=None)
     parser.add_argument("--micro-batch-size", type=int, default=None)
+    parser.add_argument(
+        "--curriculum",
+        action="store_true",
+        help="enable the #27 Approach C quantile curriculum (9 levels / 6 "
+        "stages / permanent 0.03 level floor; milestone-driven stage "
+        "advancement on the validation loss)",
+    )
     args = parser.parse_args(argv)
 
     profile: TrainerProfile = load_profile(args.config)
@@ -193,14 +205,28 @@ def main(argv=None) -> int:
         if contexts["val"]
         else None
     )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=profile.micro_batch_size,
-        shuffle=True,
-        num_workers=profile.num_workers,
-        collate_fn=supervised_collate,
-        generator=torch.Generator().manual_seed(profile.seed),
+    curriculum = (
+        CurriculumSampler.from_dataset(train_dataset, seed=profile.seed)
+        if args.curriculum
+        else None
     )
+    if curriculum is not None:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=profile.micro_batch_size,
+            sampler=curriculum,
+            num_workers=profile.num_workers,
+            collate_fn=supervised_collate,
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=profile.micro_batch_size,
+            shuffle=True,
+            num_workers=profile.num_workers,
+            collate_fn=supervised_collate,
+            generator=torch.Generator().manual_seed(profile.seed),
+        )
     val_loader = (
         DataLoader(
             val_dataset,
@@ -232,12 +258,20 @@ def main(argv=None) -> int:
         catalog_block_handle_classes=block_classes,
         catalog_seed_rows=seed_rows,
         available_block_classes=available,
+        curriculum=curriculum,
         resume=bool(args.resume),
     )
     print(f"[train_stage1] profile: {json.dumps(profile.__dict__, sort_keys=True)}")
     print(f"[train_stage1] runtime: {trainer.runtime.summary()}")
     print(f"[train_stage1] train samples: {len(train_dataset)}; "
           f"val samples: {len(val_dataset) if val_dataset else 0}")
+    if curriculum is not None:
+        print(
+            f"[train_stage1] curriculum: {curriculum.num_levels} levels / "
+            f"{curriculum.num_stages} stages / floor "
+            f"{curriculum.floor} (milestone {curriculum.milestone}, "
+            f"patience {curriculum.stage_patience})"
+        )
     result = trainer.fit(train_loader, val_loader=val_loader)
     print(f"[train_stage1] done: {json.dumps(result, sort_keys=True, default=str)}")
     return 0
