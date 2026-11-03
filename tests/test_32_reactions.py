@@ -350,6 +350,7 @@ class TestEngineIntegration:
             seed, {block_id: CATALOG[block_id]}, pocket=pocket, max_blocks=4
         )
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, reaction_id, block_id, torsion_bin=18))
         env.stop()
@@ -392,6 +393,7 @@ class TestEngineIntegration:
         seed = _seed("amine", "CN", "amine")
         env = AssemblyEnvironment(seed, {"alkyl_bromide": CATALOG["alkyl_bromide"]}, max_blocks=4)
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "rxn_07", "alkyl_bromide", torsion_bin=27))
         junction = _junctions_of(env.molecule)[0]
@@ -404,6 +406,7 @@ class TestEngineIntegration:
         seed = _seed("amine", "CN", "amine")
         env = AssemblyEnvironment(seed, {"acid_chloride": CATALOG["acid_chloride"]}, max_blocks=4)
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         with pytest.raises(AssemblyError):
             env.step(AssemblyAction(handle, "generic_coupling", "acid_chloride"))
@@ -416,6 +419,7 @@ class TestEngineIntegration:
         seed = _seed("amine", "CN", "amine")
         env = AssemblyEnvironment(seed, {"aldehyde": CATALOG["aldehyde"]}, max_blocks=4)
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         with pytest.raises(AssemblyError):
             env.step(AssemblyAction(handle, "rxn_01", "aldehyde"))
@@ -432,13 +436,14 @@ class TestEngineIntegration:
                 record.action_log_prob = math.log(0.5)
         engine = TrajectoryBalanceEngine(initial_log_z=0.0)
         steps = as_trajectory_steps(env.trajectory)
-        assert [s.action_type for s in steps] == ["add", "stop"]
+        assert [s.action_type for s in steps] == ["seed", "add", "stop"]
         residual = engine.trajectory_residual(steps, reward=1.5)
         assert torch_isfinite(residual)
         # The recorded trajectory carries the certified reaction id in its
         # action record (the TB contract is registry-agnostic).
-        assert env.trajectory[0].action.reaction_id == "rxn_01"
-        assert env.trajectory[1].action is None  # STOP
+        assert env.trajectory[0].action_type == "seed"  # the #39 seed action
+        assert env.trajectory[1].action.reaction_id == "rxn_01"
+        assert env.trajectory[2].action is None  # STOP
 
 
 def torch_isfinite(tensor) -> bool:

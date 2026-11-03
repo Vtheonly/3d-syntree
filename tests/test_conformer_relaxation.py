@@ -122,6 +122,7 @@ def _amide_env(pocket=None):
     seed = _seed_phenethylamine()
     env = AssemblyEnvironment(seed, {"propionyl": _propionyl_chloride()}, pocket=pocket, max_blocks=4)
     env.reset()
+    env.place_seed()
     handle = env.active_handles()[0]["handle_atom_idx"]
     env.step(AssemblyAction(handle, "rxn_01", "propionyl", torsion_bin=27))
     env.stop()
@@ -132,6 +133,7 @@ def _alkyl_env(pocket=None):
     seed = _seed_phenethylamine()
     env = AssemblyEnvironment(seed, {"etbr": _ethyl_bromide()}, pocket=pocket, max_blocks=4)
     env.reset()
+    env.place_seed()
     handle = env.active_handles()[0]["handle_atom_idx"]
     env.step(AssemblyAction(handle, "rxn_07", "etbr", torsion_bin=27))
     env.stop()
@@ -252,6 +254,7 @@ class TestApplyJunctionTorsion:
         )
         env = AssemblyEnvironment(seed, {"benzoyl": benzoyl}, pocket=_shell_pocket(), max_blocks=4)
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "rxn_01", "benzoyl", torsion_bin=27))
         env.stop()

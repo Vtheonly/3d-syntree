@@ -92,7 +92,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from rdkit import Chem
@@ -116,6 +116,8 @@ __all__ = [
     "DEFAULT_REACTION_REGISTRY",
     "BuildingBlock",
     "AssemblyAction",
+    "SeedAction",
+    "SeedMenu",
     "JunctionRecord",
     "StepRecord",
     "PocketDefinition",
@@ -358,6 +360,54 @@ class AssemblyAction:
 
 
 @dataclass(frozen=True)
+class SeedAction:
+    """The explicit initial action ``a_seed = (B_0, h_0)`` (issue #39).
+
+    ``block_id`` selects the seed fragment from the environment's seed
+    candidate pool; ``anchor_idx`` selects the pocket anchor (a row of the
+    ``SeedMenu`` the pre-seed state exposes).  The pose/orientation of the
+    placed seed is a **deterministic environment-side function** of
+    ``(B_0, h_0)`` and the pocket (decision D-V2-028): like the sub-bin
+    torsion refinement of #42, it carries no probability measure — the
+    policy's categorical probability mass lives on (B_0, h_0) alone, so
+    the action joins the Trajectory Balance sum as a purely categorical
+    term (constitution §12.3).
+    """
+
+    block_id: str
+    anchor_idx: int = 0
+
+    def __post_init__(self) -> None:
+        if self.anchor_idx < 0:
+            raise AssemblyError(
+                f"anchor_idx must be >= 0, got {self.anchor_idx}"
+            )
+
+
+@dataclass(frozen=True)
+class SeedMenu:
+    """The pre-seed initial state's candidate set (issue #39 item 4).
+
+    ``anchor_positions [M, 3]`` are the deterministic pocket anchors
+    (centroids of their assigned pocket atoms; empty for pocket-free
+    fixtures, where the single degenerate anchor keeps the block's own
+    template pose); ``anchor_assignment [N_p]`` maps each pocket atom to
+    its anchor; ``seed_block_ids`` lists the seed candidate pool in
+    insertion order.  The legal action space is the product
+    ``seed_block_ids x range(M)`` minus the combinations the policy masks
+    (the environment enforces exact validity at placement).
+    """
+
+    anchor_positions: np.ndarray
+    anchor_assignment: np.ndarray
+    seed_block_ids: Tuple[str, ...]
+
+    @property
+    def num_anchors(self) -> int:
+        return int(self.anchor_positions.shape[0])
+
+
+@dataclass(frozen=True)
 class JunctionRecord:
     """Geometry/provenance record of one formed junction bond.
 
@@ -415,10 +465,15 @@ class StepRecord:
     ``P_B(s_{t-1} | s_t)`` (issue #38).  For the ``STOP`` step the backward
     term is exactly zero (the absorbing terminal has the unique pre-STOP
     parent; proven in ``docs/architecture/MDP_STATE_SPACE.md`` §6), so its
-    leaf count is telemetry only.
+    leaf count is telemetry only.  For the ``seed`` step (issue #39) the
+    backward term is likewise exactly zero — the placed-seed state is a
+    single-fragment molecule whose only possible undo is removing the
+    seed entirely, returning to the empty initial state (the unique
+    parent; the §4 induction base extends verbatim) — so its leaf count is
+    fixed at 0 and the step contributes only its forward log-probability.
     """
 
-    action_type: str  # 'add' | 'stop'
+    action_type: str  # 'seed' | 'add' | 'stop'
     action: Optional[AssemblyAction] = None
     action_log_prob: Optional[float] = None
     num_leaves: int = 0
@@ -426,12 +481,21 @@ class StepRecord:
     done: bool = False
 
     def __post_init__(self) -> None:
-        if self.action_type not in ("add", "stop"):
+        if self.action_type not in ("seed", "add", "stop"):
             raise AssemblyError(
-                f"action_type must be 'add' or 'stop', got {self.action_type!r}"
+                f"action_type must be 'seed', 'add', or 'stop', got {self.action_type!r}"
             )
-        if self.action_type == "add" and not isinstance(self.action, AssemblyAction):
-            raise AssemblyError("an 'add' step must carry an AssemblyAction")
+        if self.action_type == "add":
+            if not isinstance(self.action, AssemblyAction):
+                raise AssemblyError("an 'add' step must carry an AssemblyAction")
+        if self.action_type == "seed":
+            if not isinstance(self.action, SeedAction):
+                raise AssemblyError("a 'seed' step must carry a SeedAction")
+            if self.num_leaves != 0:
+                raise AssemblyError(
+                    "a 'seed' step has no removable leaves (the placed seed is "
+                    "the only fragment); num_leaves must be 0"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +737,100 @@ def _deterministic_perpendicular(u: np.ndarray) -> np.ndarray:
     return _unit(np.cross(u, _CANONICAL_BASIS[k]))
 
 
+def _anchor_frame(
+    pocket_positions: np.ndarray,
+    assigned: np.ndarray,
+    anchor_position: np.ndarray,
+    atomic_numbers: np.ndarray,
+    charges: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """The deterministic, rotation-covariant anchor frame (D-V2-028).
+
+    Returns ``(origin, frame)`` for :func:`_place_template`: the seed's
+    centroid lands on the anchor position, with its intrinsic frame
+    aligned to a frame built ONLY from covariantly selected pocket
+    vectors:
+
+    * ``e1`` — unit(pocket centroid -> anchor position); degenerate when
+      the anchor sits at the centroid, where the farthest assigned atom's
+      offset takes over (same covariant tie-break);
+    * ``e2`` — the unit ⊥-``e1`` component of the assigned atom farthest
+      from the anchor position (tie-break: charge, atomic number, atom
+      index — invariant under rigid motions of a fixed atom list), with
+      the documented deterministic fallback when every assigned atom is
+      collinear with ``e1``;
+    * ``e3 = e1 × e2``.
+
+    Every selection rule is covariant (the same atom is picked under any
+    rigid motion of the same atom list), so the frame — and therefore the
+    placed pose — is exactly equivariant up to the documented fallback.
+    """
+    if assigned.size == 0:
+        raise AssemblyError("an anchor with no assigned pocket atoms (invalid)")
+    centroid = pocket_positions.mean(axis=0)
+    covariant_order = sorted(
+        assigned.tolist(),
+        key=lambda i: (
+            -float(np.linalg.norm(pocket_positions[i] - anchor_position)),
+            float(charges[i]),
+            int(atomic_numbers[i]),
+            i,
+        ),
+    )
+    e1 = anchor_position - centroid
+    if float(np.linalg.norm(e1)) < 1e-9:
+        e1 = pocket_positions[covariant_order[0]] - anchor_position
+    e1 = _unit(e1)
+    e2 = np.zeros(3)
+    for idx in covariant_order:
+        offset = pocket_positions[idx] - anchor_position
+        perp = offset - float(np.dot(offset, e1)) * e1
+        if float(np.linalg.norm(perp)) > 1e-9:
+            e2 = _unit(perp)
+            break
+    else:
+        # every assigned atom collinear with e1: documented deterministic
+        # (non-covariant) fallback — the canonical perpendicular of e1
+        e2 = _deterministic_perpendicular(e1)
+    e3 = np.cross(e1, e2)
+    return anchor_position, np.column_stack([e1, e2, e3])
+
+
+def _place_template(
+    template_positions: np.ndarray, anchor_frame: Tuple[np.ndarray, np.ndarray]
+) -> np.ndarray:
+    """Place a block template into an anchor frame (D-V2-028).
+
+    The template's intrinsic frame: ``t1`` = the unit offset (from the
+    template centroid) of the atom farthest from the centroid (tie-break:
+    lower atom index); ``t2`` = the unit ⊥-``t1`` component of the next
+    non-collinear atom offset in the same order; ``t3 = t1 × t2``.  The
+    placement is the rigid transform mapping the template frame onto the
+    anchor frame (centroid -> anchor origin).
+    """
+    origin, frame = anchor_frame
+    centroid = template_positions.mean(axis=0)
+    offsets = template_positions - centroid
+    distances = np.linalg.norm(offsets, axis=1)
+    order = sorted(
+        range(template_positions.shape[0]),
+        key=lambda i: (-float(distances[i]), i),
+    )
+    t1 = _unit(offsets[order[0]])
+    t2 = np.zeros(3)
+    for idx in order[1:]:
+        perp = offsets[idx] - float(np.dot(offsets[idx], t1)) * t1
+        if float(np.linalg.norm(perp)) > 1e-9:
+            t2 = _unit(perp)
+            break
+    else:
+        t2 = _deterministic_perpendicular(t1)
+    t3 = np.cross(t1, t2)
+    template_frame = np.column_stack([t1, t2, t3])
+    rotation = frame @ template_frame.T
+    return (rotation @ offsets.T).T + origin
+
+
 def _skew(axis: np.ndarray) -> np.ndarray:
     return np.array(
         [
@@ -803,14 +961,23 @@ class _ActiveHandle:
 class AssemblyEnvironment:
     """The discrete assembly MDP with the terminal reward oracle.
 
-    Usage (trainer-facing contract)::
+    Usage (trainer-facing contract; #39 seed-action flow)::
 
-        env = AssemblyEnvironment(seed_block, catalog, pocket=..., max_blocks=4)
-        env.reset()
-        for action in policy(env.observe()):     # discrete actions only
-            step = env.step(action)              # deterministic bin-centre geometry
-        stop_record = env.stop()                 # absorbing terminal
+        env = AssemblyEnvironment(seed_candidates, catalog, pocket=..., max_blocks=4)
+        menu = env.reset()                    # pre-seed state: pocket + candidates
+        env.place_seed(SeedAction(block_id=..., anchor_idx=...))  # a_seed
+        for action in policy(env.observe()):   # discrete actions only
+            step = env.step(action)            # deterministic bin-centre geometry
+        stop_record = env.stop()               # absorbing terminal
         relaxed, energy, diag = env.finalize_terminal_molecule()  # Level 2 oracle
+
+    The seed/anchor selection is an **explicit MDP action** (issue #39):
+    ``reset()`` only produces the pre-seed initial state (the pocket plus
+    the candidate menu) — nothing is placed, and ``step``/``stop``/
+    ``observe`` fail closed until ``place_seed`` commits ``(B_0, h_0)``.
+    The deterministic pose of the placed seed (decision D-V2-028) is an
+    environment-side geometry operation of the categorical action, like
+    the #42 sub-bin refinement — it carries no probability measure.
 
     The environment never mutates intermediate geometry with a force field
     or continuous optimiser (issue #24 contract); the oracle runs only
@@ -819,7 +986,7 @@ class AssemblyEnvironment:
 
     def __init__(
         self,
-        seed_block: BuildingBlock,
+        seed_candidates: Union[BuildingBlock, Mapping[str, BuildingBlock]],
         catalog: Mapping[str, BuildingBlock],
         pocket: Optional[PocketDefinition] = None,
         max_blocks: int = 4,
@@ -827,12 +994,24 @@ class AssemblyEnvironment:
     ) -> None:
         if max_blocks < 1:
             raise AssemblyError(f"max_blocks must be >= 1, got {max_blocks}")
-        self._seed_block = seed_block
+        if isinstance(seed_candidates, BuildingBlock):
+            # The supervised-fixture shape: one explicit candidate — still
+            # an explicit action (place_seed), never a hidden placement.
+            self._seed_pool: Dict[str, BuildingBlock] = {
+                seed_candidates.block_id: seed_candidates
+            }
+        else:
+            self._seed_pool = dict(seed_candidates)
+            if not self._seed_pool:
+                raise AssemblyError(
+                    "the seed candidate pool must not be empty (the pre-seed "
+                    "state must offer at least one seed action candidate)"
+                )
         self._catalog = dict(catalog)
-        if seed_block.block_id in self._catalog:
-            raise AssemblyError(
-                f"seed block {seed_block.block_id!r} must not also appear in the catalog"
-            )
+        # A seed candidate may also be a growth-catalog entry (production:
+        # the seed pool is the seed-eligible subset of the catalog); the
+        # placed seed is removed from the growth menu so a block already
+        # used as the seed cannot be re-added in the same trajectory.
         self._pocket = pocket
         self._max_blocks = int(max_blocks)
         self._reactions = dict(reaction_registry or DEFAULT_REACTION_REGISTRY)
@@ -840,6 +1019,8 @@ class AssemblyEnvironment:
         self._junctions: List[JunctionRecord] = []
         self._active_handles: List[_ActiveHandle] = []
         self._num_fragments = 0
+        self._placed_seed_id: Optional[str] = None
+        self._anchors: Optional[SeedMenu] = None
         self.trajectory: List[StepRecord] = []
         #: Oracle telemetry (issue #42 logging): refinement / MMFF counters.
         self.stats: Dict[str, int] = {
@@ -854,7 +1035,10 @@ class AssemblyEnvironment:
     @property
     def molecule(self) -> Chem.Mol:
         if self._mol is None:
-            raise AssemblyError("reset() must be called before accessing the molecule")
+            raise AssemblyError(
+                "the seed action has not been placed; call place_seed() after "
+                "reset() (the pre-seed state exposes the candidate menu)"
+            )
         return self._mol
 
     @property
@@ -888,34 +1072,171 @@ class AssemblyEnvironment:
 
     # -- MDP transitions ------------------------------------------------------
 
-    def reset(self) -> Chem.Mol:
-        """Reset to the initial state: the seed scaffold alone (fragment 0).
+    def reset(self) -> SeedMenu:
+        """Reset to the **pre-seed initial state** (issue #39).
 
-        The trajectory starts empty: its records are the *assembly* actions
-        and the terminating STOP.  The initial seed/anchor *selection* action
-        of #39 (MODEL-06) will be prepended with its own log-probability
-        when that head exists — the TB engine already accepts it as a step
-        record with ``num_leaves = 0`` semantics of a seed step.
+        The state contains the protein pocket and the seed/anchor candidate
+        set; the molecule is empty until the explicit seed action commits
+        ``(B_0, h_0)`` via :meth:`place_seed`.  Returns the candidate menu
+        (anchors + seed pool).  ``step``/``stop``/``observe`` fail closed
+        before the seed is placed — no hidden deterministic seed placement
+        exists on the production path.
         """
-        template = self._seed_block.template_mol
-        positions = self._seed_block.template_positions
+        self._mol = None
+        self._junctions = []
+        self._num_fragments = 0
+        self._terminal = False
+        self._placed_seed_id = None
+        self.trajectory = []
+        self.stats = {"subbin_refinements": 0, "mmff_minimizations": 0, "brent_evaluations": 0}
+        self._active_handles = []
+        self._anchors = self._compute_anchors()
+        return self._anchors
+
+    def _compute_anchors(self) -> SeedMenu:
+        """The deterministic anchor decomposition of the current pocket.
+
+        With a pocket: the **same authoritative generator the policy uses**
+        (``syntree.models.policy.pocket_anchor_candidates`` — one
+        implementation, reused; the consistency is pinned by test).  With
+        no pocket (pocket-free fixtures): a single degenerate anchor whose
+        pose rule reproduces the block's own template coordinates exactly
+        (documented; no conditioning context exists to place against).
+        """
+        seed_ids = tuple(self._seed_pool)
+        if self._pocket is None:
+            return SeedMenu(
+                anchor_positions=np.zeros((0, 3), dtype=np.float64),
+                anchor_assignment=np.zeros(0, dtype=np.int64),
+                seed_block_ids=seed_ids,
+            )
+        import torch
+
+        from syntree.models.policy import pocket_anchor_candidates
+
+        positions, assignment = pocket_anchor_candidates(
+            torch.as_tensor(self._pocket.positions, dtype=torch.float64),
+            torch.as_tensor(self._pocket.atomic_numbers, dtype=torch.float64),
+            torch.as_tensor(self._pocket.charges, dtype=torch.float64),
+        )
+        return SeedMenu(
+            anchor_positions=np.ascontiguousarray(positions.numpy(), dtype=np.float64),
+            anchor_assignment=np.ascontiguousarray(assignment.numpy(), dtype=np.int64),
+            seed_block_ids=seed_ids,
+        )
+
+    def seed_menu(self) -> SeedMenu:
+        """The current candidate menu (anchors x seed pool; #39 item 1)."""
+        if self._anchors is None:
+            self._anchors = self._compute_anchors()
+        return self._anchors
+
+    def place_seed(self, action: Optional[SeedAction] = None) -> StepRecord:
+        """Commit the explicit seed action ``a_seed = (B_0, h_0)`` (#39).
+
+        With ``action=None`` and a **single-candidate** pool the sole
+        ``(block, anchor 0)`` combination is selected (the documented
+        convenience for supervised fixtures — it is still an explicit,
+        recorded action); an ambiguous pool requires the explicit action
+        (fail-closed).  The placed pose is the deterministic rule of
+        decision D-V2-028; placement validity (finite pocket interaction)
+        is enforced fail-closed.
+        """
+        if self._terminal:
+            raise AssemblyError("the trajectory is terminal; reset() to start a new one")
+        if self._mol is not None:
+            raise AssemblyError("the seed is already placed; step() adds blocks")
+        menu = self.seed_menu()
+        if action is None:
+            if len(menu.seed_block_ids) != 1:
+                raise AssemblyError(
+                    "place_seed() without an action requires exactly one seed "
+                    f"candidate; the pool has {len(menu.seed_block_ids)} — pass "
+                    "an explicit SeedAction (the seed choice must be scored)"
+                )
+            action = SeedAction(menu.seed_block_ids[0], 0)
+        block = self._seed_pool.get(action.block_id)
+        if block is None:
+            raise AssemblyError(
+                f"seed action selected {action.block_id!r}; candidates: "
+                f"{list(menu.seed_block_ids)}"
+            )
+        pocket_free = self._pocket is None
+        num_anchors = 1 if pocket_free else menu.num_anchors
+        if action.anchor_idx >= num_anchors:
+            raise AssemblyError(
+                f"seed action selected anchor {action.anchor_idx}; the pocket "
+                f"offers {num_anchors} anchors"
+            )
+
+        template = block.template_mol
+        positions = block.template_positions
+        if pocket_free:
+            placed = positions.copy()
+        else:
+            anchor_position = menu.anchor_positions[action.anchor_idx]
+            assignment = menu.anchor_assignment
+            pocket_positions = self._pocket.positions
+            # the anchor's assigned atoms (covariant selection rules)
+            assigned = np.nonzero(assignment == action.anchor_idx)[0]
+            frame = _anchor_frame(
+                pocket_positions, assigned, anchor_position,
+                self._pocket.atomic_numbers, self._pocket.charges,
+            )
+            placed = _place_template(positions, frame)
+
+        product, handles = self._materialize_seed(block, placed, action)
+
+        # -- geometric validity: the placement must interact finitely with
+        # the pocket (exact validity; clashes are the reward's business)
+        if self._pocket is not None:
+            z = np.array([a.GetAtomicNum() for a in product.GetAtoms()], dtype=np.int64)
+            energy = soft_core_pocket_energy(placed, z, self._pocket)
+            if not math.isfinite(energy):
+                raise AssemblyError(
+                    "seed placement produced a non-finite pocket interaction "
+                    "energy (invalid pose; fail-closed)"
+                )
+            self.stats["last_seed_placement_energy_milli"] = int(energy * 1000)
+
+        self._mol = product
+        self._junctions = []
+        self._num_fragments = 1
+        self._active_handles = handles
+        self._placed_seed_id = action.block_id
+        # the seed cannot be re-added as a growth block in this trajectory
+        self._catalog.pop(action.block_id, None)
+        record = StepRecord(
+            action_type="seed",
+            action=action,
+            num_leaves=0,
+            smiles=Chem.MolToSmiles(product),
+            done=False,
+        )
+        self.trajectory.append(record)
+        return record
+
+    def _materialize_seed(
+        self, block: BuildingBlock, placed: np.ndarray, action: SeedAction
+    ) -> Tuple[Chem.Mol, List[_ActiveHandle]]:
+        """Build the placed-seed molecule + its active handle bookkeeping."""
+        template = block.template_mol
         rw = Chem.RWMol(template)
+        # the RW copy inherits the cached template conformer — drop it so
+        # the placed conformer is conformer 0 (GetConformer() must return
+        # the POSE, never the template coordinates)
+        rw.RemoveAllConformers()
         conformer = Chem.Conformer(rw.GetNumAtoms())
         for idx in range(rw.GetNumAtoms()):
-            conformer.SetAtomPosition(idx, positions[idx])
+            conformer.SetAtomPosition(idx, placed[idx])
         rw.AddConformer(conformer, assignId=True)
         for idx in range(rw.GetNumAtoms()):
             rw.GetAtomWithIdx(idx).SetIntProp(FRAGMENT_PROP, 0)
             rw.GetAtomWithIdx(idx).SetProp(SEED_PROP, "1")
         product = rw.GetMol()
         Chem.SanitizeMol(product)
-        self._mol = product
-        self._junctions = []
-        self._num_fragments = 1
-        self._terminal = False
-        self.trajectory = []
-        self.stats = {"subbin_refinements": 0, "mmff_minimizations": 0, "brent_evaluations": 0}
-        self._active_handles = [
+        _write_junctions(product, [])
+        handles = [
             _ActiveHandle(
                 atom_idx=handle.atom_idx,
                 fragment_id=0,
@@ -924,9 +1245,9 @@ class AssemblyEnvironment:
                 leaving_atoms=tuple(handle.leaving_atoms),
                 remaining_capacity=handle.capacity,
             )
-            for handle in self._seed_block.handles
+            for handle in block.handles
         ]
-        return product
+        return product, handles
 
     def step(self, action: AssemblyAction) -> StepRecord:
         """Apply one discrete assembly action; returns the step record.
@@ -938,6 +1259,11 @@ class AssemblyEnvironment:
         """
         if self._terminal:
             raise AssemblyError("the trajectory is terminal; reset() to start a new one")
+        if self._mol is None:
+            raise AssemblyError(
+                "step() requires a placed seed; call place_seed() after reset() "
+                "(the seed action must be taken before any assembly action)"
+            )
         if self.num_added_blocks >= self._max_blocks:
             raise AssemblyError(
                 f"max_blocks={self._max_blocks} reached; only STOP is a legal action"
@@ -1153,7 +1479,9 @@ class AssemblyEnvironment:
         if self._terminal:
             raise AssemblyError("the trajectory is already terminal")
         if self._mol is None:
-            raise AssemblyError("reset() must be called before stop()")
+            raise AssemblyError(
+                "stop() requires a placed seed; call place_seed() after reset()"
+            )
         mol = self.molecule
         num_leaves = len(get_removable_leaves(mol))
         record = StepRecord(

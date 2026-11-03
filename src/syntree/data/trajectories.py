@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem.rdMolTransforms import GetDihedralRad
@@ -578,6 +580,9 @@ class TrajectoryRecord:
     seed_smiles: str                 # the seed fragment (canonical)
     steps: List[StepLabel] = field(default_factory=list)
     pocket_artifact: str = ""
+    #: The crystal centroid of the root fragment (#39's supervised anchor
+    #: label input; empty tuple when unavailable).
+    seed_centroid: Tuple[float, float, float] = ()
 
 
 @dataclass
@@ -601,6 +606,7 @@ def trajectory_to_dict(record: TrajectoryRecord) -> Dict[str, object]:
         "seed_row": record.seed_row,
         "seed_class": record.seed_class,
         "seed_smiles": record.seed_smiles,
+        "seed_centroid": list(record.seed_centroid),
         "pocket_artifact": record.pocket_artifact,
         "steps": [
             {
@@ -709,6 +715,13 @@ def extract_trajectory(
     # -- the seed step ------------------------------------------------------
     seed_mol = induced_submol(ligand, decomp.seed_atom_indices)
     seed_smiles = Chem.MolToSmiles(seed_mol)
+    seed_centroid = tuple(
+        float(x)
+        for x in np.mean(
+            ligand.GetConformer().GetPositions()[list(decomp.seed_atom_indices)],
+            axis=0,
+        )
+    )
     seed_classes = detect_seed_classes(seed_mol)
     seed_rows: List[int] = []
     seed_class_used = ""
@@ -739,6 +752,7 @@ def extract_trajectory(
         seed_class=seed_class_used,
         seed_smiles=seed_smiles,
         pocket_artifact=pocket_artifact,
+        seed_centroid=seed_centroid,
     )
 
     accumulated = set(decomp.seed_atom_indices)

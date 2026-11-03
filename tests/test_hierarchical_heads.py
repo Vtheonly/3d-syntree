@@ -770,6 +770,7 @@ class TestMaskFactories:
         # active_handles() menu").
         env = AssemblyEnvironment(_aniline_seed(), _acid_catalog(), max_blocks=4)
         env.reset()
+        env.place_seed()
         menu = env.active_handles()
         classes = handle_classes_from_menu(menu)
         assert classes == ("amine",)
@@ -1794,6 +1795,7 @@ class TestEndToEndStack:
             _aniline_seed(), _acid_catalog(), pocket=_shell_pocket(), max_blocks=4
         )
         env.reset()
+        env.place_seed()
         menu = env.active_handles()
         assert len(menu) == 1
         classes = handle_classes_from_menu(menu)
@@ -1882,6 +1884,7 @@ class TestEndToEndStack:
             _aniline_seed(), _acid_catalog(), pocket=_shell_pocket(), max_blocks=4
         )
         env.reset()
+        env.place_seed()
         menu = env.active_handles()
         classes = handle_classes_from_menu(menu)
         available = {

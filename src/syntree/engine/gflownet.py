@@ -48,6 +48,17 @@ state representation).  The STOP step therefore contributes its forward
 log-probability but no backward term; its recorded ``num_leaves`` is
 telemetry only.
 
+**The seed backward term (issue #39).**  The placed-seed state is a
+single-fragment molecule: it has no removable leaf synthons (every leaf
+is non-seed by definition), so the only possible backward transition is
+removing the seed entirely, returning to the empty pre-seed initial
+state — the *unique* parent.  By the same uniqueness argument as STOP,
+``log P_B(s_0 | placed-seed state) = log 1 = 0``: the seed step
+contributes its forward log-probability (the categorical
+``P(anchor | pocket) * P(seed | anchor, pocket)`` of the #39 head) and
+no backward term, and the §4 induction base extends verbatim (backward
+path measure from the placed-seed state to the empty state is 1).
+
 **Precision policy (decisions D-V2-005 / D-V2-008).**  Parameters default
 to FP32 (the production T4 path).  ``float64`` is accepted only for local
 numerical verification of the flow identities at tight tolerances (cast
@@ -92,10 +103,14 @@ class TrajectoryStep:
 
     ``action_log_prob`` is ``log P_F(a_t | s_t)`` — the *total* forward
     log-probability of the action tuple ``(h_t, r_t, B_t, c_t, k_t)``
-    (sum of its component log-probabilities, issue #24) or of the STOP
-    decision when ``action_type == 'stop'``.  ``num_leaves`` is the
+    (sum of its component log-probabilities, issue #24), of the STOP
+    decision when ``action_type == 'stop'``, or of the categorical seed
+    action ``P(anchor|pocket) * P(seed|anchor,pocket)`` when
+    ``action_type == 'seed'`` (issue #39).  ``num_leaves`` is the
     removable-leaf count of the state *after* the action — the
-    backward-policy input ``|RemovableLeafSynthons(s_{t+1})|``.
+    backward-policy input ``|RemovableLeafSynthons(s_{t+1})|``; the seed
+    and STOP steps carry no backward term (unique parents, proven in
+    ``MDP_STATE_SPACE.md``) so their count is telemetry only.
     """
 
     action_type: str
@@ -103,9 +118,9 @@ class TrajectoryStep:
     num_leaves: int = 0
 
     def __post_init__(self) -> None:
-        if self.action_type not in ("add", "stop"):
+        if self.action_type not in ("seed", "add", "stop"):
             raise FlowError(
-                f"action_type must be 'add' or 'stop', got {self.action_type!r}"
+                f"action_type must be 'seed', 'add', or 'stop', got {self.action_type!r}"
             )
         if self.action_type == "add":
             if self.num_leaves < 1:
@@ -114,6 +129,10 @@ class TrajectoryStep:
                     f"has at least the added fragment as a removable leaf); got "
                     f"{self.num_leaves}"
                 )
+        if self.action_type == "seed" and self.num_leaves != 0:
+            raise FlowError(
+                "a 'seed' step has no removable leaves (num_leaves must be 0)"
+            )
         if not math.isfinite(self.action_log_prob):
             raise FlowError(
                 f"action_log_prob must be finite, got {self.action_log_prob}"
@@ -236,13 +255,17 @@ class TrajectoryBalanceEngine(nn.Module):
         sum_log_pf = torch.zeros((), device=self.device, dtype=self.dtype)
         sum_log_pb = torch.zeros((), device=self.device, dtype=self.dtype)
         for step in steps:
-            # Forward: every action — including STOP — contributes its
-            # dimensionless categorical log-probability (constitution §12.3).
+            # Forward: every action — seed, assembly components, and STOP —
+            # contributes its dimensionless categorical log-probability
+            # (constitution §12.3; the #39 seed action included).
             sum_log_pf = sum_log_pf + step.action_log_prob
             # Backward: uniform leaf deletion over the *product* state of an
             # 'add' action.  The STOP step's backward term is exactly zero:
             # the absorbing terminal has the unique pre-STOP parent (proved
-            # in docs/architecture/MDP_STATE_SPACE.md §6).
+            # in docs/architecture/MDP_STATE_SPACE.md §6).  The seed step's
+            # backward term is exactly zero by the same uniqueness argument:
+            # the placed-seed state's only parent is the empty initial
+            # state (no removable leaves exist to delete selectively).
             if step.action_type == "add":
                 if step.num_leaves < 1:
                     raise FlowError(

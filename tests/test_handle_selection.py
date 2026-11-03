@@ -796,7 +796,8 @@ class TestEnvironmentIntegration:
 
     def test_scores_the_t0_seed_menu_and_argmax_is_actionable(self):
         env, catalog, reactions = self._make_env()
-        mol = env.reset()
+        env.reset()
+        env.place_seed()
         menu = env.active_handles()
         assert len(menu) == 3  # H > 1 exposed handles at t = 0
         dtype = torch.float32
@@ -828,6 +829,7 @@ class TestEnvironmentIntegration:
     def test_scores_a_grown_intermediate_menu(self):
         env, catalog, reactions = self._make_env()
         env.reset()
+        env.place_seed()
         # Grow two aminophenol blocks: each junction consumes one seed-side
         # handle and leaves the block's alcohol handle alive, so the menu
         # mixes surviving seed handles with newly exposed block handles.
@@ -874,6 +876,7 @@ class TestEnvironmentIntegration:
 
         env, _, _ = self._make_env()
         env.reset()
+        env.place_seed()
         menu = env.active_handles()
         dtype = torch.float64
         state = _state_from_environment(env, env.pocket, dtype)

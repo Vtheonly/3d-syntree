@@ -229,6 +229,19 @@ actual state representation"), the STOP step contributes *no* backward term;
 its recorded leaf count is telemetry only.  All *assembly* steps contribute
 their true `-log |leaves(product state)|` term.
 
+**Property 3b (seed backward term, issue #39).**  With the seed action,
+the initial state `s_0` is the *empty* state (pocket + candidate menu,
+no molecule) and the placed-seed state `s_1` is a single-fragment
+molecule.  `s_1` has **no removable leaf synthons** (every removable
+leaf is a non-seed fragment by definition), so the only possible
+backward transition from `s_1` is removing the seed entirely — the
+unique parent is `s_0`, and `log P_B(s_0 | s_1) = log 1 = 0` **by the
+same uniqueness proof as STOP**.  The seed step therefore contributes
+its forward log-probability (`P(anchor|pocket) * P(seed|anchor,pocket)`,
+strictly categorical) and no backward term; the §4 induction base
+extends verbatim (backward path measure from `s_1` to `s_0` is 1), so
+the §5 theorem is unchanged.
+
 **What `P_B = 1` would have broken.**  On the quotient DAG, multi-parent
 states would violate flow conservation at every convergence point (the
 mass-splitting of §3 would not happen), over-sampling symmetric molecules
@@ -288,7 +301,7 @@ orders of every two-block state split its mass into exact halves
 | Concern | Owner | This specification's boundary |
 |---|---|---|
 | 36-bin categorical torsion head | #24 (MODEL-04) | the *environment* realises bin-centre geometry and the resonance snap; the head's logits remain #24's scope |
-| Seed/anchor selection action | #39 (MODEL-06) | `s_0` is given; the TB sum reserves a slot for the seed action's log-probability |
+| Seed/anchor selection action | #39 (MODEL-06) | **implemented**: `reset()` yields the pre-seed state (pocket + candidate menu; `SeedAction` commits `(B_0, h_0)` with a deterministic covariant pose rule, D-V2-028); the seed step's forward log-prob enters the TB sum, its backward term is zero (Property 3b) |
 | Certified 32-reaction taxonomy | #11 (CHEM-01) | the generic junction model (bond order, handle class, resonance lock) exposes the registry interface the taxonomy fills |
 | Sub-bin refinement objective (terminal) | #42 (CHEM-07) | implemented as the terminal oracle stage (coarse-scan-seeded Brent, ±5°); production chemoselectivity and T4 benchmarking remain open |
 | Constrained MMFF94 relaxation | #13 (CHEM-03) | terminal oracle stage with 50 kcal/mol/Å² seed restraints; the production chemistry module supersedes the internals |

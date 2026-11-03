@@ -1064,6 +1064,7 @@ class TestEnvironmentIntegration:
         catalog = {"propionyl": _acid_block()}
         env = AssemblyEnvironment(seed, catalog, pocket=pocket, max_blocks=4)
         env.reset()
+        env.place_seed()
         menu = env.active_handles()
         classes = handle_classes_from_menu(menu)
         fam_mask, rxn_mask = build_continuation_masks(

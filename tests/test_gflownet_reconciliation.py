@@ -166,6 +166,7 @@ def _fresh_two_step_env(pocket=None):
 def _rollout(env: AssemblyEnvironment, bins) -> Chem.Mol:
     """Add methylamine then methanol with the given torsion bins, then STOP."""
     env.reset()
+    env.place_seed()
     handle = env.active_handles()[0]["handle_atom_idx"]
     env.step(AssemblyAction(handle, "generic_coupling", "meam", torsion_bin=bins[0]))
     handle = env.active_handles()[0]["handle_atom_idx"]
@@ -215,6 +216,7 @@ class TestDiscreteTrajectoryDeterminism:
         """Surviving atom coordinates never move when a new block is placed."""
         env = _fresh_two_step_env()
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "generic_coupling", "meam", torsion_bin=27))
         mol_one = env.molecule
@@ -242,6 +244,7 @@ class TestDiscreteTrajectoryDeterminism:
     def test_intermediate_dihedral_equals_exact_bin_center(self):
         env = _fresh_two_step_env()
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "generic_coupling", "meam", torsion_bin=27))
         junction = _junctions_of(env.molecule)[0]
@@ -283,6 +286,7 @@ class TestDiscreteTrajectoryDeterminism:
         env_s = _fresh_two_step_env()
         for env, chiral in ((env_r, "R"), (env_s, "S")):
             env.reset()
+            env.place_seed()
             handle = env.active_handles()[0]["handle_atom_idx"]
             env.step(
                 AssemblyAction(handle, "generic_coupling", "meam", chiral=chiral, torsion_bin=18)
@@ -302,19 +306,19 @@ class TestTerminalRelaxationIsolation:
     def test_oracle_counters_stay_zero_during_assembly(self):
         env = _fresh_two_step_env(pocket=_shell_pocket())
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "generic_coupling", "meam", torsion_bin=27))
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "generic_coupling", "meoh", torsion_bin=9))
-        assert env.stats == {
-            "subbin_refinements": 0,
-            "mmff_minimizations": 0,
-            "brent_evaluations": 0,
-        }
+        assert env.stats["subbin_refinements"] == 0
+        assert env.stats["mmff_minimizations"] == 0
+        assert env.stats["brent_evaluations"] == 0
 
     def test_finalize_refuses_non_terminal_state(self):
         env = _fresh_two_step_env()
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "generic_coupling", "meam", torsion_bin=27))
         with pytest.raises(AssemblyError, match="terminal reward-oracle operation"):
@@ -543,6 +547,7 @@ class TestBackwardLeafProbability:
             seed, catalog, max_blocks=4, reaction_registry=REACTIONS
         )
         env.reset()
+        env.place_seed()
         # A = methylamine on one seed handle (peripheral).
         h1 = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(h1, "couple_amine", "meam", torsion_bin=18))
@@ -583,6 +588,7 @@ class TestBackwardLeafProbability:
                 reaction_registry=REACTIONS,
             )
             env.reset()
+            env.place_seed()
             handles = [h["handle_atom_idx"] for h in env.active_handles()]
             first, second = handles[order], handles[1 - order]
             env.step(AssemblyAction(first, "generic_coupling", "phcl", torsion_bin=18))
@@ -603,6 +609,7 @@ class TestBackwardLeafProbability:
             reaction_registry=REACTIONS,
         )
         env.reset()
+        env.place_seed()
         handles = [h["handle_atom_idx"] for h in env.active_handles()]
         env.step(AssemblyAction(handles[0], "generic_coupling", "phcl", torsion_bin=18))
         intermediate_leaves = get_removable_leaves(env.molecule)
@@ -633,6 +640,7 @@ class TestBackwardLeafProbability:
     def test_initial_state_has_no_parents(self):
         env = _fresh_two_step_env()
         env.reset()
+        env.place_seed()
         assert get_removable_leaves(env.molecule) == []
         with pytest.raises(AssemblyError):
             backward_leaf_probability(env.molecule)
@@ -678,6 +686,7 @@ class TestToyDagFlowBalance:
     def _replay(self, prefix):
         env = self._fresh_env()
         env.reset()
+        env.place_seed()
         for handle_idx, block_id in prefix:
             env.step(
                 AssemblyAction(
@@ -763,6 +772,7 @@ class TestToyDagFlowBalance:
             for prefix, terminal_key in trajectories:
                 env = self._fresh_env()
                 env.reset()
+                env.place_seed()
                 state_keys = [root]
                 steps = []
                 prob = 1.0
@@ -856,6 +866,7 @@ class TestResonanceLockedJunctions:
             seed, {"meam": _methylamine()}, max_blocks=4, reaction_registry=reactions
         )
         env.reset()
+        env.place_seed()
         handle = env.active_handles()[0]["handle_atom_idx"]
         env.step(AssemblyAction(handle, "amide_formation", "meam", torsion_bin=5))
         return env
