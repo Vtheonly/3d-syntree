@@ -73,10 +73,11 @@ class TestFrozenConstants:
     def test_vector_block_is_10_classes(self):
         assert len(VECTOR_HANDLE_CLASSES) == 10
 
-    def test_seed_acyl_electrophiles_contract(self):
+    def test_seed_electrophile_contract(self):
         assert set(SEED_ACYL_ELECTROPHILES) == {
             "acid_chloride", "sulfonyl_chloride",
             "carbamoyl_chloride", "chloroformate",
+            "alkyl_bromide", "aldehyde",
         }
 
 
@@ -118,13 +119,20 @@ class TestSeedDetection:
         assert "alcohol" in detect_seed_classes(Chem.MolFromSmiles("CC(=O)O"))
         assert "alcohol" not in detect_seed_classes(Chem.MolFromSmiles("CP(=O)(O)O"))
 
-    def test_seed_screen_excludes_only_acyl_electrophiles(self):
-        # amine + acid chloride -> excluded (self-reactive acylation)
+    def test_seed_screen_pairs_follow_the_pinned_matrix(self):
+        # free primary amine + acid chloride -> excluded (acylation)
         assert seed_screen(Chem.MolFromSmiles("NCC(=O)Cl"), "amine") is not None
-        # amine + alkyl bromide -> kept (slower SN2; artifact-pinned)
-        assert seed_screen(Chem.MolFromSmiles("NCCCBr"), "amine") is None
-        # amine + aldehyde -> kept (reversible imine; artifact-pinned)
-        assert seed_screen(Chem.MolFromSmiles("NCC=O"), "amine") is None
+        # free amine + aldehyde -> excluded (imine formation)
+        assert seed_screen(Chem.MolFromSmiles("NCC=O"), "amine") is not None
+        # free amine + alkyl bromide -> excluded (SN2)
+        assert seed_screen(Chem.MolFromSmiles("NCCCBr"), "amine") is not None
+        # free alcohol + alkyl bromide -> excluded (etherification)
+        assert seed_screen(Chem.MolFromSmiles("OCCCBr"), "alcohol") is not None
+        # alcohol + aldehyde -> KEPT (reversible hemiacetal; the pinned
+        # matrix pairs aldehydes with amines only)
+        assert seed_screen(Chem.MolFromSmiles("OCC=O"), "alcohol") is None
+        # amidine "amine" seed + alkyl bromide -> KEPT (N not the free form)
+        assert seed_screen(Chem.MolFromSmiles("CC(CBr)NC(=N)N"), "amine") is None
         # non-nucleophilic seeds are never quenched
         assert seed_screen(Chem.MolFromSmiles("Brc1ccccc1CC(=O)Cl"), "aryl_bromide") is None
 
@@ -185,10 +193,24 @@ class TestConformerPolicy:
         assert np.isfinite(outcome.energy)
 
     def test_boronic_acid_keeps_etkdg_geometry(self):
-        # B is in the documented B/Zn/Sn coupling-handle fallback
+        # B is in the documented coupling-handle fallback
         outcome = embed_conformer("OB(O)c1ccccc1")
         assert outcome.method == "etkdg3"
         assert outcome.energy != outcome.energy  # NaN by contract
+
+    def test_halide_counterion_salt_keeps_etkdg_geometry(self):
+        # HBr salt: the Br- counterion is in the documented fallback
+        # (artifact-pinned: 17,493 etkdg3 rows over the 50k catalog)
+        outcome = embed_conformer("Br.BrCCN1CCC1")
+        assert outcome.method == "etkdg3"
+        assert outcome.energy != outcome.energy
+
+    def test_trifluoroborate_salt_fails_closed(self):
+        # potassium trifluoroborate: B is tolerated but K is not
+        from syntree.chemistry.synthon_encoder import SynthonEncodeError
+
+        with pytest.raises(SynthonEncodeError, match=r"\['B', 'K'\]"):
+            embed_conformer("C[B-](F)(F)F.[K+]")
 
     def test_unkown_untypeable_atom_fails_closed(self):
         from syntree.chemistry.synthon_encoder import SynthonEncodeError

@@ -18,35 +18,54 @@ Reconstruction provenance (constitution #45 §18 — honest scoping)
 The S-V2-10 build lost its code to a sandbox recycle before commit.
 Every design fact below is **artifact-pinned** against
 ``docs/data/catalog/`` + the immutable HDF5 (HF ``JJKK1212/
-3d-syntree-v2-catalog``); the pins and their verification records:
+3d-syntree-v2-catalog``); the S-V2-11 re-landing verified each pin at
+full scale over the 290,648-record source:
 
+* **Funnel — exact (24/24 counts).** The rebuilt pipeline reproduces
+  every stage count and every per-rule exclusion count of the pinned
+  ``screen_funnel.json`` bit-for-bit: 290,648 total / 290,356 unique /
+  191,639 basic-pass (stage order MW -> rotatable -> heavy) /
+  50,065 handle-bearing / 152,489 certified (118,683 seed-only +
+  20,390 both + 13,416 synthon-only) / 39,150 chemoscreen-excluded;
+  rules: competing-nucleophile 17,235, quenching 7,397, identical
+  handles 4,310, SNAr 1,022, self-reactive 771, seed self-reactive
+  757 (757 fired blocks; 760 pair-firings), competing electrophile
+  150, catalyst poison 44.
 * **Certification model — exact (0/50,000 row mismatches).**  Synthon
   role: a block is certified for registry handle class ``C`` iff
   ``screen_block(mol, C, handle_atom_idx=<first instance>)`` passes
   (the two programmatic boronic classes are screened without a declared
-  atom — their cross-field validation is not supported by
-  ``handle_class_of_atom``).  Seed role: the 7-class vocabulary below,
-  with nucleophilic seeds (amine/alcohol/thiol) excluded when an
-  uncatalyzed **acyl-type** electrophile (acid/sulfonyl/carbamoyl
-  chloride, chloroformate) coexists (``seed_self_reactive_pair``).
+  atom).  Seed role: **block-level** — the 7-class vocabulary below,
+  and a molecule carrying ANY free-group/electrophile self-reactive
+  pair (the #40 ``SELF_REACTIVE_PAIRS`` matrix between the molecule's
+  *free* groups and the six uncatalyzed electrophiles: acid/sulfonyl/
+  carbamoyl chlorides, chloroformate, alkyl bromide, aldehyde) loses
+  the entire seed role, not just the firing class.
 * **Strata — exact (0/50,000):** ``CalcNumAromaticRings(mol) > 0`` →
   ``aromatic``, else ``saturated`` (a structural test, not an Fsp3
   threshold).
-* **Descriptor blocks — 44 of 47 physchem scalars pinned exactly** (mean
-  AND std over the 50k artifact rows, six-sigma-free identity): the
-  layout is 2048 Morgan + 47 physchem + 6 shape + 5 electro + 30 handle
-  vectors + 1 norm = **2137** (the issue body's "2138" does not add up
-  — pinned by ``normalization/mean`` shape 2137 in the HDF5).  Three
-  functional-group positions could not be uniquely identified from the
-  stored statistics and are implemented as the family-coherent
-  reconstruction (documented in ``FG_SMARTS``; their measured
-  distribution deltas are recorded in the build manifest): the
-  tertiary-amine position (stored 0.070600/0.266337 vs reconstruction
-  0.079120/0.280820), the position after sulfone (stored
-  0.001240/0.035192 — 62 rows; implemented as sulfoxide, 64 rows /
-  0.002520), and one **provably all-zero** position (any SMARTS that
-  matches nothing on this catalog is indistinguishable; implemented as
-  peroxide, matching the #32 unstable-motif vocabulary).
+* **Selection — exact.** The 55,000-row buffer (35,000 saturated +
+  20,000 aromatic, canonical-SMILES ascending, saturated first)
+  reproduces the artifact's ``buffered_rows`` index list exactly.
+* **Descriptor blocks — 44 of 47 physchem scalars pinned exactly**
+  (mean AND std over the 50k artifact rows); the layout is 2048 Morgan
+  + 47 physchem + 6 shape + 5 electro + 30 handle vectors + 1 norm =
+  **2137** (the issue body's "2138" does not add up — pinned by
+  ``normalization/mean`` shape 2137 in the HDF5).  Three functional-
+  group positions could not be uniquely identified from the stored
+  statistics and are implemented as the family-coherent reconstruction
+  (documented in ``FG_SMARTS``; measured distribution deltas recorded
+  in the build manifest): the tertiary-amine position (stored
+  0.070600/0.266337 vs reconstruction 0.079120/0.280820), the position
+  after sulfone (stored 0.001240/0.035192 — 62 rows; implemented as
+  sulfoxide, 64 rows / 0.002520), and one **provably all-zero**
+  position (any SMARTS that matches nothing on this catalog is
+  indistinguishable; implemented as peroxide, matching the #32
+  unstable-motif vocabulary).  The 30-D handle-vector block carries
+  identity normalization in the artifact, so its 10-class list is not
+  recoverable from the stored statistics; ``VECTOR_HANDLE_CLASSES`` is
+  the documented reconstruction (the seven seed classes plus the three
+  most common non-seed registry handle classes).
 * **Projection — bit-exact:** ``numpy.random.default_rng(2026).normal(
   size=(2137, 256))`` → ``np.linalg.qr`` → column sign-normalization by
   ``sign(diag(R))`` reproduces the stored ``projection/Q`` float32
@@ -56,20 +75,25 @@ Every design fact below is **artifact-pinned** against
   selected rows and **stored** in the artifact (std floor 1e-12); the
   Morgan and handle-vector blocks pass through with identity
   normalization (stored mean 0 / std 1 — pinned from the artifact).
-* **Conformer policy:** ETKDGv3 embedding followed by full MMFF94
-  relaxation where MMFF types the molecule; rows whose untypeable atoms
-  are exactly the documented B/Zn/Sn coupling-handle set keep the
-  ETKDG geometry (``etkdg3`` provenance, energy NaN); any other
-  untypeable atom fails closed with a named reason.  The re-landed
-  protocol is deterministic (multi-conformer lowest-energy; see
-  ``conformer_policy``) but the **original run's ETKDG seed is not
-  recoverable from the surviving artifacts** (the HDF5 stores only
-  final energies + method strings, which underdetermine the protocol;
-  two of four probe rows reproduce seed-2026 multi-conformer energies
-  exactly, two do not reproduce under any swept numConfs/prune/seed
-  combination) — the immutable HDF5 therefore remains the authoritative
-  embedding artifact (D-V2-021 immutability), and the re-landed encoder
-  documents its own seed as the reproducibility contract for rebuilds.
+* **Conformer policy — profile-exact.** ETKDGv3 multi-conformer
+  embedding followed by full MMFF94 relaxation of every conformer
+  where RDKit's MMFF types the hydrogen-added molecule (lowest-energy
+  conformer kept, ``etkdg3+mmff94``); rows whose untypeable atoms fall
+  within the documented fallback set (coupling handles B/Zn/Sn **and
+  halide counterions F/Cl/Br/I**) keep their first ETKDG geometry
+  (``etkdg3``, energy NaN); anything else fails closed with the named
+  symbols (potassium trifluoroborates fail on ``['B', 'K']``).  This
+  decision tree reproduces the artifact's conformer-method split
+  (17,493/32,507) with **zero** per-row mismatches over the 50k
+  catalog.  The re-landed run is deterministic (``CONFORMER_SEED`` =
+  2026, 10 conformers, prune 0.5) but the **original run's ETKDG seed
+  is not recoverable from the surviving artifacts** (the HDF5 stores
+  only final energies + method strings, which underdetermine the
+  protocol; probe rows reproduce the seed-2026 multi-conformer family
+  but not every stored energy), so the immutable HDF5 remains the
+  authoritative embedding artifact (D-V2-021 immutability) and the
+  re-landed encoder documents its own seed as the reproducibility
+  contract for rebuilds.
 """
 
 from __future__ import annotations
@@ -179,17 +203,32 @@ SEED_CLASS_SMARTS: Dict[str, str] = {
     "vinyl_bromide": "[Br][CX3]=[CX3]",
 }
 
-#: Uncatalyzed acyl-type electrophiles that intramolecularly acylate a
-#: nucleophilic seed (the seed_self_reactive_pair rule).
+#: Uncatalyzed electrophiles that intramolecularly react with a free
+#: nucleophilic seed group (the seed_self_reactive_pair rule): the #40
+#: ``SELF_REACTIVE_PAIRS`` matrix keyed on the seed's own FREE group —
+#: the pair fires only when the molecule carries the free form of the
+#: group (an amidine "amine" seed with an alkyl bromide is safe; a free
+#: primary amine is not) and the electrophile's partner set contains it.
 SEED_ACYL_ELECTROPHILES: Tuple[str, ...] = (
     "acid_chloride",
     "sulfonyl_chloride",
     "carbamoyl_chloride",
     "chloroformate",
+    "alkyl_bromide",
+    "aldehyde",
 )
 
-#: Seed classes whose free nucleophile self-reacts with acyl electrophiles.
+#: Seed classes whose free group can self-react with an electrophile.
 NUCLEOPHILIC_SEED_CLASSES: Tuple[str, ...] = ("amine", "alcohol", "thiol")
+
+#: The #40 free groups that realize each nucleophilic seed class (the
+#: carboxylic acid O-H realizes the ``alcohol`` seed, matching the
+#: artifact-pinned alcohol detector ``[OX2H][#6]``).
+SEED_FREE_GROUPS: Dict[str, Tuple[str, ...]] = {
+    "amine": ("primary_amine", "secondary_amine"),
+    "alcohol": ("alcohol", "phenol", "carboxylic_acid"),
+    "thiol": ("thiol",),
+}
 
 
 def detect_seed_classes(mol: Chem.Mol) -> List[str]:
@@ -207,14 +246,41 @@ def detect_seed_classes(mol: Chem.Mol) -> List[str]:
 def seed_screen(mol: Chem.Mol, seed_class: str) -> Optional[str]:
     """The seed-role chemoselectivity screen; ``None`` = certified.
 
-    A nucleophilic/protic seed must not coexist with an uncatalyzed
-    acyl-type electrophilic handle — it would self-react intramolecularly
-    (quench the seed).  Returns the named exclusion reason otherwise.
+    A nucleophilic/protic seed class is excluded when the molecule
+    carries the seed's **free** group (the #40 free-form vocabulary —
+    orthogonal protection passes by construction) *and* an uncatalyzed
+    electrophilic handle whose #40 ``SELF_REACTIVE_PAIRS`` partner set
+    contains that free group: the pair would self-react
+    intramolecularly and quench the seed (e.g. free primary amine +
+    aldehyde -> imine; free alcohol + alkyl bromide -> ether;
+    any free nucleophile + acid chloride -> amide/ester).  An amidine
+    "amine" seed beside a certified alkyl bromide is safe (its N is not
+    the free form), and an alcohol seed beside an aldehyde is safe
+    (reversible hemiacetal — the pinned matrix pairs aldehydes with
+    amines only).
     """
-    if seed_class in NUCLEOPHILIC_SEED_CLASSES:
-        for electrophile in SEED_ACYL_ELECTROPHILES:
-            if detect_handle_instances(mol, electrophile):
-                return f"seed_self_reactive_pair:{electrophile}"
+    if seed_class not in NUCLEOPHILIC_SEED_CLASSES:
+        return None
+    from syntree.chemistry.chemoselectivity import (
+        FREE_GROUP_SMARTS,
+        SELF_REACTIVE_PAIRS,
+    )
+
+    own_groups = SEED_FREE_GROUPS[seed_class]
+    free_present = {
+        group
+        for group, smarts in FREE_GROUP_SMARTS.items()
+        if group in own_groups
+        and mol.GetSubstructMatches(Chem.MolFromSmarts(smarts))
+    }
+    if not free_present:
+        return None
+    for electrophile in SEED_ACYL_ELECTROPHILES:
+        if not detect_handle_instances(mol, electrophile):
+            continue
+        partners = SELF_REACTIVE_PAIRS.get(electrophile, frozenset())
+        if free_present & partners:
+            return f"seed_self_reactive_pair:{electrophile}"
     return None
 
 
@@ -224,9 +290,14 @@ def certify_block_roles(mol: Chem.Mol) -> Tuple[List[str], List[str], List[str]]
     Synthon certification screens every detected registry handle class
     with its first instance as the declared attachment atom (the
     artifact-pinned protocol; the two programmatic boronic classes are
-    screened without a declared atom).  Seed certification applies the
-    seed screen above.  All reason codes fired along the way are
-    returned for manifest telemetry.
+    screened without a declared atom).  **Seed certification is
+    block-level** (artifact-pinned: a molecule with ANY free-group /
+    electrophile self-reactive pair loses the entire seed role, not
+    just the firing class — verified against the pinned funnel counts:
+    exactly 757 fired blocks over the 290,648-record source, and zero
+    catalog rows keep a seed label beside a fired pair).  Reason codes
+    are emitted once per fired block (deterministic order), matching
+    the artifact's per-block seed-exclusion counting.
     """
     firings: List[str] = []
     synthon_ok: List[str] = []
@@ -243,13 +314,15 @@ def certify_block_roles(mol: Chem.Mol) -> Tuple[List[str], List[str], List[str]]
         else:
             firings.extend(result.reason_codes)
 
-    seed_ok: List[str] = []
-    for seed_class in detect_seed_classes(mol):
+    seed_detected = detect_seed_classes(mol)
+    seed_fired: Optional[str] = None
+    for seed_class in seed_detected:
         reason = seed_screen(mol, seed_class)
-        if reason is None:
-            seed_ok.append(seed_class)
-        else:
-            firings.append(reason)
+        if reason is not None and seed_fired is None:
+            seed_fired = reason
+    seed_ok: List[str] = [] if seed_fired else list(seed_detected)
+    if seed_fired:
+        firings.append(seed_fired)
     return synthon_ok, seed_ok, firings
 
 
@@ -364,10 +437,14 @@ def Crippen_MolMR(mol: Chem.Mol) -> float:
 # Conformer policy (fail-closed, per-row provenance)
 # ---------------------------------------------------------------------------
 
-#: Atoms MMFF94 cannot type that are nevertheless accepted (they belong
-#: to the registry's coupling-handle chemistries: boronic acids, aryl
-#: zinc, vinyl stannanes) — the row keeps its ETKDG geometry.
-DOCUMENTED_MMFF_FALLBACK_ATOMS = frozenset({"B", "Zn", "Sn"})
+#: Atoms MMFF94 cannot type that are nevertheless accepted: the
+#: coupling-handle chemistries (boronic acids B, aryl zincs Zn, vinyl
+#: stannanes Sn) **and the halide counterions** of the catalog's salt
+#: forms (HBr/HCl/HI/HF salts keep their ETKDG geometry — artifact-
+#: pinned: the fallback reproduces the stored 17,493/32,507
+#: conformer-method split exactly; potassium trifluoroborate salts fail
+#: closed because K is not in the set).
+DOCUMENTED_MMFF_FALLBACK_ATOMS = frozenset({"B", "Zn", "Sn", "F", "Cl", "Br", "I"})
 
 
 @dataclass
@@ -380,14 +457,14 @@ class ConformerOutcome:
 
 
 def _mmff_untypeable_symbols(mol: Chem.Mol) -> List[str]:
-    """Atom symbols MMFF94 cannot type (empty when fully typeable).
+    """Atom symbols outside MMFF94's organic element coverage.
 
-    B, Zn and Sn are NOT in MMFF94's coverage (verified empirically:
-    ``MMFFHasAllMoleculeParams`` is False for phenylboronic acid) — they
-    are exactly the documented coupling-handle fallback set.
+    This is the *fallback audit*, not the typing decision itself: RDKit's
+    MMFF can also fail to type covered elements in unusual states (the
+    catalog's HBr/HCl salt counterions), which is exactly why the
+    decision tree routes every ``MMFFHasAllMoleculeParams == False`` row
+    through the fallback check instead of silently relaxing.
     """
-    if AllChem.MMFFHasAllMoleculeParams(mol):
-        return []
     symbols = {a.GetSymbol() for a in mol.GetAtoms()}
     covered = {"H", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Br", "I"}
     return sorted(symbols - covered)
@@ -396,23 +473,40 @@ def _mmff_untypeable_symbols(mol: Chem.Mol) -> List[str]:
 def embed_conformer(smiles: str) -> ConformerOutcome:
     """ETKDGv3 multi-conformer embedding + lowest-energy MMFF94 relaxation.
 
-    Fail-closed policy (artifact-pinned):
+    Fail-closed policy (artifact-pinned — reproduces the stored
+    17,493/32,507 conformer-method split over the 50k catalog exactly):
 
-    * no ETKDG conformer at all -> :class:`SynthonEncodeError`
-      ("ETKDGv3 embedding produced no conformers");
+    * the MMFF94 typing check runs on the **hydrogen-added molecule
+      before embedding**; untypeable atoms outside the documented
+      fallback set fail closed immediately with the named symbols;
     * MMFF types the molecule -> all conformers relaxed
       (``MMFFOptimizeMoleculeConfs``), the lowest-energy one is kept
       (``etkdg3+mmff94`` provenance, energy recorded);
-    * MMFF cannot type and the untypeable atoms are exactly the
-      documented B/Zn/Sn coupling-handle set -> the lowest-ETKDG
-      geometry is kept unrelaxed (``etkdg3``, energy NaN);
-    * any other untypeable atom -> :class:`SynthonEncodeError` with the
-      named offending symbols.
+    * MMFF cannot type and the untypeable atoms are within the
+      documented coupling-handle/counterion fallback -> the first
+      ETKDG geometry is kept unrelaxed (``etkdg3``, energy NaN);
+    * no ETKDG conformer at all -> :class:`SynthonEncodeError`
+      ("ETKDGv3 embedding produced no conformers").
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise SynthonEncodeError(f"unparseable SMILES: {smiles!r}")
     mol = Chem.AddHs(mol)
+
+    # The typing decision (artifact-pinned): relax only when RDKit's MMFF
+    # types the whole hydrogen-added molecule; anything else routes
+    # through the documented fallback (etkdg3) or fails closed.
+    mmff_typeable = AllChem.MMFFHasAllMoleculeParams(mol)
+    untypeable = _mmff_untypeable_symbols(mol)
+    if not mmff_typeable and not (
+        set(untypeable) <= DOCUMENTED_MMFF_FALLBACK_ATOMS
+    ):
+        raise SynthonEncodeError(
+            "MMFF94 cannot type atoms "
+            f"{untypeable} and they are not the documented "
+            "B/Zn/Sn coupling-handle fallback (fail-closed)"
+        )
+
     params = AllChem.ETKDGv3()
     params.randomSeed = CONFORMER_SEED
     params.pruneRmsThresh = CONFORMER_PRUNE_RMS
@@ -426,29 +520,18 @@ def embed_conformer(smiles: str) -> ConformerOutcome:
             "ETKDGv3 embedding produced no conformers (fail-closed)"
         )
 
-    untypeable = _mmff_untypeable_symbols(mol)
-    if not untypeable:
+    if mmff_typeable:
         results = AllChem.MMFFOptimizeMoleculeConfs(
             mol, numThreads=1, mmffVariant="MMFF94", maxIters=MMFF_MAX_ITERS
         )
-        best_cid = min(
-            (cid for cid in cids), key=lambda c: results[cids.index(c)][1]
-        ) if len(results) == len(cids) else cids[0]
-        # map conformer ids robustly: results align with the cids order
         best_idx = min(range(len(cids)), key=lambda i: results[i][1])
         best_cid = cids[best_idx]
         energy = float(results[best_idx][1])
         method = "etkdg3+mmff94"
-    elif set(untypeable) <= DOCUMENTED_MMFF_FALLBACK_ATOMS:
+    else:
         best_cid = cids[0]
         energy = float("nan")
         method = "etkdg3"
-    else:
-        raise SynthonEncodeError(
-            "MMFF94 cannot type atoms "
-            f"{untypeable} and they are not the documented "
-            "B/Zn/Sn coupling-handle fallback (fail-closed)"
-        )
 
     keep = Chem.Mol(mol, confId=best_cid)
     keep = Chem.RemoveHs(keep)

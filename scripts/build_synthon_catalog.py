@@ -298,10 +298,10 @@ def run_funnel(sdf_path: str, workdir: str, limit: Optional[int],
 
             if Descriptors.MolWt(mol) > MW_MAX:
                 stage = "mw_above"
-            elif not (HEAVY_MIN <= mol.GetNumHeavyAtoms() <= HEAVY_MAX):
-                stage = "heavy_out"
             elif Lipinski.NumRotatableBonds(mol) > ROT_MAX:
                 stage = "rot_above"
+            elif not (HEAVY_MIN <= mol.GetNumHeavyAtoms() <= HEAVY_MAX):
+                stage = "heavy_out"
             else:
                 stage = None
             if stage is not None:
@@ -441,6 +441,10 @@ def run_encode(selection: dict, workdir: str, source_sdf: str,
             return
         with Pool(min(workers, max(1, len(batch)))) as pool:
             for result in pool.imap(_encode_worker, batch, chunksize=8):
+                if len(kept) >= CATALOG_SIZE:
+                    # the cap was reached inside this batch — the excess
+                    # results stay cached for reserve use but are not kept
+                    continue
                 if result["ok"]:
                     offset = bin_cache.tell()
                     bin_cache.write(result["x_raw"])
@@ -459,7 +463,7 @@ def run_encode(selection: dict, workdir: str, source_sdf: str,
                         )
                         + "\n"
                     )
-                if len(kept) + len(failures) % 2000 == 0:
+                if (len(kept) + len(failures)) % 2000 == 0:
                     bin_cache.flush()
                     meta_cache.flush()
 
