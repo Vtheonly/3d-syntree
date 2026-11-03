@@ -1,0 +1,43 @@
+{
+  "counts": {
+    "graft_failed": 6,
+    "no_matched_seed": 166983,
+    "no_matched_synthon": 3648,
+    "ok_test": 33,
+    "ok_train": 111,
+    "ok_val": 50,
+    "replay_mismatch": 123,
+    "seed_fragment_unsanitizable": 1
+  },
+  "created_utc": "2026-11-03T08:55:22Z",
+  "inputs": {
+    "catalog": "enamine_real_50k_pharm3d_d256.h5",
+    "index": "synthon_index.json",
+    "index_sha256_pinned": "8b8c13a0581ec91db6ace643e13d9d46c8b29211e1a264b2bdd62bb90bf2ab7e",
+    "manifest": "processed_manifest.jsonl",
+    "splits": "unified_splits_30seq_id.parquet"
+  },
+  "measured": {
+    "pending_after_run": 0,
+    "this_run_processed": 0,
+    "this_run_seconds": 3.64,
+    "this_run_throughput_per_s": 0.0
+  },
+  "totals": {
+    "accepted": 194,
+    "failed": 170761,
+    "processed": 170955
+  },
+  "trajectories_test": {
+    "bytes": 18281,
+    "records": 33
+  },
+  "trajectories_train": {
+    "bytes": 68591,
+    "records": 111
+  },
+  "trajectories_val": {
+    "bytes": 28195,
+    "records": 50
+  }
+}
