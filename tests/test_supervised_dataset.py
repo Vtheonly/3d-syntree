@@ -201,6 +201,49 @@ class TestHandlePool:
         pairs = grow_handle_pool(mol)
         assert len(pairs) == len(set(pairs))
 
+    def test_reactant_form_graft_handles_are_visible_d_v2_043(self):
+        # The authorized-T4 first observation (S-V2-19): pdbbind_4itp step 2
+        # couples an incoming aryl bromide onto a product-form methyl via
+        # the Negishi alkylzinc class.  The methyl is a legal handle ONLY in
+        # the reactant form (CH2-ZnCl): the leaving group is by construction
+        # absent from the crystal product graph, so direct template matching
+        # against the product graph can never see it.
+        acetylated = _embed("CC(=O)NCc1ccc(S(N)(=O)=O)cc1")
+        methyl = acetylated.GetSubstructMatches(Chem.MolFromSmarts("[CX4;H3]-[CX3](=O)"))
+        assert len(methyl) == 1
+        methyl_idx = int(methyl[0][0])
+        rxn15 = POLICY_REACTIONS["rxn_15"]
+        # direct product-graph matching (the pre-D-V2-043 semantics) is
+        # structurally blind: the certified reactant template contains the
+        # ZnCl leaving group, which no crystal product graph carries
+        from syntree.data.supervised import _molecule_side_pattern
+        pattern, attach_pos = _molecule_side_pattern(rxn15)
+        direct = {m[attach_pos] for m in acetylated.GetSubstructMatches(pattern, uniquify=False)}
+        assert not direct
+        # reactant-form graft matching: the methyl is an alkylzinc handle
+        assert methyl_idx in molecule_handle_instances(acetylated, rxn15)
+        pool = grow_handle_pool(acetylated)
+        assert (methyl_idx, "alkylzinc") in pool
+        # an atom without a replaceable H can never take the graft: the
+        # quaternary acetyl-chloride junction carbon of the same molecule
+        quaternary = _embed("CC(C)(C)NCc1ccc(S(N)(=O)=O)cc1")
+        central = quaternary.GetSubstructMatches(Chem.MolFromSmarts("[CX4;H0](-[C])(-[C])(-[C])-[N]"))
+        assert len(central) == 1
+        assert int(central[0][0]) not in molecule_handle_instances(quaternary, rxn15)
+
+    def test_aryl_ch_graft_handles_and_amines_coexist(self):
+        # aryl bromide / aryl chloride classes (rxn_09..12) graft onto aryl
+        # C-H positions — invisible to direct product-graph matching too.
+        arene = _embed("c1ccc(N)cc1")
+        rxn09 = POLICY_REACTIONS["rxn_09"]
+        instances = molecule_handle_instances(arene, rxn09)
+        assert len(instances) >= 2  # the aryl C-H positions (not the N-attached one)
+        pool = grow_handle_pool(arene)
+        classes = {cls for _, cls in pool}
+        assert "aryl_bromide" in classes and "amine" in classes
+        # determinism of the (deliberately uncached) derivation
+        assert molecule_handle_instances(arene, rxn09) == instances
+
 
 # ---------------------------------------------------------------------------
 # Complex contexts

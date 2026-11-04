@@ -164,8 +164,20 @@ def _loader(split: str = "train", shuffle: bool = True, seed: int = 2026):
 
 class TestTraining:
     def test_two_epoch_smoke_descends_and_stays_finite(self):
-        """CPU smoke of the descent mechanics (the T4 criterion is gated)."""
-        trainer = _trainer(_mkdtmp())
+        """CPU smoke of the descent mechanics (the T4 criterion is gated).
+
+        D-V2-043 note: the corrected reactant-form handle pool exposes the
+        graft-class handles (aryl-halide C-H, alkylzinc methyl ...) on this
+        fixture's aromatic intermediates, so the handle head's action space
+        grew from ~2 to ~15 rows.  With one optimizer step per epoch the
+        2-epoch mean-vs-mean comparison became noise-dominated (verified:
+        seed-dependent both ways); the window is widened to 6 epochs, where
+        first-vs-last epoch descent holds at every torch seed 0..9
+        (measured 8.6-10.1 -> 4.9-6.8).  The seed is pinned so the smoke
+        is deterministic like every other fixture in this suite.
+        """
+        torch.manual_seed(2026)
+        trainer = _trainer(_mkdtmp(), max_epochs=6)
         result = trainer.fit(_loader())
         assert result["stop_reason"] == "max_epochs_reached"
         history = trainer.history

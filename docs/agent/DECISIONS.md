@@ -1500,3 +1500,52 @@ Suite B stay green unchanged.
 **Affected:** #30 (closed), #29 (the reward the TB loop consumes),
 #34/#35 (the future real docking engine injects here), #26 (the
 telemetry convention extended with ``docking_backend``).
+
+## D-V2-043 — 2026-11-05 — Reactant-form graft matching in the molecule-side handle pool (#26/#29, D-V2-031 amendment)
+
+The first canonical `train_stage1.py` launch on the authorized T4
+(S-V2-19, after the bit-exact data reconstruction) surfaced a real
+fail-closed stop: `pdbbind_4itp: the step-2 junction (atom 0, class
+'alkylzinc') is not in the detected handle pool`.  Root cause: D-V2-031
+matched the reaction's molecule-side **reactant template** against the
+**product-form crystal graph** — but for the nine non-empty
+molecule-side grafts of the certified taxonomy (rxn_09..15, rxn_23,
+rxn_26: Br / Cl / ZnCl / B(OH)₂ leaving groups) the reactant's
+distinguishing feature is, by construction, absent from every crystal
+product graph (the leaving group departs in the reaction; a crystal
+ligand contains no Zn).  Direct matching could therefore never see a
+legal handle of those classes — the Negishi step of 4ITP (a product-form
+methyl that reacts as CH₂–ZnCl) was unreachable, and the same blindness
+silently applied to every aryl C-H (aryl-bromide/chloride/boronic-acid
+classes) in every intermediate.
+
+**The rule (the extractor's own model, mirrored):** an atom is a growth
+position for a reaction iff the reaction's certified molecule-side graft
+attaches there (`apply_graft`, the exact #18 reactant-reconstruction
+path, H-count delta included) **and** the reactant template then matches
+at that position; atoms whose graft cannot attach (no replaceable H,
+valence, sanitization) are simply not handles — the extractor's
+`graft_failed` vocabulary, not an error.  Empty-graft classes (amine /
+alcohol / thiol) keep the direct product-graph semantics (unchanged).
+The derivation is deliberately **not memoized**: the 4ITP ligand parsed
+from the PDBbind mirror and built from MOAD PDB residues share one
+canonical SMILES with different atom orderings, so a SMILES-keyed index
+cache is unsound (measured first as an order-dependent loader failure);
+the measured cost is ~1 ms per 27-reaction pool — no cache is warranted.
+This corrects **both** consumers: the supervised pool (#26) and the #29
+rollout driver's generation-time pool, which had the same blindness.
+
+**Evidence:** `tests/test_supervised_dataset.py` (+2 regression tests:
+the 4ITP methyl/alkylzinc case, aryl C-H graft visibility + the
+quaternary-carbon negative; the direct-match blindness pinned);
+`tests/test_trainer.py` (the CPU descent smoke widened to 6 epochs —
+one optimizer step per epoch made the 2-epoch mean comparison
+noise-dominated under the honest ~15-row action space; descent verified
+at torch seeds 0..9); the loader materializes all 241 train + 101 val
+items across 3 shuffle orders with the bit-exact 194-trajectory set +
+regenerated pockets (0 failures).  Suite: **1615 passed / 20 skipped**.
+
+**Affected:** #26 (the loader criterion — the training run unblocked),
+#29 (the rollout pool), #18 (the graft-spec machinery is now consumed
+by the supervised path), #42 (nothing — the terminal oracle is
+untouched).

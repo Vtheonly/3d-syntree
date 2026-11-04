@@ -73,7 +73,12 @@ from syntree.data.augmentation import (
 )
 from syntree.data.fragmenter import canonical_decomposition
 from syntree.data.seed_labels import supervised_anchor_label
-from syntree.data.trajectories import induced_submol
+from syntree.data.trajectories import (
+    TrajectoryExtractionError,
+    apply_graft,
+    derive_junction_specs,
+    induced_submol,
+)
 from syntree.engine.environment import PocketDefinition
 
 __all__ = [
@@ -303,20 +308,57 @@ def _molecule_side_pattern(reaction: Any):
     return entry
 
 
-def molecule_handle_instances(mol: Chem.Mol, reaction: Any) -> Tuple[int, ...]:
+def molecule_handle_instances(
+    mol: Chem.Mol, reaction: Any
+) -> Tuple[int, ...]:
     """Atom indices where ``reaction``'s molecule side can attach on ``mol``.
 
     The molecule-side growth handles of an intermediate — the
-    dual of the catalog's block-side classes: an atom is a growth
-    position for a reaction iff the reaction's molecule-side reactant
-    template matches there (the exact certified reagent-level constraint,
-    not a functional-group nickname).
+    dual of the catalog's block-side classes.  D-V2-031, amended by
+    D-V2-043 (S-V2-19): an atom is a growth position for a reaction
+    iff the reaction's molecule-side **reactant** template matches the
+    atom's **reactant form** — for the non-empty molecule-side grafts
+    (the leaving groups of rxn_09..15, rxn_23, rxn_26: Br / Cl / ZnCl /
+    B(OH)2) the certified graft is attached to the candidate atom with
+    :func:`syntree.data.trajectories.apply_graft` exactly the way the
+    #18 extractor reconstructs reactants, because the leaving group is
+    by construction absent from the crystal product graph (first
+    observed on the authorized T4: ``pdbbind_4itp`` step 2, the Negishi
+    ``alkylzinc`` handle on a product-form methyl).  Empty-graft
+    reactions (amine / alcohol / thiol) match the pattern directly on
+    the product graph — unchanged semantics.  Atoms whose graft cannot
+    attach (insufficient H, valence, sanitization) are not handles —
+    the extractor's own ``graft_failed`` vocabulary, not an error.
+
+    Deliberately NOT memoized: an identical canonical SMILES can hide
+    different atom orderings (the 4ITP ligand parsed from the PDBbind
+    mirror vs built from MOAD PDB residues — same graph, different
+    indices), so a SMILES-keyed index cache is unsound; the measured
+    cost is ~1 ms per 27-reaction pool — no cache is warranted.
     """
     pattern, attach_pos = _molecule_side_pattern(reaction)
-    atoms = set()
-    for match in mol.GetSubstructMatches(pattern, uniquify=False):
-        atoms.add(int(match[attach_pos]))
-    return tuple(sorted(atoms))
+    graft = derive_junction_specs()[reaction.reaction_id].molecule
+    atoms: Set[int] = set()
+    if graft.is_empty and graft.attachment_h_delta == 0:
+        # reactant form == product form: match the certified pattern directly
+        for match in mol.GetSubstructMatches(pattern, uniquify=False):
+            atoms.add(int(match[attach_pos]))
+    else:
+        needed_h = -graft.attachment_h_delta if graft.attachment_h_delta < 0 else 0
+        for atom in mol.GetAtoms():
+            idx = int(atom.GetIdx())
+            if atom.GetTotalNumHs() < needed_h:
+                continue  # the graft replaces hydrogens; there are none to take
+            try:
+                grafted = apply_graft(mol, idx, graft)
+            except TrajectoryExtractionError:
+                continue  # the documented graft-failure vocabulary: not a handle
+            for match in grafted.GetSubstructMatches(pattern, uniquify=False):
+                if int(match[attach_pos]) == idx:
+                    atoms.add(idx)
+                    break
+    result = tuple(sorted(atoms))
+    return result
 
 
 def grow_handle_pool(
@@ -325,13 +367,15 @@ def grow_handle_pool(
 ) -> List[Tuple[int, str]]:
     """The active growth handles of an intermediate: ``(atom, class)`` rows.
 
-    D-V2-031: a growth handle exists at atom ``a`` for reaction ``r`` iff
-    ``r``'s molecule-side reactant template matches at ``a`` **and** ``a``
-    is not already a junction atom of a formed assembly bond (the
-    environment's capacity bookkeeping mirrored on the crystal side: the
-    curated catalog guarantees one coupling per handle, #40, so a junction
-    atom's capacity is consumed).  Deterministic order: reaction id, then
-    atom index; ``(atom, class)`` pairs deduplicated.
+    D-V2-031 (amended D-V2-043): a growth handle exists at atom ``a``
+    for reaction ``r`` iff ``r``'s molecule-side reactant template
+    matches at ``a`` **in the reactant form** (see
+    :func:`molecule_handle_instances`) **and** ``a`` is not already a
+    junction atom of a formed assembly bond (the environment's capacity
+    bookkeeping mirrored on the crystal side: the curated catalog
+    guarantees one coupling per handle, #40, so a junction atom's
+    capacity is consumed).  Deterministic order: reaction id, then atom
+    index; ``(atom, class)`` pairs deduplicated.
     """
     consumed = {int(a) for a in junction_atoms}
     pool: List[Tuple[int, str]] = []
