@@ -27,11 +27,15 @@ into the per-trajectory loss.
 
     R(x) = exp( ( S_dock + S_contact + S_key + S_props + S_vol ) / T_reward )
 
-* ``S_dock`` — docking surrogate: ``clamp(-ΔG_dock / 2.0, -3.0, +5.0)``
+* ``S_dock`` — docking score: ``clamp(-ΔG_dock / 2.0, -3.0, +5.0)``
   where ``ΔG_dock`` is the pocket interaction energy (soft-core LJ +
-  softened Coulomb, kcal/mol) of the *relaxed* terminal pose.  A real
-  docking engine replaces the surrogate when the evaluation stack lands;
-  the clamp, units, and sign convention are the #30-specified ones.
+  softened Coulomb, kcal/mol) of the *relaxed* terminal pose.  The
+  score is produced by the **docking backend**
+  (:func:`surrogate_docking_scorer` — the documented V2 surrogate — by
+  default); a real docking engine from the evaluation stack is injected
+  through the ``docking_scorer`` constructor argument (the #30
+  production supersession point) without touching the clamp, units, sign
+  conventions, or any MDP/TB contract.
 * ``S_contact`` — soft-core contact enrichment: ``tanh(-E_LJ_att / 5.0)``
   over the *attractive-only* pocket LJ component (bounded in ``(-1, 1)``).
 * ``S_key`` — validated pharmacophore bonus: ``+1.5`` per verified salt
@@ -73,7 +77,8 @@ This module depends on ``rdkit`` and ``numpy``.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 from rdkit import Chem
@@ -99,6 +104,8 @@ from syntree.engine.environment import (
 __all__ = [
     "RewardError",
     "ThreeDReward",
+    "DockingResult",
+    "surrogate_docking_scorer",
     "REWARD_FLOOR",
     "SALT_BRIDGE_CUTOFF",
     "HBOND_CUTOFF",
@@ -134,6 +141,69 @@ _COMPONENT_BOUNDS = {
 }
 
 
+@dataclass(frozen=True)
+class DockingResult:
+    """One docking-backend evaluation of a relaxed terminal pose.
+
+    The **production supersession point of #30**: a real docking engine
+    (the evaluation stack) returns this instead of the documented
+    surrogate — the clamp, units, and sign conventions of ``S_dock`` /
+    ``S_contact`` stay exactly the #30-specified ones, and the MDP/TB
+    contracts are untouched (the reward remains a stationary function of
+    the terminal object and the fixed pocket).
+
+    Fields:
+        delta_g_kcal_mol: the pocket interaction free energy of the pose
+            (kcal/mol; negative = favourable).  ``S_dock =
+            clamp(-ΔG/2, -3, +5)`` consumes it.
+        e_lj_attractive_kcal_mol: the attractive-only van-der-Waals
+            component (kcal/mol, ``<= 0``).  ``S_contact =
+            tanh(-E_att/5)`` consumes it.
+        e_lj_kcal_mol / e_elec_kcal_mol: optional surrogate telemetry
+            (the default backend reports them; a real engine may not).
+        backend: a version-labelled backend identity recorded in the
+            reward telemetry (provenance of every score).
+    """
+
+    delta_g_kcal_mol: float
+    e_lj_attractive_kcal_mol: float
+    e_lj_kcal_mol: Optional[float] = None
+    e_elec_kcal_mol: Optional[float] = None
+    backend: str = "surrogate_soft_core"
+
+
+#: The docking-backend contract (#30 supersession point).
+DockingScorer = Callable[
+    [np.ndarray, np.ndarray, np.ndarray, PocketDefinition], DockingResult
+]
+
+
+def surrogate_docking_scorer(
+    positions: np.ndarray,
+    atomic_numbers: np.ndarray,
+    ligand_charges: np.ndarray,
+    pocket: PocketDefinition,
+) -> DockingResult:
+    """The documented V2 docking surrogate (the default backend).
+
+    Soft-core Lennard-Jones + softened Coulomb of the relaxed pose in the
+    fixed pocket (``syntree.engine.environment`` — the affinity semantics
+    a clash penalty cannot express); the attractive-only LJ part feeds
+    ``S_contact``.  A real docking engine (evaluation stack / #34/#35)
+    supersedes exactly this function through the ``docking_scorer``
+    injection point without touching any other contract.
+    """
+    e_lj = soft_core_pocket_energy(positions, atomic_numbers, pocket)
+    e_elec = coupled_charge_energy(positions, ligand_charges, pocket)
+    return DockingResult(
+        delta_g_kcal_mol=e_lj + e_elec,
+        e_lj_attractive_kcal_mol=min(e_lj, 0.0),
+        e_lj_kcal_mol=e_lj,
+        e_elec_kcal_mol=e_elec,
+        backend="surrogate_soft_core",
+    )
+
+
 class RewardError(ValueError):
     """Fail-closed reward error (non-finite physics, malformed input)."""
 
@@ -159,6 +229,7 @@ class ThreeDReward:
         heavy_atom_floor: int = HEAVY_ATOM_FLOOR,
         heavy_atom_floor_weight: float = HEAVY_ATOM_FLOOR_WEIGHT,
         cavity_grid_spacing: float = 0.5,
+        docking_scorer: Optional[DockingScorer] = None,
     ) -> None:
         if temperature <= 0.0 or not math.isfinite(temperature):
             raise RewardError(f"temperature must be finite and > 0, got {temperature}")
@@ -186,9 +257,22 @@ class ThreeDReward:
             raise RewardError(
                 f"cavity_grid_spacing must be finite and > 0, got {cavity_grid_spacing}"
             )
+        if docking_scorer is not None and not callable(docking_scorer):
+            raise RewardError(
+                "docking_scorer must be callable (the #30 supersession contract: "
+                "(positions, atomic_numbers, charges, pocket) -> DockingResult)"
+            )
         self._pocket = pocket
         self._temperature = float(temperature)
         self._reward_floor = float(reward_floor)
+        # The docking backend is part of the FROZEN configuration (#30/
+        # #45 s12.4): the default is the documented surrogate; a real
+        # docking engine (evaluation stack) is injected at construction.
+        # Swapping the backend is a changed training objective — a new,
+        # explicitly-versioned instance (never a mutation).
+        self._docking_scorer: DockingScorer = (
+            docking_scorer if docking_scorer is not None else surrogate_docking_scorer
+        )
         self._volume_ratio_floor = (
             float(volume_ratio_floor) if volume_ratio_floor is not None else None
         )
@@ -223,6 +307,11 @@ class ThreeDReward:
     @property
     def pocket(self) -> Optional[PocketDefinition]:
         return self._pocket
+
+    @property
+    def docking_scorer(self) -> DockingScorer:
+        """The active docking backend (frozen at construction, #30)."""
+        return self._docking_scorer
 
     @property
     def temperature(self) -> float:
@@ -282,20 +371,34 @@ class ThreeDReward:
         if not np.all(np.isfinite(positions)):
             raise RewardError("terminal molecule coordinates contain non-finite values")
 
-        # -- S_dock: docking surrogate (soft-core LJ + softened Coulomb) --------
+        # -- S_dock / S_contact: through the docking backend (#30) --------------
         if self._pocket is not None:
             ligand_charges = self._gasteiger_charges(relaxed_mol)
-            e_lj = soft_core_pocket_energy(positions, numbers, self._pocket)
-            e_elec = coupled_charge_energy(positions, ligand_charges, self._pocket)
-            delta_g = e_lj + e_elec
+            docking = self._docking_scorer(
+                positions, numbers, ligand_charges, self._pocket
+            )
+            if not isinstance(docking, DockingResult):
+                raise RewardError(
+                    "the docking backend must return a DockingResult (the #30 "
+                    "supersession contract — fail-closed)"
+                )
+            delta_g = float(docking.delta_g_kcal_mol)
+            e_attractive = float(docking.e_lj_attractive_kcal_mol)
+            if not (math.isfinite(delta_g) and math.isfinite(e_attractive)):
+                raise RewardError(
+                    f"the docking backend {docking.backend!r} returned a non-finite "
+                    "score (poisoned terminal — fail-closed)"
+                )
+            e_lj = docking.e_lj_kcal_mol
+            e_elec = docking.e_elec_kcal_mol
             s_dock = self._clamp(-delta_g / 2.0, -3.0, 5.0)
             # -- S_contact: attractive-only soft-core contact enrichment --------
-            e_attractive = min(e_lj, 0.0)
             s_contact = math.tanh(-e_attractive / 5.0)
             # -- S_key: salt bridges + hydrogen bonds ----------------------------
             s_key = self._pharmacophore_bonus(relaxed_mol, positions, numbers)
         else:
-            delta_g, e_lj, e_elec = 0.0, 0.0, 0.0
+            delta_g, e_attractive = 0.0, 0.0
+            e_lj, e_elec = 0.0, 0.0
             s_dock = 0.0
             s_contact = 0.0
             s_key = 0.0
@@ -353,6 +456,12 @@ class ThreeDReward:
             "delta_g_kcal_mol": delta_g,
             "e_lj_kcal_mol": e_lj,
             "e_elec_kcal_mol": e_elec,
+            "e_lj_attractive_kcal_mol": e_attractive,
+            "docking_backend": (
+                docking.backend
+                if self._pocket is not None and isinstance(docking, DockingResult)
+                else "inactive_no_pocket"
+            ),
             "qed": qed_value,
             "fsp3": fsp3_value,
             "volume_angstrom3": volume,
