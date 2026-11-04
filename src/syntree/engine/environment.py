@@ -1053,6 +1053,11 @@ class AssemblyEnvironment:
     def num_added_blocks(self) -> int:
         return sum(1 for step in self.trajectory if step.action_type == "add")
 
+    @property
+    def max_blocks(self) -> int:
+        """The block budget (public read; the rollout driver's STOP gate)."""
+        return self._max_blocks
+
     def observe(self) -> Chem.Mol:
         """The current intermediate molecule (deterministic bin-centre geometry)."""
         return self.molecule
