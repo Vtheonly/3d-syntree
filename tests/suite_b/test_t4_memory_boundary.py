@@ -132,10 +132,12 @@ def _profile_a_batch_state(device: torch.device) -> SimpleNamespace:
         pocket_batch.append(torch.full((n_p,), graph, dtype=torch.long, device=device))
         ligand_pos.append(positions(n_l, 2.0))
         ligand_batch.append(torch.full((n_l,), graph, dtype=torch.long, device=device))
-    z_pocket = torch.randint(
-        1, 9, (sum(pocket_counts),), generator=gen, device=device
-    )
-    z_ligand = torch.randint(1, 9, (sum(ligand_counts),), generator=gen, device=device)
+    # CPU generator + .to(device): keeps one deterministic RNG stream and
+    # mirrors the positions() helper. A CUDA-side torch.randint with a CPU
+    # generator raises "Expected a 'cuda' device type for generator" (first
+    # surfaced on the authorized T4, S-V2-16).
+    z_pocket = torch.randint(1, 9, (sum(pocket_counts),), generator=gen).to(device)
+    z_ligand = torch.randint(1, 9, (sum(ligand_counts),), generator=gen).to(device)
     return SimpleNamespace(
         pocket_pos=torch.cat(pocket_pos),
         pocket_z=z_pocket,
@@ -182,20 +184,41 @@ class TestT4MemoryBoundary:
         )
         handle_graph = ligand_batch
         handle_pos = ligand_pos
+        # CPU generator + .to(device) — same pattern as the fixture above
+        # (S-V2-16: a CPU generator is illegal for device='cuda' sampling).
         handle_descriptors = torch.randn(
             (handle_atom.numel(), 64),
-            generator=torch.Generator(device="cpu").manual_seed(1),
-            device=device,
+            generator=torch.Generator().manual_seed(1),
             dtype=torch.float32,
-        )
+        ).to(device)
         handle_out = policy.handle_head(
             backbone, handle_descriptors, handle_pos, handle_graph, handle_atom
         )
-        state_out = policy.decoder.forward_state(
-            backbone, handle_descriptors, handle_pos, handle_graph, handle_atom
+        # The decoder consumes (backbone, handle_output) — the exact
+        # composition of SynTreePolicy.forward_state (policy.py §growth-step
+        # encoding); fixed when the gated battery first executed on the
+        # authorized T4 (S-V2-16).
+        decoder_out = policy.decoder.forward_state(backbone, handle_out)
+        stop_out = policy.forward_stop(decoder_out.context)
+        loss = (
+            decoder_out.context.sum()
+            + handle_out.log_probs.sum()
+            + stop_out.log_probs.sum()
         )
-        stop_out = policy.forward_stop(state_out.context)
-        loss = state_out.context.sum() + handle_out.log_probs.sum() + stop_out.log_probs.sum()
+        # #25's CUDA criterion pinned into the gated battery: the full
+        # SynTreePolicy forward executes on the authorized T4 with zero
+        # NaNs/Infs in every head's outputs (asserted on-device, measured
+        # — never a nominal claim; S-V2-16 close-out).
+        assert torch.isfinite(decoder_out.context).all().item(), (
+            "non-finite decoder context on CUDA (#25 criterion)"
+        )
+        assert torch.isfinite(handle_out.log_probs).all().item(), (
+            "non-finite handle log-probabilities on CUDA (#25 criterion)"
+        )
+        assert torch.isfinite(stop_out.log_probs).all().item(), (
+            "non-finite stop log-probabilities on CUDA (#25 criterion)"
+        )
+        assert torch.isfinite(loss).item(), "non-finite loss on CUDA (#25 criterion)"
         loss.backward()
 
         torch.cuda.synchronize(device)

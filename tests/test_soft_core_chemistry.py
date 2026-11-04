@@ -65,8 +65,10 @@ from syntree.engine.environment import (
 from syntree.engine.rl import RewardError, ThreeDReward
 
 # Verified fixtures shared with the engine reconciliation suite (same
-# tests directory; pytest's prepend import mode makes them importable).
-from test_gflownet_reconciliation import (  # noqa: F401 - shared fixtures
+# tests directory; the suite is a regular package — tests/__init__.py —
+# so the import is package-qualified, robust against rogue dist-packages
+# ``tests`` on hosted runtimes, S-V2-16).
+from tests.test_gflownet_reconciliation import (  # noqa: F401 - shared fixtures
     _fresh_two_step_env,
     _rollout,
     _shell_pocket as _engine_shell_pocket,

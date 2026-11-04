@@ -2960,11 +2960,18 @@ def pocket_anchor_candidates(
 
     # Anchor positions: centroids of the assigned atoms.
     num_anchors = len(selected)
-    positions = torch.zeros((num_anchors, 3), dtype=torch.float64)
-    counts = torch.zeros((num_anchors,), dtype=torch.float64)
+    # Device-following accumulators: pocket_pos may live on CUDA (the
+    # authorized T4 path); CPU-hardcoded zeros crash index_add_ there
+    # (first surfaced S-V2-16 on the Tesla T4).
+    positions = torch.zeros(
+        (num_anchors, 3), dtype=torch.float64, device=pos.device
+    )
+    counts = torch.zeros((num_anchors,), dtype=torch.float64, device=pos.device)
     positions.index_add_(0, assignment, pos)
     counts.index_add_(
-        0, assignment, torch.ones(num_atoms, dtype=torch.float64)
+        0,
+        assignment,
+        torch.ones(num_atoms, dtype=torch.float64, device=pos.device),
     )
     if bool((counts == 0).any()):
         # Cannot happen (every anchor atom assigns to itself), but fail
@@ -3018,14 +3025,21 @@ def batched_pocket_anchor_candidates(
             min_separation=min_separation,
         )
         positions_all.append(pos)
-        batch_all.append(torch.full((pos.shape[0],), g, dtype=torch.int64))
+        batch_all.append(
+            torch.full((pos.shape[0],), g, dtype=torch.int64, device=pos.device)
+        )
         assign_all.append(assign)
         counts.append(pos.shape[0])
+    # anchor_counts follows the input device: the trainer's seed-stage
+    # offsets are derived from it (zeros_like) and combined with
+    # device-side anchor indices (S-V2-16 T4 crash site).
     return (
         torch.cat(positions_all),
         torch.cat(batch_all),
-        torch.cat(assign_all) if num_pocket else torch.zeros(0, dtype=torch.int64),
-        torch.tensor(counts, dtype=torch.int64),
+        torch.cat(assign_all)
+        if num_pocket
+        else torch.zeros(0, dtype=torch.int64, device=pocket_pos.device),
+        torch.tensor(counts, dtype=torch.int64, device=pocket_pos.device),
     )
 
 

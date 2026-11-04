@@ -180,14 +180,28 @@ class TestStrictHardwareGate:
         assert config.torch_version == str(torch.__version__)
         assert config.summary().startswith("Tesla T4")
 
-    def test_real_probe_on_cpu_sandbox(self):
-        # The dev sandbox truthfully reports a CPU runtime (no GPU claims).
+    def test_real_probe_reports_the_actual_runtime(self):
+        # The gate must report the TRUE hardware — never a nominal claim
+        # (#45 §28.4/§29.2). On the CPU dev sandbox that is the honest CPU
+        # contract; on the authorized Tesla T4 it is the T4 contract with
+        # pure FP32 enforced. Any other CUDA device fails loudly here —
+        # unsupported hardware must never pass silently. (Generalized from
+        # test_real_probe_on_cpu_sandbox when the battery first executed on
+        # the authorized T4, S-V2-16.)
         info = probe_device()
-        assert info.device_type == "cpu"
         config = configure_runtime_environment()
         assert config.precision == "fp32"
-        assert config.device == "cpu"
         assert config.supported_runtime is True
+        if info.device_type == "cpu":
+            assert config.device == "cpu"
+        else:
+            assert info.is_tesla_t4, (
+                f"non-T4 CUDA device probed ({info.name}) — unsupported "
+                "hardware must fail closed (#45 s29.2)"
+            )
+            assert config.device.startswith("cuda")
+            assert config.device_name == "Tesla T4"
+            assert config.compute_capability == "7.5"
 
     def test_cuda_request_without_cuda_warns_and_falls_back(self, caplog):
         if torch.cuda.is_available():
