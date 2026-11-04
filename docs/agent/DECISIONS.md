@@ -1382,3 +1382,121 @@ state).
 
 **Affected:** #27 (closed), #26 (trainer/CLI), #36 (notebook Cell 8
 unchanged), #43.
+
+## D-V2-040 — 2026-11-04 — The Stage-2 optimizer groups and the canonical CLI mapping (#29/#31)
+
+The Stage-2 Trajectory Balance trainer owns **two optimizer param
+groups**, pinned by the issues: the policy group continues the Stage-1
+Profile-A setting (AdamW, lr 3e-4, weight decay 1e-5, clip 1.0) because
+Stage 2 *resumes* the supervised-trained architecture and precision path
+— changing optimizer semantics between stages would confound the
+behavioural-prior starting point; the seed-conditioned log-partition
+head ``log Z_theta(P, s_0)`` gets its **own group at lr_Z = 1e-2 with
+zero weight decay** (the #29-pinned rate; the partition function is not
+a regularization target and must be free to track the flow scale
+quickly).  The legacy ``main.py --mode rl`` of issue #31 is mapped to
+the V2-canonical ``scripts/train_stage2.py`` (the clean room has no
+``main.py`` and no ``--algorithm`` flag: Stage 2 **is** GFlowNet-TB per
+#45 §12.3 — PPO/DPO are not production alternatives; the branching CLI
+is structurally absent, D-V2-001).  ``--resume-auto`` semantics are
+fail-closed: resume the Stage-2 checkpoint if present, else initialize
+from the verified Stage-1 checkpoint, else refuse — Stage 2 never
+trains from random weights.
+
+**Evidence:** `tests/test_gflownet_tb.py::TestToyDagFlowBalance`
+(the lr_Z group pinned at 1e-2; both groups optimize; the loss drops
+>100x with logZ → the true partition function),
+`tests/test_stage2_cli.py` (init provenance + resume + fail-closed).
+
+**Affected:** #29 (closed), #31 (closed), #26 (the Stage-1 weights the
+CLI consumes), #43 (the graceful-stop contract the loop honors).
+
+## D-V2-041 — 2026-11-04 — The rollout conventions of the production Stage-2 bridge (#29)
+
+`syntree/engine/rollout.py` (the policy-driven rollout driver) fixes
+the on-policy conventions, each mirroring an existing supervised
+contract so the rollout distribution matches the training distribution:
+
+* **Pocket frame and cap (D-V2-041a).**  Rollout environments carry a
+  pocket **capped once by the documented centroid-distance pruning**
+  (Profile-A 700, referenced to the pocket's own centroid — no crystal
+  ligand exists at rollout time), so the environment's anchor menu and
+  the policy's anchor candidates coincide exactly.  The pre-seed state
+  is centred on the pocket centroid; growth states live in the
+  **placed-seed centroid frame** (the rollout analog of the supervised
+  crystal-ligand-centroid frame, D-V2-030).
+* **Handle pool (D-V2-041b).**  The pool is the molecule-side
+  growth-handle construction of the supervised loader (D-V2-031:
+  reaction-template matches at non-junction atoms) **intersected with
+  the environment's active capacity bookkeeping** — every sampled
+  handle is executable, and the environment still enforces the exact
+  chemistry fail-closed (mask drift is a loud error, never a silent
+  skip).
+* **Parity determination (D-V2-041c).**  Whether a junction creates a
+  stereocentre is decided **before** the action commits, by stepping a
+  *cloned environment state* (shallow clone: immutable members shared,
+  per-trajectory state deep-copied) with ``chiral=None`` — the
+  environment's own assembly code is the single source of truth, and
+  the #24 rule (score the parity action exactly where the junction
+  creates a stereocentre; ``chiral=None`` otherwise, so terminal
+  objects stay a deterministic function of the scored action tuple) is
+  preserved.  The prediction is verified fail-closed against the
+  realized product.
+* **Catalog bridges (D-V2-041d).**  Growth blocks derive their
+  block-side ``HandleSpec`` (attachment + leaving atoms) by matching
+  the certified registry's **block-side reactant SMARTS, parsed from
+  the string** (the D-V2-031 RDKit segfault hazard: never template
+  objects); the #40 curation guarantee (exactly one coupling handle
+  per class) is enforced fail-closed.  Seed blocks — which are *not*
+  curated coupling blocks and may expose several growth sites — derive
+  their handles from the **molecule-side** construction
+  (``grow_handle_pool`` semantics: one spec per (atom, class) site,
+  capacity 1, no leaving atoms), which makes the environment's
+  post-placement menu coincide with the policy pool by construction.
+* **Undecided primary handle.**  Rollout decision states carry zeros
+  in the ``handle_features``/``handle_pos`` policy-level fields (the
+  same value supervised terminal/stop rows carry; the backbone does
+  not consume these fields and the pool enters the #22 head through
+  its own inputs — no exposure-bias surface exists).
+
+**Evidence:** `tests/test_gflownet_tb.py::TestPolicyRolloutDriver`
+(complete valid trajectories with grad-connected tensor log-probs,
+determinism under a fixed generator, legality masks, forced stop,
+clean backward into both groups, fail-closed contracts).
+
+**Affected:** #29 (closed), #31 (the CLI drives the driver), #42 (the
+driver consumes the #24 torsion head and the #42 terminal oracle in
+the integrated generation loop — part of #42's remaining
+integrated-generation wiring now exists), #22/#24/#39 (the heads the
+driver samples from), #38 (the TB semantics the records feed).
+
+## D-V2-042 — 2026-11-04 — The docking-backend injection point (#30)
+
+``ThreeDReward(docking_scorer=...)`` makes the #30 statement "a real
+docking engine replaces the surrogate without touching the MDP/TB
+contracts" **structural**: the backend returns a ``DockingResult``
+(``ΔG_dock`` + the attractive-only LJ component + a version-labelled
+backend identity), the default is the documented surrogate
+(:func:`surrogate_docking_scorer` — soft-core LJ + softened Coulomb,
+bit-identical to the pre-injection computation), and the #30 clamp /
+units / sign conventions are applied to **any** backend's scores
+exactly as specified.  The backend is part of the frozen configuration
+(#45 §12.4: swapping a backend is a changed training objective — a new,
+explicitly-versioned instance, never a mutation); every reward's
+telemetry records the backend identity (provenance).  Non-finite
+scores, wrong return types, and non-callable scorers fail closed.  The
+actual docking engine integration is owned by the evaluation stack
+(#34/#35 — external software on the authorized runtime); #30's own
+scope — the stationary multi-objective reward with no batch-relative
+term, the floors, the caps, and the supersession interface — is
+complete.
+
+**Evidence:** `tests/test_reward_docking_backend.py` (12 tests:
+default bit-identical, injected conventions incl. both clamp bounds,
+stationarity under any backend, fail-closed contracts, adversarial
+floor, provenance); the 50-test reward reconciliation battery +
+Suite B stay green unchanged.
+
+**Affected:** #30 (closed), #29 (the reward the TB loop consumes),
+#34/#35 (the future real docking engine injects here), #26 (the
+telemetry convention extended with ``docking_backend``).

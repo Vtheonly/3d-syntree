@@ -42,9 +42,9 @@
 | #26 TRAIN-01 | #10 (closed 2026-11-02, D-V2-014), #19 (closed S-V2-13), #20 (closed S-V2-14), #25 (implemented — only its CUDA forward criterion is gated on the authorized #36 session); **implemented + CPU-verified 2026-11-03** (S-V2-14: `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` @ `e009127`; 40 tests + the end-to-end CLI smoke; the two T4 acceptance criteria — monotonic 2-epoch descent on T4, peak reserved VRAM < 9.5 GB — await the authorized #36 runtime) | #27, #33, #43 |
 | #27 TRAIN-02 | #26 — **closed 2026-11-04** (S-V2-15: `syntree/engine/curriculum.py` + trainer/CLI integration @ `9197619`; the five issue-named difficulty axes, 9 quantile-balanced bins, the 6-stage floor-exact distribution (ε=0.03), exactly-N deterministic draws, the 0.005/patience-2 milestone machine, checkpointable state in the trainer payload; 40 tests incl. the `--curriculum` CLI smoke; both acceptance criteria verified — all 9 levels every epoch via histograms, 40-epoch smooth 6-stage progression) | #28 (satisfied) |
 | #28 TRAIN-03 | #11, #12, #27 — **all closed**; the code path is dependency-ready; the *data* dependency is external: licensed, provenance-tracked reaction data for the 2D tier (#45 §12.2 forbids pretraining claims without it) — the owner must supply or authorize deferral | #29 |
-| #29 FLOW-01 | #13, #25, #26, #38, #39* — **#13 closed 2026-11-02** (D-V2-017); **#38 closed 2026-11-01** (D-V2-009); remaining: #25, #26, #39 | #30, #31 |
-| #30 FLOW-02 | #14, #29 — **#14 closed 2026-11-02** (`syntree/chemistry/conformer.py` + `rl.py` volume floors, D-V2-015); remaining open deps: #29 | #31 |
-| #31 FLOW-03 | #29, #30 | #37 |
+| #29 FLOW-01 | #13, #25, #26, #38, #39, #42 — **ALL SATISFIED** (#13 closed 2026-11-02; #38 closed 2026-11-01 D-V2-009; #25 closed 2026-11-04 with the authorized-T4 evidence; #26 implemented + CPU-verified with its deliverable inspected; #39 closed 2026-11-03; #42's terminal-oracle deliverable exists, is tested, and is consumed end-to-end by the rollout driver); **CLOSED 2026-11-04** (S-V2-18: `LogPartitionHead` + the tensor log-prob path + `GFlowNetTrainer` + the production rollout bridge `syntree/engine/rollout.py` @ `6eccd41`; both acceptance criteria verified on the 19-state/31-trajectory DAG — exact-zero residuals at the optimal policy, learning convergence with logZ → the true partition function and R(x)/Z sampling to TV<0.15; D-V2-040/041) | #30 (satisfied), #31 (satisfied), #34 (unblocked) |
+| #30 FLOW-02 | #14, #29 — **both closed** (#14 2026-11-02 D-V2-015; #29 2026-11-04); **CLOSED 2026-11-04** (S-V2-18: the stationary core was verified at S-V2-03/D-V2-009; the remaining implementable scope — the docking-backend injection point `DockingResult`/`surrogate_docking_scorer`/`ThreeDReward(docking_scorer=...)` — landed @ `90b1035`, D-V2-042; the real docking engine is #34/#35 scope and injects through the interface) | #31 (satisfied) |
+| #31 FLOW-03 | #29, #30 — **both closed 2026-11-04**; **CLOSED 2026-11-04** (S-V2-18: `scripts/train_stage2.py` + `configs/stage2_colab_t4.json` @ `6760b3d` — the V2-canonical form of the legacy `main.py --mode rl` (D-V2-040); Stage-1 weight init with verified provenance, `--resume-auto` exact continuation, fail-closed paths; 6 CLI tests against a REAL Stage-1 fit) | #37 (one dep closer: #31 satisfied) |
 | #32 TEST-01 | #5 — **closed 2026-11-03** (`0e1bf30`, S-V2-11: the five issue-pinned Suite A batteries 293/293 green + the canonical seeding module (`syntree/utils/seeding.py`) and shard-format primitive (`syntree/data/shards.py`) that #26/#43 and #19 consume) | #33 (satisfied) |
 | #33 TEST-02 | #7, #8, #21, #25, #26, #32 — **implemented + CPU-verified 2026-11-04** (S-V2-15: the five issue-pinned batteries under `tests/suite_b/` @ `7a6ea3b`; `pytest tests/suite_b/ -v` → 47 passed / 1 skipped — the single skip is the battery-4 T4 memory measurement, which by the issue's own scope requires the authorized #36 runtime and executes there without modification) | #34 (satisfied at the CPU level; the memory battery rides #36) |
 | #34 EVAL-01 | #29 | #35, #44 |
@@ -55,7 +55,7 @@
 | #39 MODEL-06 | implied: #12, #21, #23, #25 — **closed 2026-11-03** (S-V2-12: policy side via #25 `84fd3e7`; environment side `d1a9167` — pre-seed candidate state, explicit SeedAction, covariant pose D-V2-028, TB seed accounting Property 3b, supervised anchor labels; 24 tests) | #25's #39 dependency fully satisfied; #29's remaining deps: #25, #26 |
 | #40 CHEM-06 | implied: #11 — **closed 2026-11-02** (`044adca`, 111 tests, D-V2-020) | #12 (satisfied), #44 |
 | #41 DATA-06 | implied: #11, #12 — **closed 2026-11-03** (S-V2-12, `dea8809`: full-scale benchmark — exhaustive self-retrieval 68,417/0, brute-force equivalence 2,000/0, 888.7× reduction; the #18 consumer criterion demonstrated on real data) | #18 (satisfied) |
-| #42 CHEM-07 | implied: #13, #14, #24 — **all satisfied 2026-11-02** (#24 closed `74133c8`); remaining scope: T4 benchmarking + integrated-generation wiring | — |
+| #42 CHEM-07 | implied: #13, #14, #24 — **all satisfied 2026-11-02** (#24 closed `74133c8`); remaining scope: the T4 benchmarking measurement (**advanced**: the #29 rollout driver @ `6eccd41` now consumes the #24 torsion head + the #42 oracle in the integrated generation loop) | — |
 | #43 OPS-03 | implied: #26, #36 | — |
 | #44 EVAL-03 | implied: #12, #34 — **#12 closed 2026-11-03**; remaining: #34 | — |
 
@@ -78,6 +78,10 @@ before starting any of #39–#44 (#45 §17). Update 2026-11-02 (S-V2-08):
 ```
 #5 → #6 → #21 → #23 → #24 → #25 → #26 → #27 → #28 → #29 → #30 → #31 → #37
 ```
+
+Update (S-V2-18): #29/#30/#31 are closed — the remaining chain is
+**#34 → #44 → #35 → #37** (evaluation) with **#36 → #26/#42/#43** as
+the parallel authorized-hardware track and #28 the owner decision.
 
 with the chemistry/data spur feeding in earlier:
 `#5 → #11 → #12/#15 → #18 → #19 → #26` and `#11 → #13 → #29`.

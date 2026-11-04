@@ -2238,3 +2238,204 @@ delivery. Demo tree verified complete (38 files) before any edit;
   coordinates are experimental (crystal) except the ETKDG block
   conformers, which are never drawn inside the pocket (unchanged
   demo §3 rules).
+
+## Session S-V2-18 — 2026-11-04 — #29, #30, #31 CLOSED (the FLOW track lands); S-V2-16/17 records reconciled
+
+### 0. State discovery (per #45 §25.1)
+
+Read #45 in full; fresh clone of `3d-synV2` at `af115dc` (the S-V2-17
+demo close). Read HANDOFF/STATUS/DEPENDENCIES/DECISIONS + the S-V2-14/15
+work-log entries; fetched the live GitHub issue states for all 16 open
+issues + the comment trails of #25/#26/#29/#30/#31/#36/#42/#43.
+
+**Reconciliation findings (recorded here per §25.1):**
+
+- The agent docs were **two sessions stale**: S-V2-16 (the first
+  authorized T4 battery run — `cac741e`, the cross-device
+  anchor-accumulator + CUDA-generator fixes) and S-V2-17 (the
+  authorized-session evidence comments + the protein-3D demo work)
+  landed commits and GitHub updates but no WORK_LOG entries and no
+  STATUS/HANDOFF refresh. Consequences reconciled this session:
+  - **#25 and #33 are CLOSED on GitHub** with the T4 evidence (full
+    policy fwd/bwd on the live Tesla T4: peak reserved 3.758 GiB /
+    allocated 3,295.6 MiB, zero NaN/Infs) — the STATUS rows said
+    "Implemented — Awaiting Verification". Updated.
+  - The live tracker state at session open: 28 of 40 closed; open =
+    #26, #28, #29, #30, #31, #34, #35, #36, #37, #42, #43, #44 (+ #45).
+  - The baseline suite is **1571 passed / 20 skipped** (not the 1569
+    recorded at S-V2-15 — S-V2-16's `tests/__init__.py`/fp32-probe
+    changes added 2 tests).
+- The user's session prompt named #20 (already genuinely closed at
+  S-V2-14, re-audited at S-V2-15 — not redone) and #36 (prepared; the
+  authorization gate is the operator's). The dependency graph's
+  critical path after #26's CPU-verified deliverables is
+  **#29 → #30 → #31 → #37** — this session executed exactly that CPU
+  segment.
+
+### 1. Work performed
+
+**#29 FLOW-01 — implemented, verified, CLOSED** (`6eccd41`):
+
+- `LogPartitionHead` — the #29-specified lightweight 2-layer MLP over
+  the pooled pocket latent (the backbone's `pocket_context`, 256) and
+  the seed latent (the tied catalog embedding, 64); 82,433 params
+  (0.76% of the policy assembly); zero-initialized output (documented
+  deterministic start); fail-closed input validation.
+- The differentiable tensor log-probability path: `TrajectoryStep`
+  accepts 0-dim tensors beside floats; `TrajectoryBalanceEngine`
+  gains the `log_z` override (the seed-conditioned partition function
+  enters the pinned equation without touching its mathematics); the
+  float verification path is unchanged (66 existing TB/Suite-B tests
+  stay green — verified before commit).
+- `GFlowNetTrainer` — strict FP32 via the #10 gate, AdamW with the
+  two #29-pinned groups (policy 3e-4/1e-5 continuing Stage-1 Profile
+  A; the log Z head at `lr_Z = 1e-2`, no weight decay — D-V2-040),
+  fail-closed `TrainingDivergenceError` (no NaN shields, no batch
+  skipping), gradient clipping with finite-gradient checks, separate
+  host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints carrying
+  policy + the log Z θ state + both optimizer groups + progress + RNG.
+- `syntree/engine/rollout.py` (new) — the production rollout bridge
+  `PolicyRolloutDriver`: batched lockstep rollouts (seed/anchor →
+  STOP law → handle law → family → reaction → synthon → parity →
+  torsion, all sampled from the policy's own normalized laws with the
+  driver's `torch.Generator`), tensor forward log-probabilities per
+  action component (the exact #29 decomposition), the Level-2 terminal
+  oracle + the stationary `ThreeDReward`, the catalog bridges
+  (block-side HandleSpecs from the certified reactant SMARTS —
+  string-parsed per the D-V2-031 segfault hazard; seed blocks via the
+  molecule-side construction), the parity pre-step determination via a
+  cloned env state with post-hoc fail-closed verification. Conventions
+  documented as D-V2-041 (capped-pocket frame, seed-centroid growth
+  states, molecule-side pool ∩ env capacity, undecided primary handle).
+- `AssemblyEnvironment.max_blocks` public property (the driver's STOP
+  gate; no private access).
+
+**#30 FLOW-02 — implemented, verified, CLOSED** (`90b1035`):
+
+- The docking-backend injection point: `DockingResult` (ΔG +
+  attractive-only LJ + optional surrogate telemetry + a version-labelled
+  backend identity), `surrogate_docking_scorer` as the frozen default
+  (bit-identical to the pre-injection computation — pinned), and
+  `ThreeDReward(docking_scorer=...)` construction-time injection with
+  the #30 clamp/units/sign conventions applied to any backend (D-V2-042).
+  Non-finite scores, wrong return types, and non-callable scorers fail
+  closed; every reward's telemetry records the backend provenance. The
+  real docking engine is evaluation-stack scope (#34/#35) and injects
+  through this interface — #30's own scope is complete.
+
+**#31 FLOW-03 — implemented, verified, CLOSED** (`6760b3d`):
+
+- `configs/stage2_colab_t4.json` (the frozen Stage-2 profile) +
+  `scripts/train_stage2.py` (the V2-canonical form of the issue's
+  `main.py --mode rl`; the branching `--algorithm` flag is structally
+  absent — Stage 2 IS GFlowNet-TB, #45 §12.3): catalog-H5 mask surfaces
+  + the environment BuildingBlock pool, the pocket pool from the #18
+  records + processed artifacts (the Stage-1 loaders reused), Stage-1
+  weight initialization with SHA-256 sidecar verification + exact
+  provenance telemetry, `--resume-auto` fail-closed semantics (resume
+  Stage-2 exactly / else Stage-1 / else refuse — never random weights),
+  the on-policy TB loop with deterministic (seed, update) pocket
+  permutations, per-update telemetry, checkpoint cadence + time-budget
+  graceful stop (#43 contract).
+
+### 2. Incidents / deviations (honest)
+
+- My first rollout driver draft passed `log_probs` where
+  `torch.multinomial` needs probabilities (RuntimeError on the first
+  driver test) — caught by the battery, fixed at all five sampling
+  sites.
+- The first toy-DAG training test double-stepped the environment
+  (`_replay(prefix)` + re-walking the prefix) and keyed action menus by
+  path-dependent handle indices; fixed by walking a fresh env and
+  identifying handles through order-invariant mapped-canonical-SMILES
+  tags (two assembly orders reaching the same quotient state index the
+  same law — the #38 semantics as an action identity; menu invariance
+  verified across all 19 states before use).
+- The first determinism test constructed a fresh policy per run
+  (different random weights — of course the log-probs differed); fixed
+  by sharing one instance.
+- The first #31 CLI corrupt-sidecar test crashed with a traceback (rc
+  1) instead of the fail-closed rc 2 — the init phase wasn't inside
+  the fail-closed handler; wrapped.
+- The toy exact-zero test needed fp64 tensors on the test side (a
+  default-fp32 tensor loses ~4e-8 through the engine's dtype cast —
+  documented behaviour, test corrected).
+- Two cosmetic dead-code artifacts from drafting were removed before
+  commit (`if False else` branches); `git diff --check` clean.
+
+### 3. Commands and verification (the exact evidence)
+
+- Baseline before edits: `python -m pytest tests/ -q` → **1571 passed
+  / 20 skipped**.
+- After #29: `pytest tests/test_gflownet_tb.py -q` → **26 passed**;
+  the 66 existing TB/Suite-B tests re-run green; full suite →
+  **1597 passed / 20 skipped**.
+- After #30: `pytest tests/test_reward_docking_backend.py
+  tests/test_gflownet_reconciliation.py tests/suite_b/
+  tests/test_gflownet_tb.py -q` → **133 passed / 1 T4-gated skip**.
+- After #31: `pytest tests/test_stage2_cli.py -q` → **6 passed**;
+  final full suite → **1613 passed / 20 skipped** (1571 + 42 new, zero
+  regressions; 4 m 08 s).
+- #29 acceptance 1 (flow balance on synthetic DAG rollouts): every TB
+  residual **exactly zero (< 1e-9)** at the analytically optimal policy
+  + true logZ through the tensor path; acceptance 2 (clean backward):
+  gradients reach BOTH param groups (production-path evidence), the
+  loss drops >100× over 300 updates, the learned logZ converges to the
+  true partition function (< 0.35), and 2000 sampled rollouts match
+  R(x)/Z to **TV < 0.15**.
+- #31 acceptance 1: the init record's policy-parameter SHA-256 equals
+  the Stage-1 checkpoint's model exactly (recomputed in-test);
+  acceptance 2: `--resume-auto` continues updates 2 → 4 with the full
+  history intact.
+- `git diff --check` before every commit; remote refs verified after
+  every push (`6eccd41`, `90b1035`, `6760b3d`).
+
+### 4. GitHub issue updates
+
+- #29: full evidence comment; **closed as completed**.
+- #30: full evidence comment (incl. the docking-engine supersession
+  boundary statement); **closed as completed**.
+- #31: full evidence comment; **closed as completed**.
+- #36: operator authentication handoff re-issued (the remaining
+  session criteria: the remote training launch + persisted telemetry +
+  cross-session continuation); **open**.
+- #45: session work-log comment (constitution §29-style record; no
+  issue state changed).
+
+### 5. Final state and next actions
+
+- Suite: **1613 passed / 20 skipped**. Clean-room closures: **31 of
+  40** (#29/#30/#31 this session). The FLOW track is complete; the
+  critical path is now **#34 EVAL-01 → #44 → #35 → #37** with the
+  #36-gated T4 work (#26's training run, #42's benchmark, #43's
+  cross-session resume) as the parallel hardware track.
+- Next session (CPU): **#34 EVAL-01** (deps #29 ✓ + #12 ✓; external
+  dependency: AiZynthFinder availability) — the unlinked independent
+  retrosynthesis evaluation pipeline; then #44 (both AiZynthFinder
+  tracks). Next session (hardware): the authorized #36 runtime for the
+  canonical Stage-1 launch (#26's two criteria), the #42 benchmark, and
+  the #43 continuation demonstration — the Stage-2 CLI is now ready to
+  chain there too.
+
+### 6. Honest verification ledger
+
+- Attempted: #29, #30, #31 (all three closed), plus the doc
+  reconciliation of the unrecorded S-V2-16/17 sessions.
+- Implemented: all three (code + tests landed and push-verified at
+  `6eccd41` / `90b1035` / `6760b3d`).
+- Tested locally: #29 (26 tests: the two acceptance criteria + the
+  driver battery), #30 (12 tests + the existing 50-test reward
+  battery), #31 (6 CLI tests against a REAL Stage-1 fit); full suite
+  1613/20.
+- Tested on T4: **none this session** — CPU-only sandbox; no GPU claim
+  is made (the T4-gated items are #26's training-run criteria, #42's
+  benchmark, #43's demonstration — all riding #36).
+- Scientifically verified: the TB flow identity on the enumerable DAG
+  (exact-zero residuals; reward-proportional sampling after learning),
+  the stationarity/injectability contracts of the reward, and the
+  Stage-1→Stage-2 initialization/resume provenance.
+- NOT claimed: any Stage-2 training quality result (the loss-descent
+  evidence is the toy-DAG acceptance fixture, not a production pocket
+  campaign — that requires the authorized runtime and the #28-scale
+  data decision); any docking-engine integration (the injection point
+  exists; the engine is #34/#35 scope).

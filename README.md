@@ -218,7 +218,15 @@ sandbox can never establish T4 behaviour.
 2. **Stage 2 — GFlowNet Trajectory Balance** (#29, #38): the forward
    probability includes the seed, STOP, handle, reaction, synthon, stereo,
    and torsion actions; backward semantics are resolved by #38 (see §2).
-   PPO/DPO are not production alternatives in V2.
+   PPO/DPO are not production alternatives in V2. Implemented (#29
+   closed): the seed-conditioned partition function `log Z_θ(P, s_0)`
+   (a 2-layer MLP over the pooled pocket and seed latents, trained at
+   `lr_Z = 1e-2`), the on-policy rollout driver
+   (`syntree/engine/rollout.py` — the policy drives the assembly
+   environment with its own categorical laws), the TB trainer
+   (`GFlowNetTrainer`), and the canonical CLI
+   `scripts/train_stage2.py` (#31) which initializes from Stage-1
+   weights and resumes interrupted runs exactly.
 3. **Reward (#30):** a stationary, reproducible, positive function of the
    terminal object and the fixed conditioning context only. Batch-relative
    diversity terms inside R(x) are forbidden; population diversity is
@@ -290,7 +298,7 @@ src/syntree/            # the V2 package
   chemistry/            # production pocket physics: flat-bottom soft-core
                         # LJ clash + cavity/heavy-atom volume floors (#14);
                         # reaction registry/catalog arrive with #11/#12
-  engine/               # reconciled two-level GFlowNet framework (#24
+  engine/               # GFlowNet TB engine + rollout driver + trainer
                         # geometry / #38 semantics / #42+#13 terminal
                         # oracle (production clash objective per #14) /
                         # #30 stationary reward with #14 volume floors /
@@ -367,7 +375,10 @@ repository.
   this README describes the *target* design, clearly marked as such.
 - The MDP/derivation-DAG semantics and the TB backward term are resolved
   (#38 closed with proofs and toy-DAG verification); the *trainer*
-  integration of Stage 2 (#29 full scope) is still open.
+  integration of Stage 2 is implemented and verified (#29/#30/#31 closed:
+  the logZ head + rollout driver + TB trainer, the docking-backend
+  injection point of the stationary reward, and the Stage-2 CLI with
+  exact resume).
 - GPU behaviour (T4 memory profile, throughput) is unmeasured by design —
   it requires the authorized remote workflow.
 - Data licensing and catalog access (Enamine REAL terms, PDBbind
