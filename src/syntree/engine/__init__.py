@@ -11,7 +11,15 @@ D-V2-009; issues #24/#29/#30/#38/#42):
 * :mod:`syntree.engine.gflownet` — the Trajectory Balance loss with the
   exact uniform-leaf backward policy;
 * :mod:`syntree.engine.curriculum` — the #27 Approach C quantile
-  curriculum sampler (9 levels / 6 stages / 0.03 floor).
+  curriculum sampler (9 levels / 6 stages / 0.03 floor);
+* :mod:`syntree.engine.comparative` — the #35 comparative benchmark
+  harness: frozen target manifests, deterministic bootstrap CIs,
+  paired-over-common-targets comparisons and the markdown summaries;
+* :mod:`syntree.engine.evaluator` — the #34/#44/#35 evaluation stack:
+  the fail-closed generated-SDF corpus parser, the isolated
+  AiZynthFinder retrosynthesis boundary, the stock-mismatch failure
+  vocabulary, the optional PoseBusters/Vina adapters and the
+  ``evaluation_report.json`` assembly.
 """
 
 from syntree.engine.curriculum import (
@@ -52,6 +60,31 @@ from syntree.engine.gflownet import (
     as_trajectory_steps,
 )
 from syntree.engine.rl import RewardError, ThreeDReward
+from syntree.engine.comparative import (
+    ComparativeError,
+    FrozenTarget,
+    bootstrap_ci,
+    bootstrap_rate_ci,
+    comparative_report,
+    load_frozen_targets,
+    markdown_summary,
+    method_section,
+    paired_difference_ci,
+)
+from syntree.engine.evaluator import (
+    EVAL_SCHEMA_VERSION,
+    REJECTION_CODES,
+    RETRO_FAILURE_CATEGORIES,
+    EvaluationError,
+    EvaluatedMolecule,
+    RetroSearchResult,
+    build_evaluation_report,
+    fingerprint_diversity,
+    load_generated_molecules,
+    molecular_metrics,
+    parse_aizynth_output,
+    run_aizynthfinder,
+)
 
 __all__ = [
     "CurriculumError",
@@ -87,4 +120,25 @@ __all__ = [
     "as_trajectory_steps",
     "RewardError",
     "ThreeDReward",
+    "EVAL_SCHEMA_VERSION",
+    "REJECTION_CODES",
+    "RETRO_FAILURE_CATEGORIES",
+    "EvaluationError",
+    "EvaluatedMolecule",
+    "RetroSearchResult",
+    "build_evaluation_report",
+    "fingerprint_diversity",
+    "load_generated_molecules",
+    "molecular_metrics",
+    "parse_aizynth_output",
+    "run_aizynthfinder",
+    "ComparativeError",
+    "FrozenTarget",
+    "bootstrap_ci",
+    "bootstrap_rate_ci",
+    "comparative_report",
+    "load_frozen_targets",
+    "markdown_summary",
+    "method_section",
+    "paired_difference_ci",
 ]
