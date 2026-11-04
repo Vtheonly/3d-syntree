@@ -163,6 +163,18 @@ the catalog H5 via `scripts/build_synthon_catalog.py`, the index via
 splits / trajectories via the committed drivers. The committed evidence
 copies (`docs/data/…`) pin the expected outputs (counts + SHA-256s).
 
+S-V2-17 addition (in git): the protein→molecule demo now includes
+`demo/protein_to_molecule/protein_structure_3d/` — a self-contained
+3Dmol.js 2.4.0 WebGL viewer (`protein_viewer.html`) plus headless
+Chromium renders (cartoon / active site / ligand overlay / VDW
+surface PNG+PDF, 36-frame GIF, protein-as-graph figure) with
+`render_provenance.json` fail-closed checks; reproduce via the three
+committed `demo/protein_to_molecule/scripts/render_protein_3d*.py` /
+`pocket_graph_3d.py` (first run fetches 4ITP from RCSB + 3Dmol.js
+from jsDelivr, then offline; needs playwright+Chromium, pillow,
+matplotlib). The user's zipped deliverable lives in the sandbox
+`download/` dir, not in git.
+
 ## 6. Session mechanics
 
 1. `git clone --branch 3d-synV2 …` → confirm HEAD matches the

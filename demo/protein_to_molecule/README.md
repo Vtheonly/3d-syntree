@@ -137,7 +137,9 @@ demo/protein_to_molecule/
 │   │   └── product.sdf                  (M1, crystal coordinates)
 │   ├── step_02/…                     (M1 / bromobenzene / final ligand)
 │   ├── final_ligand.sdf             (M2 — the full crystal ligand, experimental)
-│   └── raw/                          (the original extracted artifacts, .gz)
+│   └── raw/
+│       ├── bindingmoad_4ITP_1GD_{ligand.sdf,pocket.pdb}.gz   (demo sources)
+│       └── rcsb_4ITP_full.pdb.gz    (the FULL experimental structure, fetched from RCSB)
 ├── reactions/
 │   ├── step_01/
 │   │   ├── reaction_equation.{png,pdf}        (2D scheme + SMARTS + bond changes)
@@ -147,9 +149,21 @@ demo/protein_to_molecule/
 │   ├── step_02/…                     (same four figures for step 2)
 │   ├── final_construction_pathway.{png,pdf}  (seed → rxn_01 → M1 → rxn_15 → ligand)
 │   └── final_ligand_in_pocket_3d.{png,pdf}   (final ligand in the pocket)
+├── protein_structure_3d/            (see §2a — real WebGL molecular graphics)
+│   ├── full_protein_cartoon.{png,pdf}              (the whole enzyme, cartoon)
+│   ├── active_site_closeup.{png,pdf}               (pocket + Zn²⁺ + residue labels)
+│   ├── ligand_overlay_experimental_vs_reconstructed.{png,pdf}
+│   ├── protein_surface_pocket.{png,pdf}            (VDW surface, ligand in cleft)
+│   ├── protein_rotation.gif                         (36-frame 360° turntable)
+│   ├── pocket_graph_3d.{png,pdf}                   (the protein as a 3D graph)
+│   ├── protein_viewer.html                          (interactive WebGL viewer)
+│   └── render_provenance.json                       (sources, checks, sha256s)
 ├── scripts/
 │   ├── replay_trajectory.py          (re-verification + structure generation)
-│   └── generate_visualizations.py    (all figures; RDKit chemistry, Matplotlib rendering)
+│   ├── generate_visualizations.py    (reaction figures; RDKit + Matplotlib)
+│   ├── render_protein_3d.py          (builds the self-contained WebGL viewer)
+│   ├── render_protein_3d_shots.py    (headless Chromium renders + GIF + checks)
+│   └── pocket_graph_3d.py            (the protein-as-graph figures)
 └── verification/
     ├── reaction_replay.json          (per-step certified replay evidence)
     └── coordinate_provenance.json    (experimental vs computational coordinates)
@@ -162,7 +176,53 @@ renders.
 
 ---
 
-## 3. Coordinate provenance (what is experimental and what is not)
+## 2a. The protein itself — real 3D molecular graphics (3Dmol.js / WebGL)
+
+The pocket scatter figures of §2 are complemented by genuine molecular
+graphics renders of the **full experimental protein**, produced with
+**3Dmol.js 2.4.0 (WebGL) executed in headless Chromium 143 via
+Playwright**, plus a Matplotlib rendering of the protein **as an actual 3D
+node-and-edge graph**. Every render uses only real coordinates, and the
+full deposition was fetched from RCSB
+(`https://files.rcsb.org/download/4ITP.pdb`, sha256 recorded in
+`render_provenance.json`):
+
+| File | Content |
+|---|---|
+| `full_protein_cartoon.{png,pdf}` | the whole enzyme — 261-residue cartoon colored by residue position (turbo), ligand 1GD, catalytic Zn²⁺, the 32 demo-pocket residues |
+| `active_site_closeup.{png,pdf}` | pocket residues as sticks, labelled catalytic residues (His119, Thr199, Trp209, Gln92, …), ball-and-stick 1GD, gray Zn²⁺ sphere |
+| `ligand_overlay_experimental_vs_reconstructed.{png,pdf}` | experimental 1GD (cyan sticks) vs the 2-step synthetic reconstruction (orange translucent spheres) — **RMSD 0.000 Å, 21/21 atoms coincident** |
+| `protein_surface_pocket.{png,pdf}` | van der Waals surface of chain A (translucent) with 1GD nestled in the active-site cleft above Zn²⁺ |
+| `protein_rotation.gif` | 36-frame 360° turntable of the full-protein scene |
+| `pocket_graph_3d.{png,pdf}` | **the protein as a graph**: (a) Cα backbone graph — 257 nodes / 256 peptide edges; (b) binding-site atomic graph — 145 pocket atoms + 21 ligand atoms + Zn²⁺, covalent edges, dashed Zn coordination |
+| `protein_viewer.html` | self-contained interactive WebGL viewer (no network needed) — four scenes + spin, open in any browser |
+| `render_provenance.json` | renderer versions, source sha256s, frame checks, output sha256s |
+
+**Frame verification (all fail-closed, re-run by
+`render_protein_3d_shots.py`):** every one of the 145 pocket atoms matches
+the full deposition atom-for-atom (max deviation **0.000 Å**); the
+BindingMOAD ligand SDF equals the deposited 1GD HETATM coordinates (max
+deviation **0.000 Å**, 21/21 atoms); Zn²⁺–N(sulfonamide) = **1.99 Å**;
+Zn²⁺ is coordinated by His94 / His96 / His119 (distances in the
+provenance file). Still renders are 2400×1800 px = 8×6 in at 300 DPI.
+
+Reproduce with:
+
+```bash
+python scripts/render_protein_3d.py            # builds protein_viewer.html (fetches 4ITP + 3Dmol.js once)
+python scripts/render_protein_3d_shots.py       # headless Chromium renders, GIF, provenance, checks
+python scripts/pocket_graph_3d.py               # the protein-as-graph figures
+```
+
+(requires `playwright` with Chromium, `pillow`, `matplotlib`; the first
+run needs network access to RCSB and jsDelivr, afterwards everything is
+cached/offline).
+
+These renders visualize the **experimentally observed complex** —
+they are a reconstruction/visualization of crystallographic data, not an
+AI generation (see `render_provenance.json` → `purpose`).
+
+---
 
 | Structure | Coordinates | Source |
 |---|---|---|
@@ -247,7 +307,10 @@ python scripts/generate_visualizations.py          # regenerates every figure
    the per-step `protein_pocket_3d` figures: both in the original
    crystal coordinate frame, with the catalytic Zn²⁺, the 1.99 Å
    Zn–N(sulfonamide) coordination distance, and the THR199 / HIS94 /
-   HIS96 / HIS119 contact residues measured from the artifact.
+   HIS96 / HIS119 contact residues measured from the artifact. The full
+   protein itself is additionally rendered in §2a — cartoon, active-site
+   close-up, VDW surface, a rotating GIF, and the protein **as a 3D
+   graph** (`protein_structure_3d/`), all in the same crystal frame.
 10. **Can we visualize the intermediate construction stages in 3D?**
     Yes — M0 and M1 carry **true experimental coordinates** (induced
     crystal subgraphs), shown per step in

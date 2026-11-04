@@ -2117,3 +2117,124 @@ reply.
   (floor exactness, balanced bins, all-level coverage, deterministic
   streams, milestone semantics) and Suite B's mathematical invariants
   (singularity behaviour, SE(3), schema separation, TB identities).
+
+## Session S-V2-17 — 2026-11-04 — demo: real WebGL 3D protein graphics + protein-as-graph figures + zipped user deliverable
+
+### 0. State discovery
+
+Continued from HEAD `b923960` (the demo evidence commit `c5d9e2f`
+plus the train-01 fix). The user requested the demo's protein be
+rendered as an actual 3D structure ("draw the actual graph in 3d of
+the protein or use software to render it") and the demo zipped for
+delivery. Demo tree verified complete (38 files) before any edit;
+`git status --short` clean at open.
+
+### 1. Work performed
+
+- Fetched the **full experimental structure** from RCSB
+  (`https://files.rcsb.org/download/4ITP.pdb`, sha256
+  `289c9a1f4df0c3a6fd30568fbea52f958fdd378219e6387b25228367624087db`)
+  and proved the crystal-frame identity chain: TRP A5 NE1
+  full-vs-pocket Δ = **0.000 Å**; all **145/145** pocket ATOM records
+  match the deposition atom-for-atom (max dev 0.000 Å); the
+  BindingMOAD ligand SDF equals the deposited 1GD HETATM coordinates
+  (21/21 atoms, max same-element dev 0.000 Å).
+- New committed demo section `demo/protein_to_molecule/
+  protein_structure_3d/`: a **self-contained interactive 3Dmol.js
+  2.4.0 (WebGL) viewer** (`protein_viewer.html`, engine + structures
+  inlined, works offline in any browser; four scenes + spin), plus
+  headless-Chromium-143/Playwright renders at 2400×1800 px
+  (8×6 in @ 300 DPI) PNG+PDF for: full-protein cartoon (turbo
+  per-residue coloring), active-site close-up (labelled catalytic
+  residues, Zn²⁺), experimental-vs-reconstructed ligand overlay
+  (RMSD 0.000 Å), VDW-surface view; a 36-frame 360° turntable GIF;
+  and a Matplotlib **protein-as-a-3D-graph** figure (`pocket_graph_3d`):
+  (a) Cα backbone graph — 257 nodes / 256 peptide edges; (b)
+  binding-site atomic graph — 145 pocket atoms + 21 ligand atoms +
+  Zn²⁺, covalent edges + dashed Zn coordination (Zn–N(sulfonamide)
+  1.988 Å, His94/96/119 contacts in the provenance file).
+- New committed raw source artifact
+  `structures/raw/rcsb_4ITP_full.pdb.gz`; three new reproducible
+  demo scripts (`render_protein_3d.py`, `render_protein_3d_shots.py`,
+  `pocket_graph_3d.py`, self-locating `--demo-root` default);
+  `render_provenance.json` (sources + sha256s, renderer versions,
+  fail-closed checks, output sha256s, purpose statement: experimental
+  reconstruction, **not** AI generation).
+- README §2a added; directory tree + final-report Q9 updated.
+- User deliverable zipped and integrity-verified
+  (`unzip -t` clean; 38-file exact match vs disk).
+
+### 2. Incidents / deviations (honest)
+
+- **3Dmol.js LabelSpec gotcha:** the label background key is
+  `backgroundColor` (default opaque *black*); a `background` key is
+  silently ignored → labels rendered as solid black boxes. Found by
+  inspecting the minified bundle's `Label` class; fixed with named
+  colors + `bold` + thin borders.
+- **Async surface race:** 3Dmol computes surfaces asynchronously by
+  default, so screenshots raced the VDW pass (surface visible in one
+  run, absent in the next at identical styles). Fixed with
+  `$3Dmol.setSyncSurface(true)` + a 3 s wait for the surface scene —
+  the render's nonwhite-pixel ratio jumped 0.571 → 0.956, proving the
+  surface now renders deterministically.
+- `'spectrum'` is not a valid cartoon colorscheme in 2.4.0 (console
+  warnings, gray cartoon) → per-residue **turbo** colors computed in
+  Python (261 `addStyle` calls).
+- Close-up framing: `zoom(1.6)` after `zoomTo(ligand)` clipped the
+  Zn²⁺ sphere and pushed label anchors out of frame — fixed by
+  pulling back (zoom 0.72–0.82) and offsetting the Zn label along
+  the ligand→Zn axis.
+- **Render speed:** 2400×1800 with MSAA under SwiftShader ≈ 35–57 s
+  per scene; the whole battery in one invocation exceeded the
+  300 s tool timeout once → the shooter gained `--scenes` for
+  per-scene invocations (fail-closed assertions re-run per
+  invocation; provenance merges across partial runs).
+- Visual QA used the z-ai VLM (glm-5.3-flash) on downscaled previews
+  + full-res crops; iterated until all scenes passed (labels
+  legible, Zn²⁺ visible, surface present, no clipped text).
+
+### 3. Commands and verification (the exact evidence)
+
+- `python3 scripts/protein_render_html.py --demo-root …` (builds the
+  viewer; fetches 4ITP + 3dmol.min.js once, caches, then offline)
+- `python3 scripts/protein_render_shoot.py --demo-root … --scenes
+  full_protein|active_site,ligand_overlay,surface|gif`
+- `python3 scripts/pocket_graph_3d.py --demo-root …`
+- Zip: `zip -r -9 protein_to_molecule_demo.zip
+  protein_to_molecule_demo` then `unzip -t` (clean) + exact 38-file
+  set match vs disk.
+- Every shooter invocation re-runs the fail-closed assertions:
+  frame identity, 145/145 pocket atom identity, exp-vs-reconstructed
+  RMSD **0.000 Å** (same-order + nearest-pair, 0 element
+  mismatches), SDF-vs-deposited max dev **0.000 Å**.
+
+### 4. GitHub issue updates
+
+- #45: session work-log comment with the commit SHA (constitution
+  §29-style record; no issue state changed).
+
+### 5. Final state and next actions
+
+- HEAD on `3d-synV2`: this session's commit (see `git log -1`); demo
+  now carries `protein_structure_3d/` + 3 scripts + the full-protein
+  raw artifact; workspace `download/` holds the verified zip.
+- Next (unaffected): the Tier B fail-closed T4 driver for #26/#36
+  continuation.
+
+### 6. Honest verification ledger
+
+- Attempted/implemented: real 3D molecular graphics for the
+  protein→molecule demo (user-requested), rendered by committed
+  scripts only.
+- Tested locally: all renders verified by the shooter's assertions
+  + VLM visual QA; zip integrity verified byte-for-byte.
+- Tested on T4: **none** — rendering is CPU/WebGL-software work; no
+  GPU claim is made.
+- Scientifically verified: crystal-frame identity of every rendered
+  structure (0.000 Å max deviation, 145 pocket + 21 ligand atoms);
+  Zn²⁺ coordination measured from the deposition (1.99 Å to the
+  sulfonamide N; His94/96/119 distances in `render_provenance.json`).
+- NOT claimed: no AI-generated structure appears in any render; all
+  coordinates are experimental (crystal) except the ETKDG block
+  conformers, which are never drawn inside the pocket (unchanged
+  demo §3 rules).

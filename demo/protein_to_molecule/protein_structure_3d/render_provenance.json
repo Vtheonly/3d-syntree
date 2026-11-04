@@ -1,0 +1,143 @@
+{
+  "generated_utc": "2026-11-04T09:28:46.609360+00:00",
+  "purpose": "Real experimental protein 3D render for the protein-to-molecule demo. This is a reconstruction/visualization of the experimentally observed complex, NOT an AI generation.",
+  "renderer": {
+    "engine": "3Dmol.js (WebGL)",
+    "version": "2.4.0",
+    "source": "https://cdn.jsdelivr.net/npm/3dmol@2.4.0/build/3Dmol-min.js",
+    "browser": "Chromium  via Playwright 1.57.0",
+    "pdf_conversion": "Pillow 11.3.0 (raster PDF, 300 dpi)"
+  },
+  "sources": {
+    "protein_full": {
+      "file": "structures/raw/rcsb_4ITP_full.pdb.gz",
+      "fetched_from": "https://files.rcsb.org/download/4ITP.pdb",
+      "citation": "Guzel-Akdemir et al., Bioorg. Med. Chem. 21, 6674 (2013), DOI 10.1016/j.bmc.2013.08.011",
+      "method": "X-RAY DIFFRACTION",
+      "resolution_angstrom": 1.7
+    },
+    "pocket": "structures/protein.pdb (standardized demo pocket, 10 A sphere, 32 residues incl. ZN)",
+    "ligand_experimental": "structures/raw/bindingmoad_4ITP_1GD_ligand.sdf.gz (BindingMOAD)",
+    "ligand_reconstructed": "structures/final_ligand.sdf (2-step: rxn_01 then rxn_15)",
+    "zinc": "deposited ZN A 302 coordinates"
+  },
+  "verification": {
+    "crystal_frame_identity": {
+      "trp_a5_ne1_full_vs_pocket_ang": 0.0,
+      "pocket_residues_subset_of_deposition": true,
+      "pocket_atoms_with_name_resi_match": 145,
+      "pocket_atoms_total": 145,
+      "pocket_max_coord_deviation_ang": 0.0
+    },
+    "zn_coordination": {
+      "zn_xyz": [
+        14.493,
+        -1.751,
+        15.284
+      ],
+      "closest_ligand_atom": {
+        "index": 5,
+        "element": "N",
+        "distance_ang": 1.988
+      },
+      "zn_to_histidine_dist_ang": {
+        "His94": 1.963,
+        "His96": 2.052,
+        "His119": 2.066
+      }
+    },
+    "ligand_experimental_vs_reconstructed": {
+      "atom_counts": [
+        21,
+        21
+      ],
+      "bond_counts": [
+        22,
+        22
+      ],
+      "rmsd_same_order_ang": 0.0,
+      "rmsd_nearest_pair_ang": 0.0,
+      "element_mismatches_nearest_pair": 0
+    },
+    "ligand_sdf_vs_deposited_hetatm": {
+      "sdf_atoms": 21,
+      "deposited_hetatm_atoms": 21,
+      "max_same_element_deviation_ang": 0.0,
+      "atoms_without_same_element_counterpart": 0
+    }
+  },
+  "outputs": [
+    {
+      "file": "active_site_closeup.png",
+      "scene": "active_site",
+      "description": "Active-site close-up: pocket residues as sticks, catalytic residue labels, 1GD ball-and-stick, Zn2+ sphere",
+      "canvas_px": [
+        2400,
+        1800
+      ],
+      "dpi_equivalent": 300,
+      "nonwhite_pixel_ratio": 0.5623,
+      "png_bytes": 1269499,
+      "pdf_bytes": 380770
+    },
+    {
+      "file": "full_protein_cartoon.png",
+      "scene": "full_protein",
+      "description": "Full experimental protein (4ITP chain A, 261 residues) as rainbow-by-position cartoon, Zn2+ sphere, ligand 1GD sticks, pocket residues as thin sticks",
+      "canvas_px": [
+        2400,
+        1800
+      ],
+      "dpi_equivalent": 300,
+      "nonwhite_pixel_ratio": 0.1387,
+      "png_bytes": 899111,
+      "pdf_bytes": 276608
+    },
+    {
+      "file": "ligand_overlay_experimental_vs_reconstructed.png",
+      "scene": "ligand_overlay",
+      "description": "Experimental 1GD (cyan sticks) overlaid with the 2-step synthetic reconstruction (orange translucent spheres), pocket context",
+      "canvas_px": [
+        2400,
+        1800
+      ],
+      "dpi_equivalent": 300,
+      "nonwhite_pixel_ratio": 0.5992,
+      "png_bytes": 1434667,
+      "pdf_bytes": 363897
+    },
+    {
+      "file": "protein_rotation.gif",
+      "scene": "full_protein (rotation)",
+      "description": "360-degree turntable rotation of the full-protein scene, 36 frames x 10 deg",
+      "canvas_px": [
+        960,
+        720
+      ],
+      "frames": 36,
+      "frame_duration_ms": 110,
+      "nonwhite_pixel_ratio_first_frame": 0.1474,
+      "gif_bytes": 3012134
+    },
+    {
+      "file": "protein_surface_pocket.png",
+      "scene": "surface",
+      "description": "VDW surface of chain A (translucent white) with buried ligand 1GD as spheres",
+      "canvas_px": [
+        2400,
+        1800
+      ],
+      "dpi_equivalent": 300,
+      "nonwhite_pixel_ratio": 0.9551,
+      "png_bytes": 2509641,
+      "pdf_bytes": 323989
+    }
+  ],
+  "output_sha256": {
+    "active_site_closeup.png": "4985c610d815acf6fea95f971b82ad2ffe5bb2348987e9e34c26c60f803f0cd5",
+    "full_protein_cartoon.png": "b57439b93933abfbe029a216cffb7a6ccf3f2d276e2c7c086cf434bbe840e1ab",
+    "ligand_overlay_experimental_vs_reconstructed.png": "3a3fb078a1462e0a736fff32cfa4ea8bdd398fb725eec5ecbcf49914ab704559",
+    "protein_rotation.gif": "880dc803f70ddac69ef7145c2110044fe9b8cc1e4d38fbe154c9afc10e98b5ff",
+    "protein_surface_pocket.png": "51fd3a581485b796463b755b070a5d60586dadecbeca75d5819fd6d32f644fca"
+  }
+}
