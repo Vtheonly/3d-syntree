@@ -10,6 +10,8 @@ validation loader stays bit-identical pristine).
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 import torch
@@ -341,3 +343,74 @@ class TestSupervisedDataset:
         context = _context("train")
         with pytest.raises(SupervisedDataError, match="does not match"):
             SupervisedTrajectoryDataset([context], split="val")
+
+
+# ---------------------------------------------------------------------------
+# S-V2-17 regression: hydrogen-laden artifacts (the PDBbind layout)
+# ---------------------------------------------------------------------------
+
+class TestHydrogenLadenArtifacts:
+    """PDBbind ligand artifacts carry explicit hydrogens; CrossDocked and
+    BindingMOAD ones do not.  The records are defined on the heavy-atom
+    graph (the #18 extractor's ``removeHs=True`` supplier convention), so
+    the supervised loader must parse artifacts the same way — loading
+    with ``removeHs=False`` re-derives a different seed/step-count for
+    H-laden artifacts and trips the fail-closed record/artifact
+    cross-check (first observed on the authorized Tesla T4, S-V2-17:
+    ``pdbbind_1px4: re-derived seed graph disagrees with the record``).
+    """
+
+    @staticmethod
+    def _h_laden_artifact(tmp_path, record):
+        """Write the fixture ligand WITH explicit Hs, gzipped (PDBbind layout)."""
+        import gzip
+
+        h_laden = Chem.AddHs(_embed(LIGAND_SMILES))
+        path = os.path.join(str(tmp_path), f"{record['complex_id']}_ligand.sdf.gz")
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            writer = Chem.SDWriter(handle)
+            writer.write(h_laden)
+            writer.close()
+        return path, h_laden
+
+    def test_load_complex_strips_hydrogens_like_the_extractor(self, tmp_path):
+        import importlib.util
+
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec = importlib.util.spec_from_file_location(
+            "train_stage1", os.path.join(repo_root, "scripts", "train_stage1.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        record = _record()
+        path, _ = self._h_laden_artifact(tmp_path, record)
+        # the pocket artifact (uncompressed layout, as the driver writes it)
+        pocket = _pocket(_embed(LIGAND_SMILES))
+        symbols = {6: "C", 7: "N", 8: "O", 16: "S"}
+        lines = ["HEADER    S-V2-17 REGRESSION POCKET"]
+        for i, (pos, z) in enumerate(zip(pocket.positions, pocket.atomic_numbers), start=1):
+            x, y, zz = (float(v) for v in pos)
+            sym = symbols[int(z)]
+            lines.append(
+                f"ATOM  {i:5d} {sym:>4s} {sym:>3s} A{i:4d}    "
+                f"{x:8.3f}{y:8.3f}{zz:8.3f}  1.00  0.00          {sym:>2s}"
+            )
+        with open(os.path.join(str(tmp_path), f"{record['complex_id']}_pocket.pdb"), "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        ligand, _pocket_def = module._load_complex(str(tmp_path), record)
+        # the extractor convention: the heavy-atom graph, no explicit H
+        assert not any(a.GetSymbol() == "H" for a in ligand.GetAtoms())
+        assert ligand.GetNumAtoms() == _embed(LIGAND_SMILES).GetNumAtoms()
+        # ... and therefore the fail-closed cross-check passes
+        context = build_complex_context(record, ligand, _pocket(ligand))
+        assert context.complex_id == record["complex_id"]
+        assert len(context.record["steps"]) == len(record["steps"])
+
+    def test_h_laden_ligand_reproduces_the_t4_failure(self):
+        """The pre-fix behaviour (removeHs=False) fails closed — pinned here
+        so the convention can never silently drift again."""
+        record = _record()
+        h_laden = Chem.AddHs(_embed(LIGAND_SMILES))
+        with pytest.raises(SupervisedDataError, match="re-derived seed graph"):
+            build_complex_context(record, h_laden, _pocket(h_laden))

@@ -71,7 +71,19 @@ def _load_records(trajectories_dir: str, split: str):
 
 
 def _load_complex(processed_dir: str, record: dict):
-    """Load one complex's crystal ligand + pocket from the processed artifacts."""
+    """Load one complex's crystal ligand + pocket from the processed artifacts.
+
+    The ligand is parsed exactly the way the #18 extractor parses it
+    (``removeHs=True`` — ``build_trajectories.py``'s SDMolSupplier
+    convention): PDBbind artifacts carry explicit hydrogens while
+    CrossDocked/MOAD ones do not, and the canonical decomposition (and
+    therefore the record's seed graph, step count and every
+    ``product_smiles``) is defined on the heavy-atom graph.  Loading with
+    ``removeHs=False`` re-derives a *different* seed for H-laden
+    artifacts and trips the fail-closed record/artifact cross-check in
+    ``build_complex_context`` (first observed on the authorized T4,
+    S-V2-17: ``pdbbind_1px4``).
+    """
     from rdkit import Chem
 
     complex_id = str(record["complex_id"])
@@ -82,9 +94,9 @@ def _load_complex(processed_dir: str, record: dict):
 
         with gzip.open(ligand_path + ".gz", "rt", encoding="utf-8") as handle:
             ligand_block = handle.read()
-        ligand = Chem.MolFromMolBlock(ligand_block, removeHs=False, sanitize=True)
+        ligand = Chem.MolFromMolBlock(ligand_block, removeHs=True, sanitize=True)
     else:
-        ligand = Chem.MolFromMolFile(ligand_path, removeHs=False, sanitize=True)
+        ligand = Chem.MolFromMolFile(ligand_path, removeHs=True, sanitize=True)
     if ligand is None:
         raise ValueError(f"{complex_id}: cannot parse the crystal ligand SDF")
     if not ligand.GetNumConformers():
