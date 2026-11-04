@@ -1,0 +1,532 @@
+{
+ "example": {
+  "complex_id": "bindingmoad_4ITP_1GD",
+  "split": "train",
+  "source": "BindingMOAD (full-scale #18 extraction, 2026-11-03)",
+  "pdb_id": "4ITP",
+  "final_ligand_smiles": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+  "n_steps": 2
+ },
+ "checks": [
+  {
+   "check": "crystal ligand artifact parses + sanitizes",
+   "passed": true
+  },
+  {
+   "check": "crystal ligand has an experimental conformer",
+   "passed": true
+  },
+  {
+   "check": "catalog artifact is the pinned immutable build",
+   "passed": true,
+   "sha256": "8b8c13a0581ec91db6ace643e13d9d46c8b29211e1a264b2bdd62bb90bf2ab7e"
+  },
+  {
+   "check": "seed is a real certified catalog row (id + row + class)",
+   "passed": true,
+   "block_id": "REC0153714",
+   "row": 39841,
+   "row_matches_record": true,
+   "smiles": "CC(=O)O.NCc1ccc(S(N)(=O)=O)cc1",
+   "synthon_class": "",
+   "seed_classes": "alcohol|amine"
+  },
+  {
+   "check": "seed fragment derives from the catalog row (salt form -> free amine)",
+   "passed": true,
+   "catalog_form": "CC(=O)O.NCc1ccc(S(N)(=O)=O)cc1",
+   "seed_canonical": "NCc1ccc(S(N)(=O)=O)cc1",
+   "catalog_fragments": [
+    "CC(=O)O",
+    "NCc1ccc(S(N)(=O)=O)cc1"
+   ]
+  },
+  {
+   "check": "step 1: incoming block is a real certified catalog row",
+   "passed": true,
+   "block_id": "REC0176965",
+   "row": 4713,
+   "smiles": "CC(=O)Cl",
+   "synthon_class": "acid_chloride",
+   "required_by_reaction": "acid_chloride"
+  },
+  {
+   "check": "step 2: incoming block is a real certified catalog row",
+   "passed": true,
+   "block_id": "REC0127681",
+   "row": 35887,
+   "smiles": "Brc1ccccc1",
+   "synthon_class": "aryl_bromide",
+   "required_by_reaction": "aryl_bromide"
+  },
+  {
+   "check": "step 1: reaction rxn_01 belongs to the certified registry (32 reactions)",
+   "passed": true,
+   "name": "amide formation (acid chloride + amine)",
+   "family": "amide_and_carbamate",
+   "smarts": "[NX3;H2,H1:4].[CX3:1](=[OX1:2])[Cl:3]>>[CX3:1](=[OX1:2])[NX3:4]"
+  },
+  {
+   "check": "step 1: certified forward replay reproduces the recorded product graph",
+   "passed": true,
+   "reagents": [
+    "NCc1ccc(S(N)(=O)=O)cc1",
+    "CC(=O)Cl"
+   ],
+   "replay_products": [
+    "CC(=O)NCc1ccc(S(N)(=O)=O)cc1",
+    "CC(=O)NS(=O)(=O)c1ccc(CN)cc1"
+   ],
+   "recorded_product": "CC(=O)NCc1ccc(S(N)(=O)=O)cc1"
+  },
+  {
+   "check": "step 1: intermediate is chemically valid (sanitized, neutral)",
+   "passed": true,
+   "formal_charge": 0,
+   "chiral_centers": [],
+   "formula": "C9H12N2O3S"
+  },
+  {
+   "check": "step 2: reaction rxn_15 belongs to the certified registry (32 reactions)",
+   "passed": true,
+   "name": "alkyl Negishi coupling (alkylzinc + aryl bromide)",
+   "family": "cross_coupling_cc",
+   "smarts": "[CX4;H2,H3:1][Zn:4][Cl:5].[c:2][Br:3]>>[CX4:1][c:2]"
+  },
+  {
+   "check": "step 2: certified forward replay reproduces the recorded product graph",
+   "passed": true,
+   "reagents": [
+    "NS(=O)(=O)c1ccc(CNC(=O)[CH2][Zn][Cl])cc1",
+    "Brc1ccccc1"
+   ],
+   "replay_products": [
+    "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1"
+   ],
+   "recorded_product": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1"
+  },
+  {
+   "check": "step 2: intermediate is chemically valid (sanitized, neutral)",
+   "passed": true,
+   "formal_charge": 0,
+   "chiral_centers": [],
+   "formula": "C15H16N2O3S"
+  },
+  {
+   "check": "final reconstructed molecule == experimentally observed crystal ligand (canonical isomeric SMILES)",
+   "passed": true,
+   "reconstructed": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+   "crystal": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+   "record": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1"
+  },
+  {
+   "check": "full graph isomorphism reconstructed vs crystal (connectivity + bond orders)",
+   "passed": true
+  },
+  {
+   "check": "atom identity / formal charges / stereochemistry per acceptance contract (neutral; no stereocentres in this ligand)",
+   "passed": true,
+   "n_atoms": 21,
+   "formula": "C15H16N2O3S"
+  },
+  {
+   "check": "step 1: junction dihedral + torsion bin reproduce from the experimental crystal coordinates",
+   "passed": true,
+   "order": 1,
+   "unique_substructure_map_into_crystal": true,
+   "map": [
+    0,
+    15,
+    16,
+    14,
+    13,
+    12,
+    3,
+    4,
+    9,
+    6,
+    5,
+    7,
+    8,
+    10,
+    11
+   ],
+   "added_bond_crystal_indices": [
+    [
+     0,
+     15
+    ],
+    [
+     15,
+     16
+    ],
+    [
+     15,
+     14
+    ]
+   ],
+   "junction_bond_crystal_indices": [
+    15,
+    14
+   ],
+   "dihedral_candidates": [
+    {
+     "atoms": [
+      0,
+      15,
+      14,
+      13
+     ],
+     "dihedral_rad": 3.1142375251669874
+    },
+    {
+     "atoms": [
+      16,
+      15,
+      14,
+      13
+     ],
+     "dihedral_rad": 0.010335362912271284
+    }
+   ],
+   "recomputed_dihedral_rad": 0.010335362912271284,
+   "dihedral_atom_indices": [
+    16,
+    15,
+    14,
+    13
+   ],
+   "dihedral_matches_record": true,
+   "recomputed_torsion_bin": 19,
+   "torsion_bin_matches_record": true
+  },
+  {
+   "check": "step 2: junction dihedral + torsion bin reproduce from the experimental crystal coordinates",
+   "passed": true,
+   "order": 2,
+   "unique_substructure_map_into_crystal": true,
+   "map": [
+    5,
+    6,
+    7,
+    8,
+    9,
+    4,
+    3,
+    12,
+    13,
+    14,
+    15,
+    16,
+    0,
+    17,
+    1,
+    18,
+    2,
+    19,
+    20,
+    11,
+    10
+   ],
+   "added_bond_crystal_indices": [
+    [
+     0,
+     17
+    ],
+    [
+     17,
+     1
+    ],
+    [
+     1,
+     18
+    ],
+    [
+     18,
+     2
+    ],
+    [
+     2,
+     19
+    ],
+    [
+     19,
+     20
+    ],
+    [
+     20,
+     17
+    ]
+   ],
+   "junction_bond_crystal_indices": [
+    0,
+    17
+   ],
+   "dihedral_candidates": [
+    {
+     "atoms": [
+      15,
+      0,
+      17,
+      1
+     ],
+     "dihedral_rad": 2.481023231631709
+    },
+    {
+     "atoms": [
+      15,
+      0,
+      17,
+      20
+     ],
+     "dihedral_rad": -0.6264314098541646
+    }
+   ],
+   "recomputed_dihedral_rad": 2.481023231631709,
+   "dihedral_atom_indices": [
+    15,
+    0,
+    17,
+    1
+   ],
+   "dihedral_matches_record": true,
+   "recomputed_torsion_bin": 33,
+   "torsion_bin_matches_record": true
+  }
+ ],
+ "steps": [
+  {
+   "order": 1,
+   "reaction_id": "rxn_01",
+   "reaction_name": "amide formation (acid chloride + amine)",
+   "family": "amide_and_carbamate",
+   "reaction_smarts": "[NX3;H2,H1:4].[CX3:1](=[OX1:2])[Cl:3]>>[CX3:1](=[OX1:2])[NX3:4]",
+   "mechanism_note": "nucleophilic acyl substitution at an acid chloride; the amide C-N partial double bond pins the junction planar trans (resonance lock)",
+   "leaving_group_molecule": "none (molecule-side amines react without leaving atoms)",
+   "leaving_group_block": "chloride (deleted)",
+   "reagents": [
+    "NCc1ccc(S(N)(=O)=O)cc1",
+    "CC(=O)Cl"
+   ],
+   "recorded_product_smiles": "CC(=O)NCc1ccc(S(N)(=O)=O)cc1",
+   "replay_product_smiles": [
+    "CC(=O)NCc1ccc(S(N)(=O)=O)cc1",
+    "CC(=O)NS(=O)(=O)c1ccc(CN)cc1"
+   ],
+   "replay_product_count": 2,
+   "recorded_replay_product_count": 2,
+   "replay_product_count_matches_record": true,
+   "dihedral_rad_recorded": 0.010335362912271254,
+   "torsion_bin_recorded": 19
+  },
+  {
+   "order": 2,
+   "reaction_id": "rxn_15",
+   "reaction_name": "alkyl Negishi coupling (alkylzinc + aryl bromide)",
+   "family": "cross_coupling_cc",
+   "reaction_smarts": "[CX4;H2,H3:1][Zn:4][Cl:5].[c:2][Br:3]>>[CX4:1][c:2]",
+   "mechanism_note": "Pd/Ni-catalysed sp3-sp2 coupling (Negishi variant for alkyl centres); primary alkylzinc only \u2014 no beta-hydride stereochemistry reaches the junction (documented)",
+   "leaving_group_molecule": "zinc + chloride (deleted)",
+   "leaving_group_block": "bromide (deleted)",
+   "reagents": [
+    "NS(=O)(=O)c1ccc(CNC(=O)[CH2][Zn][Cl])cc1",
+    "Brc1ccccc1"
+   ],
+   "recorded_product_smiles": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+   "replay_product_smiles": [
+    "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1"
+   ],
+   "replay_product_count": 1,
+   "recorded_replay_product_count": 1,
+   "replay_product_count_matches_record": true,
+   "dihedral_rad_recorded": 2.481023231631709,
+   "torsion_bin_recorded": 33
+  }
+ ],
+ "provenance": {
+  "zn_coordination_distances_angstrom": {
+   "N5": 1.99,
+   "S6": 3.09
+  }
+ },
+ "geometry": [
+  {
+   "order": 1,
+   "unique_substructure_map_into_crystal": true,
+   "map": [
+    0,
+    15,
+    16,
+    14,
+    13,
+    12,
+    3,
+    4,
+    9,
+    6,
+    5,
+    7,
+    8,
+    10,
+    11
+   ],
+   "added_bond_crystal_indices": [
+    [
+     0,
+     15
+    ],
+    [
+     15,
+     16
+    ],
+    [
+     15,
+     14
+    ]
+   ],
+   "junction_bond_crystal_indices": [
+    15,
+    14
+   ],
+   "dihedral_candidates": [
+    {
+     "atoms": [
+      0,
+      15,
+      14,
+      13
+     ],
+     "dihedral_rad": 3.1142375251669874
+    },
+    {
+     "atoms": [
+      16,
+      15,
+      14,
+      13
+     ],
+     "dihedral_rad": 0.010335362912271284
+    }
+   ],
+   "recomputed_dihedral_rad": 0.010335362912271284,
+   "dihedral_atom_indices": [
+    16,
+    15,
+    14,
+    13
+   ],
+   "dihedral_matches_record": true,
+   "recomputed_torsion_bin": 19,
+   "torsion_bin_matches_record": true
+  },
+  {
+   "order": 2,
+   "unique_substructure_map_into_crystal": true,
+   "map": [
+    5,
+    6,
+    7,
+    8,
+    9,
+    4,
+    3,
+    12,
+    13,
+    14,
+    15,
+    16,
+    0,
+    17,
+    1,
+    18,
+    2,
+    19,
+    20,
+    11,
+    10
+   ],
+   "added_bond_crystal_indices": [
+    [
+     0,
+     17
+    ],
+    [
+     17,
+     1
+    ],
+    [
+     1,
+     18
+    ],
+    [
+     18,
+     2
+    ],
+    [
+     2,
+     19
+    ],
+    [
+     19,
+     20
+    ],
+    [
+     20,
+     17
+    ]
+   ],
+   "junction_bond_crystal_indices": [
+    0,
+    17
+   ],
+   "dihedral_candidates": [
+    {
+     "atoms": [
+      15,
+      0,
+      17,
+      1
+     ],
+     "dihedral_rad": 2.481023231631709
+    },
+    {
+     "atoms": [
+      15,
+      0,
+      17,
+      20
+     ],
+     "dihedral_rad": -0.6264314098541646
+    }
+   ],
+   "recomputed_dihedral_rad": 2.481023231631709,
+   "dihedral_atom_indices": [
+    15,
+    0,
+    17,
+    1
+   ],
+   "dihedral_matches_record": true,
+   "recomputed_torsion_bin": 33,
+   "torsion_bin_matches_record": true
+  }
+ ],
+ "coordinate_provenance": {
+  "experimental_crystal_coordinates": [
+   "structures/protein.pdb (pocket, X-ray)",
+   "structures/seed.sdf (induced crystal subgraph)",
+   "structures/step_XX/reactant_intermediate.sdf (induced crystal subgraph)",
+   "structures/step_XX/product.sdf (induced crystal subgraph)",
+   "structures/final_ligand.sdf (the full crystal ligand)"
+  ],
+  "computational_coordinates": [
+   "structures/step_XX/incoming_building_block.sdf (RDKit ETKDG conformers, seed 2026 \u2014 the incoming blocks have NO experimentally established position in the pocket)"
+  ],
+  "no_fabricated_coordinates": true
+ },
+ "summary": {
+  "checks_total": 18,
+  "checks_passed": 18,
+  "all_passed": true
+ }
+}

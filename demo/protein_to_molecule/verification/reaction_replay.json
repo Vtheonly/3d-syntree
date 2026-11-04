@@ -1,0 +1,49 @@
+[
+ {
+  "order": 1,
+  "reaction_id": "rxn_01",
+  "reaction_name": "amide formation (acid chloride + amine)",
+  "family": "amide_and_carbamate",
+  "reaction_smarts": "[NX3;H2,H1:4].[CX3:1](=[OX1:2])[Cl:3]>>[CX3:1](=[OX1:2])[NX3:4]",
+  "mechanism_note": "nucleophilic acyl substitution at an acid chloride; the amide C-N partial double bond pins the junction planar trans (resonance lock)",
+  "leaving_group_molecule": "none (molecule-side amines react without leaving atoms)",
+  "leaving_group_block": "chloride (deleted)",
+  "reagents": [
+   "NCc1ccc(S(N)(=O)=O)cc1",
+   "CC(=O)Cl"
+  ],
+  "recorded_product_smiles": "CC(=O)NCc1ccc(S(N)(=O)=O)cc1",
+  "replay_product_smiles": [
+   "CC(=O)NCc1ccc(S(N)(=O)=O)cc1",
+   "CC(=O)NS(=O)(=O)c1ccc(CN)cc1"
+  ],
+  "replay_product_count": 2,
+  "recorded_replay_product_count": 2,
+  "replay_product_count_matches_record": true,
+  "dihedral_rad_recorded": 0.010335362912271254,
+  "torsion_bin_recorded": 19
+ },
+ {
+  "order": 2,
+  "reaction_id": "rxn_15",
+  "reaction_name": "alkyl Negishi coupling (alkylzinc + aryl bromide)",
+  "family": "cross_coupling_cc",
+  "reaction_smarts": "[CX4;H2,H3:1][Zn:4][Cl:5].[c:2][Br:3]>>[CX4:1][c:2]",
+  "mechanism_note": "Pd/Ni-catalysed sp3-sp2 coupling (Negishi variant for alkyl centres); primary alkylzinc only \u2014 no beta-hydride stereochemistry reaches the junction (documented)",
+  "leaving_group_molecule": "zinc + chloride (deleted)",
+  "leaving_group_block": "bromide (deleted)",
+  "reagents": [
+   "NS(=O)(=O)c1ccc(CNC(=O)[CH2][Zn][Cl])cc1",
+   "Brc1ccccc1"
+  ],
+  "recorded_product_smiles": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+  "replay_product_smiles": [
+   "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1"
+  ],
+  "replay_product_count": 1,
+  "recorded_replay_product_count": 1,
+  "replay_product_count_matches_record": true,
+  "dihedral_rad_recorded": 2.481023231631709,
+  "torsion_bin_recorded": 33
+ }
+]
