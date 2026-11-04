@@ -2439,3 +2439,83 @@ issues + the comment trails of #25/#26/#29/#30/#31/#36/#42/#43.
   campaign — that requires the authorized runtime and the #28-scale
   data decision); any docking-engine integration (the injection point
   exists; the engine is #34/#35 scope).
+
+## Session S-V2-19 — 2026-11-05 — the authorized-T4 data reconstruction bit-exact; the D-V2-043 pool fix; the runtime-recycle recovery engineering (session in progress — the T4 training run pending on free-tier capacity)
+
+### 0. State discovery
+
+Read #45 + HANDOFF/STATUS/DEPENDENCIES/DECISIONS at `4dea80b` (the
+S-V2-18 close). The authorized-hardware track B was the plan (HANDOFF
+§1.B): #26's two training-run criteria + #36's remaining session
+criteria + #43's profiling/resume, all riding the authorized runtime.
+
+**Runtime reality:** the sandbox recycle since S-V2-17 also lost the
+Colab CLI auth state; the OAuth bridge (`scripts/colab_auth_phase*.py`
++ token backup) restored it — the owner's refresh token survived.
+The `syntree-t4` session itself was gone (free-tier recycle #1).
+
+### 1. The full-chain bit-exact reproduction (runtime recycle #1)
+
+`scripts/runtime_full_chain.sh` (committed this session, sanitized)
+ran end-to-end on a fresh T4 runtime: env (torch 2.11.0+cu130) → §29.2
+preflight (Tesla T4 14,912.7 MiB cc 7.5; host 12,975.5/11,303.6 MiB) →
+catalog sha256 `8b8c13a0…` MATCH → raws md5-verified → **204,005
+preprocess records exact** → splits **train 136,764 / val 17,096 /
+test 17,095, 22,387 clusters, zero leakage** → index byte-deterministic
+`ea57e867…` (888.7× reduction, 1.84 µs) → extraction 170,955/170,955
+→ **TRAJECTORY_BITEXACT: PASS** (all three pinned .pt SHA-256s) →
+portable bundle → HF persistence. Suite-B re-run on the T4 for the
+record: 47 passed / 1 by-design skip; the memory battery
+`B=12 × cap-700: peak reserved 3.758 GiB / allocated 3,295.6 MiB`
+(exact reproduction of S-V2-16/17).
+
+### 2. The D-V2-043 fix — the first canonical launch failed closed (the real bug)
+
+`train_chain.sh` T1 crashed in the loader: `pdbbind_4itp: the step-2
+junction (atom 0, class 'alkylzinc') is not in the detected handle
+pool`.  Diagnosis (the census over all 161 train+val contexts, 20 step
+views): D-V2-031 matched the molecule-side **reactant template**
+against the **product-form crystal graph** — for the nine non-empty
+molecule-side grafts (Br / Cl / ZnCl / B(OH)₂) the leaving group is by
+construction absent from every crystal product graph, so those handle
+classes were structurally invisible (4ITP's Negishi step reacts a
+product-form methyl as CH₂–ZnCl; every aryl C-H was equally blind).
+Fixed by reactant-form graft matching (`apply_graft` — the extractor's
+own certified reconstruction; empty-graft classes unchanged; graft
+incompatibility = not-a-handle, the `graft_failed` vocabulary).
+An unsound SMILES-keyed instance cache (same graph, different atom
+order — the PDBbind vs MOAD parses of the same 4ITP ligand) was caught
+by the shuffled-order loader materialization and removed; ~1 ms/pool
+measured.  The fix corrects both consumers: the #26 supervised pool
+AND the #29 rollout driver's generation pool.  Evidence: +2 supervised
+regression tests; the loader materializes 241 train + 101 val items
+across 3 shuffle orders (0 failures); the CPU descent smoke widened to
+6 seeded epochs (2-epoch means were noise-dominated at 1 optimizer
+step/epoch under the honest ~15-row action space; descent verified at
+torch seeds 0..9); **suite 1615 passed / 20 skipped**.  Commit
+`b7e0f3d` (+ the decision D-V2-043 in DECISIONS.md).
+
+### 3. The recovery engineering (runtime recycle #2 + upstream drift)
+
+The runtime was recycled again ~2 min into the first diagnosis poll.
+Stage-11's HF bundle enabled a ~10-minute recovery path — but the
+bundle itself carried only ligands (the packer `break`-after-first-
+suffix bug): 194 pockets were regenerated locally from the
+checksummed raws (the deterministic (protein, heavy-atom-centroid,
+10 Å) function; 159 CrossDocked streamed + 13 PDBbind + 22 MOAD RCSB
+fetches), the packer fixed fail-closed at the source (refuses
+incomplete bundles), and the **complete 388-artifact bundle
+re-persisted to HF** (`data/training_bundle.tar`).  Upstream drift
+observed and handled: the PDBbind mirror `photonmz/pbpp-2020` was
+renamed `photonmz/pdbbindpp-2020` (identical bytes, md5-verified).
+The three runtime drivers are committed sanitized (`02f4443`):
+`runtime_full_chain.sh` / `runtime_restore_from_hf.sh` /
+`runtime_train_chain.sh`.
+
+### 4. Pending (free-tier T4 capacity)
+
+The T4 assign endpoint has returned Service Unavailable through the
+retry window (balance 0.00 — no compute units to buy priority).  The
+training chain (`launch_final.sh`: restore → D-V2-043 precheck on the
+runtime → suite-B → T1–T4) is staged and ready; **#26/#36/#43 remain
+open pending that run** — nothing is claimed without it.

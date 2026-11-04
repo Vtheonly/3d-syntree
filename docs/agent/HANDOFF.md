@@ -5,66 +5,64 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-04, session S-V2-18 close (**the FLOW track
-landed and closed: #29 FLOW-01** — `LogPartitionHead` (the
-seed-conditioned 2-layer logZ MLP, lr_Z = 1e-2), the differentiable
-tensor log-probability path, `GFlowNetTrainer`, and the production
-rollout bridge `syntree/engine/rollout.py` @ `6eccd41`, 26 tests, both
-acceptance criteria verified on the 19-state DAG; **#30 FLOW-02** — the
-docking-backend injection point @ `90b1035`, 12 tests; **#31 FLOW-03**
-— `scripts/train_stage2.py` + `configs/stage2_colab_t4.json` @
-`6760b3d`, 6 CLI tests; suite **1613/20**; clean-room closures **31/40**.
-Also reconciled this session: the previously unrecorded S-V2-16/17
-sessions — **#25 and #33 are CLOSED on GitHub with the authorized-T4
-evidence** — and #20 in the user's prompt was already genuinely closed;
-it was not redone.)
+**Last updated:** 2026-11-05, session S-V2-19 (in progress; see
+WORK_LOG §S-V2-19): the authorized-T4 data reconstruction completed
+**bit-exact** (204,005 records; splits 136,764/17,096/17,095
+zero-leakage; index byte-deterministic; TRAJECTORY_BITEXACT: PASS on
+all three pinned .pt SHA-256s); the first canonical training launch
+failed closed on a real bug — **D-V2-043** fixed at `b7e0f3d`
+(reactant-form graft matching in the molecule-side pool; suite
+**1615/20**; the #29 rollout pool corrected too); the runtime-recycle
+recovery is engineered and committed (`02f4443`: the sanitized
+`scripts/runtime_{full_chain,restore_from_hf,train_chain}.sh` drivers
++ the complete 388-artifact training bundle persisted to HF
+`JJKK1212/3d-syntree-v2-runs` `data/training_bundle.tar`).  **The
+remaining work is exactly one authorized-T4 session: the training run
+closure of #26/#36/#43** — blocked only by free-tier T4 capacity at
+session close (the assign endpoint returned Service Unavailable
+through the retry window; balance 0.00).
 
 ## 1. Continuation instruction
 
 ```
-Next session — two parallel tracks; pick per authorization state:
+Next session — the authorized-hardware closure (everything is staged):
 
-A. CPU track (no authorization needed): #34 EVAL-01 is the
-   dependency-ready critical-path issue (deps #29 ✓ closed S-V2-18,
-   #12 ✓ closed; its external dependency is AiZynthFinder availability
-   — check installability first; if unavailable, mark blocked with the
-   precise reason and move to #44's preparatory scope or #35 prep).
-   Then #44 (both AiZynthFinder tracks) → #35 → #37.
+A. The one remaining authorized-hardware step (S-V2-19 left it exactly
+   here): when a T4 is assignable, on the runtime run
+   `scripts/runtime_restore_from_hf.sh` (env + preflight + catalog +
+   the COMPLETE bundle: trajectories + splits + index + 194 ligand AND
+   pocket artifacts, checksums re-verified) — then the staged
+   launch_final pattern: the D-V2-043 precheck (materialize all 241
+   train + 101 val items, 2 shuffle orders) → `pytest tests/suite_b/`
+   → `scripts/runtime_train_chain.sh` (T1 time-budget stop; T2
+   SIGKILL + sidecar integrity; T3 resume to max_epochs_reached; T4
+   monotonic-descent + <9.5 GiB VRAM verification + HF run
+   persistence).  That single chain closes #26 (both acceptance
+   criteria), #36 (the launch + persisted telemetry + #43 continuation)
+   and #43 (the measured profile + session-safe resume).  Set
+   HF_TOKEN in the runtime env (never embedded — D-V2-024).  Free-tier
+   reality: the assign endpoint may return Service Unavailable for
+   hours; poll `colab new -s syntree-t4 --gpu T4` patiently (~2-minute
+   intervals), and expect recycles mid-chain (the restore driver turns
+   a recycle into ~10 minutes, not ~65).
 
-B. Authorized-hardware track (the operator must confirm a live Colab
-   runtime per #45 §29.1 — re-issue the exact `colab ssh` commands and
-   stop at the authentication boundary; S-V2-16/17 already captured a
-   session `syntree-t4`, the T4/VRAM verification, the §28.4 preflight
-   and the fwd/bwd peaks, so the REMAINING criteria are):
-     1. the #26 data reconstruction on the runtime (raws →
-        preprocessing → splits → index → trajectories → catalog, per
-        docs/data/trajectories/README.md), then the pinned canonical
-        launch:
-        python scripts/train_stage1.py --config configs/train_colab_t4.json \
-          --trajectories <dir> --processed <dir> --catalog <h5> \
-          --run-dir /content/runs/stage1_t4 --device cuda \
-          --time-budget-seconds 8400
-        → closes #26's two criteria (monotonic 2-epoch descent; peak
-        reserved VRAM < 9.5 GB with zero OOM skips) and #36's launch
-        criteria.
-     2. `pytest tests/suite_b/ -v` on the runtime (the memory battery
-        already ran there once — re-run for the record).
-     3. #43's cross-session continuation: stop at the time budget,
-        reconnect in a later authorized session, resume, verify the
-        exact next batch — then Stage-2 chaining via
-        `scripts/train_stage2.py --resume-auto` (now implemented).
-     4. #42's T4 benchmarking of the terminal refinement oracle.
+B. CPU track (if no runtime): #34 EVAL-01 remains the
+   dependency-ready critical path (deps closed; the external
+   dependency is AiZynthFinder availability — check installability
+   first).  Then #44 → #35 → #37.  #42's T4 benchmark rides the next
+   authorized session alongside A.
 
-If the operator has NOT authenticated: do track A. Do NOT claim any
-GPU execution; the dev sandbox is CPU-only by constitution (#45 §5–§6).
+If the operator has NOT authenticated and the CLI token is stale: do
+NOT claim any GPU execution; re-issue the §29.1 handoff. The dev
+sandbox is CPU-only by constitution (#45 §5–§6).
 
-Do NOT redo: #29/#30/#31 (closed with evidence — rerun
+Do NOT redo: the S-V2-19 work (the bit-exact reconstruction, the
+D-V2-043 fix `b7e0f3d`, the bundle/pocket recovery, the committed
+runtime drivers), #29/#30/#31 (closed with evidence — rerun
 `pytest tests/test_gflownet_tb.py tests/test_reward_docking_backend.py
-tests/test_stage2_cli.py -q` if in doubt: 44 passed), #27/#20/#18/#19/
-#41/#39/#25/#33 (closed), the #26 implementation (only its T4
-training-run criteria remain), the #36 preparation + the S-V2-16/17
-authorized-session evidence, or anything from S-V2-15 and earlier
-(WORK_LOG §S-V2-14/15).
+tests/test_stage2_cli.py -q` if in doubt: 44 passed),
+#27/#20/#18/#19/#41/#39/#25/#33 (closed), or anything from S-V2-18
+and earlier (WORK_LOG §S-V2-14..18).
 ```
 
 ## 2. Binding context for every future session
@@ -144,7 +142,7 @@ authorized-session evidence, or anything from S-V2-15 and earlier
 
 | Item | Owner | Note |
 |---|---|---|
-| **#26's two training-run T4 criteria are unverified** | #26/#36 | The canonical `train_stage1.py` launch on the authorized runtime (monotonic 2-epoch descent; peak reserved VRAM < 9.5 GB over the full run). The micro-batch VRAM signal (3.758 GiB peak reserved) is already measured; the data reconstruction on the runtime was in progress at S-V2-17 |
+| **#26's two training-run T4 criteria are unverified** | #26/#36 | The canonical `train_stage1.py` launch on the authorized runtime (monotonic 2-epoch descent; peak reserved VRAM < 9.5 GB over the full run). The S-V2-19 loader blocker (D-V2-043) is FIXED (`b7e0f3d`) and the launch is staged (`scripts/runtime_train_chain.sh`); only the T4 capacity is missing |
 | **#36's remaining session criteria** | #36/operator | The remote training launch + persisted training telemetry + the #43 cross-session continuation (the authorized connection, T4/VRAM verification, preflight and fwd/bwd peaks are captured) |
 | **#42's T4 benchmark is unmeasured** | #42/#36 | The oracle is implemented, tested, and now consumed end-to-end by the #29 rollout driver; the benchmark needs the runtime |
 | Stage-1 training set is 194 trajectories (the honest census) | #28/owner | The #28 two-tier pretraining is the designed scale path; **externally blocked on licensed reaction data — owner decision** |
@@ -157,14 +155,20 @@ authorized-session evidence, or anything from S-V2-15 and earlier
 
 ## 5. Remote runtime / workspace state
 
-No Colab/Kaggle session is currently open from THIS sandbox (the
-S-V2-16/17 authorized session's CLI auth does not survive the sandbox
-recycle; the operator must re-authenticate per #45 §29.1 — the exact
-commands are re-issued in the session reply and
-`docs/ops/colab_ssh_workflow.md`). No V2 checkpoints exist outside the
-test fixtures. One HF artifact synced: the #12 catalog dataset
-`JJKK1212/3d-syntree-v2-catalog` (private, S-V2-10). No secrets are
-stored in the repository.
+The authorized `syntree-t4` session is NOT currently open (free-tier
+T4 capacity exhausted at S-V2-19 close; poll `colab new -s syntree-t4
+--gpu T4`).  The CLI auth survives via the OAuth bridge backups
+(`scripts/colab_token_backup.json` — restore per
+`scripts/colab_ensure.sh`).  **Everything the training run needs is
+persisted**: the complete 388-artifact training bundle on HF
+(`JJKK1212/3d-syntree-v2-runs` `data/training_bundle.tar` — the three
+bit-exact .pt trajectory files + splits + index + 194 ligand AND
+pocket artifacts) and the catalog dataset
+(`JJKK1212/3d-syntree-v2-catalog`); a runtime recycle costs ~10
+minutes via `scripts/runtime_restore_from_hf.sh`.  No V2 checkpoints
+exist outside the test fixtures.  No secrets are stored in the
+repository (the runtime drivers read `HF_TOKEN` from the environment,
+D-V2-024).
 
 Dev-workspace artifacts (not in git; under `work/`): lost to the
 sandbox recycle — re-creatable mechanically: raws via the committed

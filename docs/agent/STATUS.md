@@ -12,28 +12,24 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-04 (session S-V2-18 close: **#29 FLOW-01 CLOSED** —
-> the seed-conditioned `LogPartitionHead` (2-layer MLP over the pooled
-> pocket latent + the tied seed embedding, lr_Z = 1e-2), the differentiable
-> tensor log-probability path through the pinned TB engine, `GFlowNetTrainer`
-> (two optimizer groups, fail-closed divergence, atomic SHA-256 checkpoints
-> carrying the log Z state) and the production rollout bridge
-> `syntree/engine/rollout.py` — `6eccd41`, 26 tests incl. both acceptance
-> criteria (exact-zero residuals on the enumerable 19-state DAG at the
-> optimal policy; training from random init converges with the learned logZ
-> → the true partition function and the sampled terminal distribution →
-> R(x)/Z); **#30 FLOW-02 CLOSED** — the docking-backend injection point
-> (`DockingResult` + `surrogate_docking_scorer` default, frozen-config
-> semantics, provenance telemetry, fail-closed contracts) — `90b1035`, 12
-> tests; **#31 FLOW-03 CLOSED** — the canonical Stage-2 CLI
-> `scripts/train_stage2.py` + `configs/stage2_colab_t4.json` (Stage-1 weight
-> initialization with verified provenance, `--resume-auto` exact
-> continuation, fail-closed paths) — `6760b3d`, 6 tests. Reconciled from
-> S-V2-16/17: **#25 and #33 were closed on GitHub with the authorized T4
-> evidence** (full-policy fwd/bwd on the Tesla T4: peak reserved 3.758 GiB
-> / allocated 3,295.6 MiB, zero NaN/Infs — the rows below are updated).
-> Suite **1613 passed / 20 skipped**; clean-room closures now **31 of 40**:
-> #5–#25, #27, #29, #30, #31, #32, #33, #38–#41.)
+> Last synchronized: 2026-11-05 (session S-V2-19 **in progress**: the
+> authorized-T4 data reconstruction completed **bit-exact** — 204,005
+> records, splits 136,764/17,096/17,095 zero-leakage, index
+> byte-deterministic, TRAJECTORY_BITEXACT: PASS on all three pinned
+> .pt SHA-256s; the Suite-B memory battery re-run on the T4 for the
+> record (peak reserved 3.758 GiB — exact reproduction).  The first
+> canonical `train_stage1.py` launch failed closed on a real bug —
+> **D-V2-043**: the molecule-side pool matched reactant templates
+> against product-form graphs, structurally blinding it to the nine
+> graft classes (4ITP's Negishi methyl; every aryl C-H) — fixed with
+> reactant-form graft matching (`b7e0f3d`, suite **1615/20**); the fix
+> also corrects the #29 rollout pool.  Runtime-recycle recovery
+> engineered and proven (the complete 388-artifact bundle on HF + the
+> committed sanitized drivers, `02f4443`).  **#26/#36/#43 remain open
+> pending the training run — the free-tier T4 endpoint returned
+> Service Unavailable through the session's retry window**; suite
+> **1615 passed / 20 skipped**; clean-room closures remain **31 of
+> 40**.)
 
 ## Legend
 
@@ -66,7 +62,7 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 23 | MODEL-03 | Cross-attention decoder | **Closed** (2026-11-01) | `syntree/models/policy.py` | `dc4921e` | `tests/test_cross_attention_decoder.py` 58/58; both #23 acceptance criteria verified ([B,1,256]×[B,N,256]→[B,256]; padded atoms masked exactly — bit-identical under pad junk); SE(3) invariance 8.882e-16 (FP64) / 4.768e-07 (FP32); frozen profile 1,219,328 params; full suite 405/405 | — |
 | 24 | MODEL-04 | Hierarchical heads + torsion space | **Closed** (2026-11-02) | `syntree/models/policy.py` + `syntree/models/torsion_head.py` | `74133c8` | `tests/test_hierarchical_heads.py` 100/100; both #24 acceptance criteria verified (STOP-isolation by forward hooks + stop-law invariance; all action components pure categorical laws whose logs compose in TB — kappa/mu invariance pinned); the three pre-V2 bugs pinned dead; full suite 755/755 — D-V2-018 | — |
 | 25 | MODEL-05 | SynTreePolicy assembly + audit | **Closed** (2026-11-02 implemented; **closed 2026-11-04 with the authorized T4 evidence** — S-V2-16/17: the CUDA forward criterion verified on the live Tesla T4 session `syntree-t4` — full-policy Profile-A forward/backward with zero NaN/Infs on device, peak reserved 3.758 GiB / peak allocated 3,295.6 MiB, `cac741e` fixed the cross-device anchor-accumulator bugs the first run surfaced; commit `84fd3e7`, 48 tests + parameter memory 43.5 MB < 50 MB by exact arithmetic (10,880,719 params, D-V2-019)) | `syntree/models/policy.py` | `84fd3e7` + `cac741e` | `tests/test_policy_assembly.py` 48/48; on-T4 finiteness assertions pinned in the Suite-B battery | — |
-| 26 | TRAIN-01 | Pure FP32 T4 trainer | **Implemented — Awaiting T4 Verification** (2026-11-03, S-V2-14: supervised training loader `syntree/data/supervised.py` — crystal-intermediate states from #18 records + processed artifacts with fail-closed cross-checks, molecule-side handle pool (D-V2-031, incl. the pinned RDKit reaction-template segfault hazard), parity labels from crystal CIP (D-V2-034), pocket cap 700 by centroid-distance pruning; `syntree/engine/trainer.py` — Profile A (B=12×6, strict FP32 via the #10 gate, AdamW 3e-4/1e-5, clip 1.0), fail-closed divergence (TrainingDivergenceError, no nan-shield/batch-skipping), the full Stage-1 loss stack, separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints with exact continuation state (+ the #27 curriculum state since S-V2-15), time-budget graceful stop (#43 contract); canonical CLI `scripts/train_stage1.py` with catalog-driven masks + `--curriculum`; **S-V2-17 part-1 T4 evidence**: the micro-batch-level VRAM signal measured on the authorized T4 — peak reserved 3.758 GiB / allocated 3,295.6 MiB, zero OOM) | `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` | `e009127` + `9197619` | 40 tests + the end-to-end CLI smoke green (incl. the curriculum CLI smoke); CPU loss-descent smoke verified; **acceptance criteria (2-epoch monotonic descent on T4; peak reserved VRAM < 9.5 GB with zero OOM skips over the full run) require the canonical `train_stage1.py` launch on the authorized T4 session — NOT claimed** | Authorized #36 session (data reconstruction was in progress at S-V2-17) |
+| 26 | TRAIN-01 | Pure FP32 T4 trainer | **Implemented — the loader blocker fixed (D-V2-043), the T4 run pending on runtime capacity** (2026-11-05, S-V2-19: the authorized runtime reproduced the data bit-exact and the canonical launch then failed closed on the real D-V2-031 product-graph matching bug — fixed at `b7e0f3d` with reactant-form graft matching, verified by the full loader materialization on the bit-exact 194-trajectory set across 3 shuffle orders + 2 regression tests + the widened CPU descent smoke, suite 1615/20. **The two T4 acceptance criteria (2-epoch monotonic descent; peak reserved VRAM < 9.5 GB, zero OOM) still require the canonical launch on the authorized runtime — NOT claimed; the free-tier T4 endpoint was unavailable through the session's retry window.** The staged driver: `scripts/runtime_train_chain.sh` behind `scripts/runtime_restore_from_hf.sh`.) | `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` | `e009127` + `9197619` + `b7e0f3d` | 40 tests + the end-to-end CLI smoke green; CPU descent smoke verified (6 seeded epochs, seeds 0..9); the two T4 criteria pending the runtime | Authorized #36 session (T4 capacity) |
 | 27 | TRAIN-02 | Quantile curriculum (Approach C) | **Closed** (2026-11-04, S-V2-15: `syntree/engine/curriculum.py` @ `9197619` — the five issue-named difficulty axes per item (D-V2-037), 9 quantile-balanced bins, the 6-stage floor-exact mixture distribution ε=0.03 (D-V2-038), exactly-N deterministic epoch draws, the milestone machine (val improvement ≥ 0.005, patience-2 fallback, no regression, cap 6), full checkpointable state in the trainer payload; trainer wiring guards + per-epoch validation-loss advancement + curriculum telemetry (level histograms); canonical CLI `--curriculum` (D-V2-039); both acceptance criteria verified — all 9 levels sampled every epoch via histograms at every stage, and the 40-epoch schedule transitioning smoothly through all 6 stages) | `syntree/engine/curriculum.py` + `syntree/engine/trainer.py` + `scripts/train_stage1.py` | `9197619` | `tests/test_curriculum.py` 40/40 incl. the CLI smoke | — |
 | 28 | TRAIN-03 | 2D→3D transfer pretraining | **Ready (code deps #12 + #27 closed) — externally blocked on licensed reaction data** (the owner must supply/authorize a provenance-tracked reaction dataset; per #45 §12.2 no pretraining claim may be made without it) | `syntree/engine/` | — | — | Owner decision: supply licensed reaction data (or authorize deferring #28 and proceeding on the honest 194-trajectory Stage-1 set) |
 | 29 | FLOW-01 | GFlowNet TB engine | **Closed** (2026-11-04, S-V2-18: the remaining scope landed at `6eccd41` — the seed-conditioned `LogPartitionHead` (2-layer MLP over the pooled pocket latent 256 + the tied seed embedding 64, zero-initialized output, lr_Z = 1e-2 in its own optimizer group), the differentiable tensor log-probability path through `TrajectoryBalanceEngine` (the `log_z` override; the float verification path unchanged — the 66 existing TB/Suite-B tests stay green), `GFlowNetTrainer` (strict FP32 via the #10 gate, AdamW two groups, fail-closed `TrainingDivergenceError`, gradient clipping, separate RAM/VRAM telemetry, atomic SHA-256 checkpoints with the log Z θ state + both optimizer groups + RNG — the #43/#31 interface), and the production rollout bridge `syntree/engine/rollout.py` (`PolicyRolloutDriver`: seed/anchor → STOP → handle → family → reaction → synthon → parity → torsion sampling from the policy's own laws with tensor log-probs, the catalog bridges, the parity pre-step determination via a cloned env state; D-V2-040/041). Both acceptance criteria verified on the 19-state/31-trajectory DAG: exact-zero residuals at the analytically optimal policy through the tensor path, and training from random init drops the TB loss >100× with logZ → the true partition function and the sampled terminal distribution matching R(x)/Z to TV<0.15; the production driver battery (determinism, legality masks, forced stop, clean backward into both groups) green. The #42 dependency is satisfied at the deliverable level (the terminal oracle exists, is tested, and is consumed end-to-end by the rollout driver — the integrated-generation wiring) | `syntree/engine/gflownet.py` + `syntree/engine/rollout.py` | `6eccd41` | `tests/test_gflownet_tb.py` 26/26; full suite 1613/20 | — |
