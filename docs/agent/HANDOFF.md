@@ -5,8 +5,7 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-05, session S-V2-20 (closed at commit `<this
-session's final commit>`): the **CPU evaluation critical path is
+**Last updated:** 2026-11-05, session S-V2-20 (closed at commit `79bc415`): the **CPU evaluation critical path is
 complete** — #34 EVAL-01 and #44 EVAL-03 closed with real-planner
 evidence (the 194-record / 30-unique-structure #18 corpus through the
 isolated public-USPTO AiZynthFinder with the two never-merged stock
