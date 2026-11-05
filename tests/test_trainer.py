@@ -283,6 +283,50 @@ class TestCheckpoints:
         with pytest.raises(TrainerStateError, match="digest"):
             other.load_checkpoint(trainer.checkpoint_path)
 
+    def test_operational_knobs_do_not_fragment_the_profile_digest(self):
+        # D-V2-046: the T-chain caught a live failure — a checkpoint saved
+        # under a 40 s session budget refused a budgetless resume because
+        # the digest hashed the operational knobs too.  Scheduling fields
+        # (budget / workers / telemetry+checkpoint cadence) are NOT
+        # training semantics; #43 makes them configurable per session.
+        base = TrainerProfile()
+        assert TrainerProfile(
+            time_budget_seconds=40,
+            num_workers=2,
+            log_interval_steps=5,
+            checkpoint_interval_steps=50,
+        ).digest() == base.digest()
+        # ... while training semantics still change the digest (fail-closed):
+        for field_name, value in (
+            ("micro_batch_size", 6),
+            ("gradient_accumulation_steps", 3),
+            ("max_pocket_atoms", 600),
+            ("learning_rate", 1e-3),
+            ("weight_decay", 1e-6),
+            ("gradient_clip_norm", 0.5),
+            ("seed", 7),
+            ("max_epochs", 3),
+            ("profile_name", "other_profile"),
+        ):
+            assert TrainerProfile(**{field_name: value}).digest() != base.digest(), field_name
+
+    def test_resume_after_time_budget_stop_under_a_different_budget(self):
+        # The exact live failure (2026-11-05 T-chain): save under a session
+        # budget, resume without one — the #43 cross-session continuation
+        # contract.  A zero budget stops before the first batch
+        # deterministically; the budgetless resume must load it and then
+        # train to completion.
+        run_dir = _mkdtmp()
+        budgeted = _trainer(run_dir, time_budget_seconds=0)
+        result = budgeted.fit(_loader())
+        assert result["stop_reason"] == "time_budget"
+        saved_step = budgeted.progress.global_step
+        resumed = _trainer_via_resume(run_dir)  # budgetless profile: must not raise
+        assert resumed.progress.global_step == saved_step
+        final = resumed.fit(_loader())
+        assert final["stop_reason"] == "max_epochs_reached"
+        assert resumed.progress.global_step > saved_step
+
     def test_corrupt_checkpoint_fails_closed(self):
         run_dir = _mkdtmp()
         trainer = _trainer(run_dir)

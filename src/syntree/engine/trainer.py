@@ -52,7 +52,7 @@ import math
 import os
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, ClassVar, Dict, List, Optional, Sequence
 
 import torch
 from torch.utils.data import DataLoader
@@ -124,6 +124,28 @@ class TrainerProfile:
     time_budget_seconds: Optional[int] = None
     profile_name: str = "colab_t4_profile_a"
 
+    #: Profile fields that define training semantics and therefore
+    #: checkpoint compatibility (#26 frozen Profile A).  The operational
+    #: session-scheduling knobs — ``time_budget_seconds``,
+    #: ``num_workers``, ``log_interval_steps`` and
+    #: ``checkpoint_interval_steps`` — are deliberately EXCLUDED: #43
+    #: requires configurable time-aware checkpointing, so a checkpoint
+    #: saved under one session budget must resume under another
+    #: (D-V2-046, caught live by the T-chain on 2026-11-05: a 40 s
+    #: budget checkpoint refused a budgetless resume).
+    _DIGEST_FIELDS: ClassVar[tuple] = (
+        "micro_batch_size",
+        "gradient_accumulation_steps",
+        "max_pocket_atoms",
+        "learning_rate",
+        "weight_decay",
+        "gradient_clip_norm",
+        "precision",
+        "seed",
+        "max_epochs",
+        "profile_name",
+    )
+
     def __post_init__(self) -> None:
         if int(self.micro_batch_size) < 1:
             raise ValueError("micro_batch_size must be >= 1")
@@ -148,8 +170,18 @@ class TrainerProfile:
         return int(self.micro_batch_size) * int(self.gradient_accumulation_steps)
 
     def digest(self) -> str:
-        """Stable SHA-256 of the frozen profile (checkpoint compatibility)."""
-        payload = json.dumps(asdict(self), sort_keys=True).encode("utf-8")
+        """Stable SHA-256 of the frozen profile (checkpoint compatibility).
+
+        Only :data:`TrainerProfile._DIGEST_FIELDS` (the training-semantics
+        contract) are hashed.  Operational scheduling knobs are excluded so
+        that resuming under a different session budget, worker count or
+        telemetry cadence stays legal (#43 continuation contract); any
+        change to the actual training semantics still fails closed.
+        """
+        payload = json.dumps(
+            {name: getattr(self, name) for name in self._DIGEST_FIELDS},
+            sort_keys=True,
+        ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
 
