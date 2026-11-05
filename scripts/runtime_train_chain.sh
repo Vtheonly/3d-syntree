@@ -170,15 +170,16 @@ python3 - <<'PU' >> $L 2>&1
 import os, tarfile
 assert os.environ.get("HF_TOKEN"), "HF_TOKEN must be exported (no embedded credentials)"
 from huggingface_hub import HfApi
+run_tag = os.environ.get("RUN_TAG", "session1")
 api = HfApi()
 api.create_repo(repo_id="JJKK1212/3d-syntree-v2-runs", repo_type="dataset", private=True, exist_ok=True)
 with tarfile.open("/content/runs/stage1_t4_run.tar", "w") as tf:
     tf.add("/content/runs/stage1_t4", arcname="stage1_t4")
     tf.add("/content/hardware_preflight.json", arcname="hardware_preflight.json")
 api.upload_file(path_or_fileobj="/content/runs/stage1_t4_run.tar",
-                path_in_repo="runs/stage1_t4_session1/run.tar",
+                path_in_repo=f"runs/stage1_t4_{run_tag}/run.tar",
                 repo_id="JJKK1212/3d-syntree-v2-runs", repo_type="dataset")
-print("HF_RUN_UPLOAD_DONE")
+print("HF_RUN_UPLOAD_DONE:", run_tag)
 PU
 log "T4: run artifacts persisted to HF"
 log "TRAIN_CHAIN_DONE"
