@@ -5,53 +5,66 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-05, session S-V2-20 (closed at commit `79bc415`): the **CPU evaluation critical path is
-complete** — #34 EVAL-01 and #44 EVAL-03 closed with real-planner
-evidence (the 194-record / 30-unique-structure #18 corpus through the
-isolated public-USPTO AiZynthFinder with the two never-merged stock
-tracks; the evidence lives in `docs/eval/`), and #35 EVAL-02 is
-implemented + harness-verified on the frozen 33-target test manifest
-(the TargetDiff/DiffSBDD/SyntheMol baseline structures await operator
-export).  Suite: **1683 passed / 22 skipped**.  Clean-room closures:
-**33 of 40**.
+**Last updated:** 2026-11-06, session S-V2-21 (closing commit: this
+docs commit on top of `778ff1c`): **the authorized T4 track is
+executed** — the Colab bridge is operational and verified (root shell
+over `colab ssh --proxy-mode` + paramiko; OAuth refresh-token cache in
+`~/.config/colab-cli/`), the T-chain ran clean on the real Tesla T4
+(T1 controlled stop / T2 mid-training SIGKILL + integrity / T3 exact
+resume / T4 monotonic + VRAM gates, `TRAIN_CHAIN_DONE`, run persisted
+to HF), and #26/#36/#42 are **closed** with that evidence.  Two live
+continuation bugs were caught by the chain and fixed with regression
+tests (D-V2-046 digest scope; D-V2-047 completed-run resume no-op) plus
+D-V2-048 (epoch extension legalized for cross-session continuation).
+Suite: **1687 passed / 22 skipped**.  Clean-room closures: **36 of 40**.
 
 ## 1. Continuation instruction
 
 ```
-Next session — everything remaining is operator-gated; choose by what
-the operator provides:
+Next session — ONE dependency-ready runtime action remains, then
+operator-gated work:
 
-A. If the operator authenticates the Colab T4 runtime (§29.1 — the
-   agent must NOT authenticate as the user; re-issue the handoff in
-   docs/ops/colab_ssh_workflow.md): run the S-V2-19 staged chain —
-   scripts/runtime_restore_from_hf.sh → the D-V2-043 precheck →
-   pytest tests/suite_b/ → scripts/runtime_train_chain.sh (T1–T4).
-   That single chain closes #26 (both training-run criteria), #36
-   (the remaining session criteria) and #43 (the measured profile +
-   session-safe resume), and rides #42's T4 benchmark.  Set HF_TOKEN
-   in the runtime env (never embedded — D-V2-024).
+A. THE #43 CROSS-SESSION CONTINUATION RUN (dependency-ready, ~15 min
+   of T4 time): the driver is committed and the source run is persisted
+   on HF. Run:
+     bash /home/z/my-project/scripts/bootstrap_t4.sh session2 continue
+   (provisions + §29.2-gates a fresh T4, restores the workspace from
+   HF, then runtime_cross_session_continue.sh session1 session2 1:
+   fetches runs/stage1_t4_session1/run.tar, verifies the sidecar,
+   resumes with max_epochs extended on the NEW runtime, asserts the
+   history-prefix identity + fresh hardware baseline, persists
+   runs/stage1_t4_session2/run.tar). That closes #43.
+   KNOWN RISK: free-tier GPU provisioning can silently return CPU-only
+   runtimes (assign endpoint 'Service Unavailable') — the bootstrap
+   gates fail-closed and retries with backoff; if the pool stays dry,
+   report and stop (never train on a non-T4 runtime, #45 §29.2).
+   Evidence collection after success:
+     ssh_evidence/session2_continue/  (logs + telemetry via
+     colab_ssh_client.py get), then update #43/STATUS/HANDOFF.
 
 B. If the operator exports baseline structures (TargetDiff/DiffSBDD/
    SyntheMol: one SDF per frozen-target id — see the manifest
-   docs/eval/evidence/frozen_targets.json): 
+   docs/eval/evidence/frozen_targets.json):
    scripts/run_comparative_benchmark.py --targets <manifest>
    --method NAME=DIR ... --retro-track stock_aligned=...
-   --retro-track independent_external=... closes #35.  The public
-   AiZynthFinder models + stocks live in the sandbox scratch
-   (/home/z/my-project/scratch/aizynth_data + eval/) — re-download
-   per docs/eval/retrosynthesis_tracks.md if recycled.
+   --retro-track independent_external=... closes #35, and with it #37
+   (the final milestone; its sync mechanics are already proven —
+   bit-exact restores x3, checksum-verified uploads).
 
 C. If neither: #28 needs the owner's licensed-reaction-data decision;
-   #37 remains blocked on #26 + #35. There is NO dependency-ready
-   code work left — do not invent work; verify state, reconcile
-   documentation, and end with an honest handoff.
+   there is no other dependency-ready work — verify state, reconcile
+   documentation, end with an honest handoff.
 
-Do NOT redo: the S-V2-20 evaluation stack (evaluator.py, comparative.py,
-the five scripts, the three batteries, docs/eval/, the evidence runs),
-#34/#44 (closed with evidence), or anything from S-V2-19 and earlier
-(WORK_LOG §S-V2-14..20). The dev sandbox is CPU-only by constitution
-(#45 §5–§6); the persistent python env is /home/z/my-project/evalenv
-(in-repo .venv dirs are wiped by the sandbox recycler — D-V2-044).
+Do NOT redo: the S-V2-21 bridge/chain/benchmark work (WORK_LOG
+§S-V2-21), the S-V2-20 evaluation stack, or anything earlier. The dev
+sandbox is CPU-only by constitution (#45 §5–§6); the persistent python
+env is /home/z/my-project/evalenv (in-repo .venv dirs are wiped by the
+sandbox recycler — D-V2-044; clear /tmp/pytest-of-z before full-suite
+runs — Errno 28 exhaustion, S-V2-21). The colab CLI + paramiko live in
+/home/z/.venv (google-colab-cli; ~/.ssh/id_ed25519.pub is the bridge
+public key — do NOT pass -i/--identity to `colab ssh`, it shells out
+to the absent ssh-keygen; the private key stays in
+/home/z/my-project/.secrets/, never committed).
 ```
 
 ## 2. Binding context for every future session
@@ -100,6 +113,13 @@ the five scripts, the three batteries, docs/eval/, the evidence runs),
   outputs are reused only on exact target-set match; the evaluation
   env runs aizynthfinder 4.4.1 under rdkit 2026.09.1 (runtime-verified
   — D-V2-044) with pyarrow pinned <22.
+- **The continuation contracts are binding (D-V2-046/047/048)**: the
+  profile digest covers per-step training semantics ONLY (operational
+  knobs — time budget, workers, telemetry/checkpoint cadence, max_epochs
+  — are excluded); a completed-run resume is a no-op (progress.epoch
+  advances past a finished epoch — never re-train a completed epoch);
+  cross-session continuation may extend max_epochs. All three are pinned
+  by regression tests in tests/test_trainer.py.
 - Backbone/decoder contracts (D-V2-007/008/011/012), the engine/MDP
   contracts (D-V2-009/015/016/017 + Property 3b), the S-V2-09 decisions
   (D-V2-018/019/020), the catalog decisions (D-V2-021/022/023/025) and
@@ -111,6 +131,11 @@ the five scripts, the three batteries, docs/eval/, the evidence runs),
 - Everything in the S-V2-14/15/16/17/18/19 handoffs (the FLOW track,
   the T4 battery fixes, the bit-exact reconstruction, the D-V2-043
   fix, the runtime drivers — see WORK_LOG §S-V2-14..19).
+- **The S-V2-21 work**: the bridge (`scripts/colab_ssh_client.py` +
+  `bootstrap_t4.sh` + the workflow doc), the executed T-chain and its
+  fixes (`ee28713`/`925071d`/`6445929`/`778ff1c`), the #42 benchmark
+  (`benchmark_torsion_refinement.py` + the on-T4 report), and the
+  staged continuation driver — #26/#36/#42 are closed with evidence.
 - **The S-V2-20 work**: the evaluation stack
   (`syntree/engine/evaluator.py` + `syntree/engine/comparative.py` +
   `scripts/run_benchmarks.py` / `export_aizynth_stock.py` /
@@ -124,9 +149,8 @@ the five scripts, the three batteries, docs/eval/, the evidence runs),
 
 | Item | Owner | Note |
 |---|---|---|
-| **#26's two training-run T4 criteria are unverified** | #26/#36 | The staged `scripts/runtime_train_chain.sh` chain rides the authorized runtime (unchanged from S-V2-19) |
-| **#36's remaining session criteria** | #36/operator | The remote training launch + persisted telemetry + the #43 cross-session continuation |
-| **#42's T4 benchmark is unmeasured** | #42/#36 | The oracle is implemented, tested, and consumed end-to-end by the #29 rollout driver |
+| **#43's cross-session continuation run** | #43/agent | Driver staged (`bootstrap_t4.sh session2 continue`); blocked only on free-tier GPU provisioning capacity (CPU-only fallback runtimes observed; the bootstrap gates fail-closed) |
+| **#37 blocked on #35** | operator | The sync mechanics are proven (bit-exact restore x3, checksum-verified uploads); only the baseline comparison remains |
 | **#35's baselines** | operator | The harness is verified; TargetDiff/DiffSBDD/SyntheMol structures (one SDF per target_id) close it |
 | Stage-1 training set is 194 trajectories (the honest census) | #28/owner | The #28 two-tier pretraining is the designed scale path; externally blocked on licensed reaction data |
 | The Vina adapter is implemented but unexercised in the evidence run | #34/#35 | Optional backend, fail-closed; no docking score is claimed anywhere |
@@ -136,22 +160,29 @@ the five scripts, the three batteries, docs/eval/, the evidence runs),
 
 ## 5. Remote runtime / workspace state
 
-The authorized `syntree-t4` session is NOT open (operator-gated; the
-sandbox has no ssh/colab CLI and §29.1 forbids agent-side
-authentication).  Everything the training run needs is persisted: the
-complete 388-artifact bundle on HF (`JJKK1212/3d-syntree-v2-runs`
-`data/training_bundle.tar`) + the catalog dataset
-(`JJKK1212/3d-syntree-v2-catalog`); a recycle costs ~10 min via
-`scripts/runtime_restore_from_hf.sh`.  No V2 checkpoints exist outside
-the test fixtures.  No secrets are stored in the repository.
+The bridge is OPERATIONAL (S-V2-21): OAuth refresh-token cache at
+`~/.config/colab-cli/token.json` (no operator re-auth needed while it
+stays valid), `colab` CLI + paramiko in `/home/z/.venv`, bridge pubkey
+at `~/.ssh/id_ed25519.pub` (private key in
+`/home/z/my-project/.secrets/colab_ed25519`, never committed). No
+session is left open at handoff (VMs burn compute units; `colab stop`
+after use). Everything the runtime needs is persisted: the
+388-artifact training bundle + the session-1 run
+(`JJKK1212/3d-syntree-v2-runs`: `data/training_bundle.tar`,
+`runs/stage1_t4_session1/run.tar`) + the catalog
+(`JJKK1212/3d-syntree-v2-catalog`); a fresh session restores in ~3 min
+via `scripts/runtime_restore_from_hf.sh` (verified bit-exact x3).
+Evidence transcripts live in `/home/z/my-project/ssh_evidence/`
+(outside git; the summarized numbers are recorded in WORK_LOG/STATUS).
 
-Dev-workspace state (not in git): the evaluation workspace lives under
-`/home/z/my-project/scratch/` — the AiZynthFinder public models + the
-extracted ZINC stock (`aizynth_data/`, re-downloadable per
-`docs/eval/retrosynthesis_tracks.md`), the HF bundle/catalog copies
-(`hf/`), and the run workspace (`eval/`: corpus, stocks, track
-configs, planner outputs, reports).  The committed evidence copies
-(`docs/eval/evidence/`) pin the expected outputs (counts + SHA-256s).
+Dev-workspace state (not in git): `/home/z/my-project/evalenv` (the
+rebuilt dev env — torch CPU + `-e '.[test]'` + h5py/pandas/pyarrow/
+psutil/huggingface_hub + rdkit 2026.9.1; the AiZynthFinder stack is
+NOT installed in this rebuild — the 3 planner-gated tests skip, the
+baseline was 1684/22 pre-fixes, 1687/22 at `778ff1c`); the catalog H5
+at `repo/work/catalog/` (re-downloadable); `repo/work/catalog` +
+`~/.cache` sizes matter — clear `/tmp/pytest-of-z` before full-suite
+runs (Errno 28). No secrets are stored in the repository.
 
 ## 6. Session mechanics
 
@@ -165,10 +196,10 @@ configs, planner outputs, reports).  The committed evidence copies
    psutil huggingface_hub aizynthfinder "pyarrow==16.1.0" posebusters
    vina meeko gemmi && pip install rdkit==2026.9.1` (D-V2-044).
 3. Baseline the suite with `python -m pytest tests/ -q` — expected
-   **1683 passed / 22 skipped** (catalog present; +3 planner-gated
-   tests re-enable with `SYNTREE_AIZYNTH_MODELS` pointing at the
-   public-models dir; the 2 `work/catalog/…`-path gated tests
-   re-enable by symlinking the catalog into `work/catalog/`).
+   **1687 passed / 22 skipped** (catalog present at `work/catalog/`;
+   +3 planner-gated tests re-enable with `SYNTREE_AIZYNTH_MODELS`
+   after installing the aizynthfinder stack per D-V2-044 — without
+   it the 1687 baseline holds with those skipped).
 4. Work per the #45 §18 per-issue protocol; follow D-V2-024
    (commit+push each verified unit immediately); end with the
    mandatory git diff review, commit+push (report exact SHAs), issue

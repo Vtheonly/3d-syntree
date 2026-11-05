@@ -2662,3 +2662,119 @@ unique-target dedup (D-V2-045).
   provided); any Vina docking score (the adapter is implemented and
   fail-closed but was not exercised in the evidence run — no receptor
   preparation was run on the pocket artifacts); any T4 behavior.
+
+## Session S-V2-21 — 2026-11-05/06 — the authorized bridge fully operational: the T-chain run clean on the T4 (#26's run criteria + #36's remote-workflow criteria evidenced, #42 benchmarked); two live continuation bugs caught and fixed; #43's cross-session driver staged
+
+### 0. State discovery
+
+The prior session (S-V2-20's successor, uncommitted at recycle) had
+completed the operator-consent OAuth flow for the official
+`google-colab-cli` (refresh-token cache at `~/.config/colab-cli/`,
+2026-11-05 17:29–17:50 UTC) and provisioned a first `syntree-t4` session
+whose kernel-exec hardware battery (CLI history
+`history/syntree-t4.jsonl`: Tesla T4 15360 MiB, host RAM 12.67 GiB
+separate, torch 2.11.0+cu130, cc 7.5) was genuine — but its workflow-doc
+update overstated the bridge as "root shell confirmed (SSH_BRIDGE_OK)"
+with no transcript to back it.  This session re-verified everything from
+scratch and corrected the record.
+
+### 1. The bridge, verified for real this time
+
+OAuth refresh still valid (no operator interaction needed).  Fresh T4
+provisioned; the §29.2 battery re-run BOTH through the kernel channel and
+through the real SSH-proxy path: `colab ssh --proxy-mode -s syntree-t4`
+(the CLI reads `~/.ssh/id_ed25519.pub` directly when `--identity` is
+absent — passing `-i` shells out to `ssh-keygen`, which this sandbox
+lacks) + `scripts/colab_ssh_client.py --proxy` (paramiko) → **root shell
+confirmed: `SSH_BRIDGE_OK`, root@b63e22748e63, Tesla T4 15360 MiB**
+(transcripts: `verify_syntree-t4_1793902517.json`,
+`verify_s-v2-21_1793902640.json` — full battery, mem pools separate,
+policy gate PASS).  The `exec`/`put`/`get` surface then drove the remote
+runtime end-to-end (clone at pinned commits, SFTP token staging at
+`/root/.hf_token` mode 600, nohup orchestration, log polling).
+
+**Operational finding (§29.2 discipline):** two of five provisioning
+attempts returned *CPU-only* runtimes silently (the assign endpoint
+answers `Service Unavailable` and the CLI falls back without failing).
+The bootstrap now gates fail-closed on `nvidia-smi` AND torch-CUDA
+concurring on Tesla T4 before any work launches
+(`scripts/bootstrap_t4.sh`; non-T4 runtimes are disposed, never trained
+on).
+
+### 2. The T-chain — two live continuation bugs caught, fixed, re-run clean
+
+Run 1 (commit `ff2290d`): T1 `CONTROLLED_STOP_OK budget=40`, then T2/T3
+**failed** — `checkpoint profile digest does not match the active
+profile`: the digest hashed `time_budget_seconds`
+(**D-V2-046**, fixed at `ee28713`: digest scope = training semantics
+only; operational knobs excluded; 2 regression tests; suite 1686/22).
+
+Run 2 (at `ee28713`, on a second T4): all gates green superficially —
+T1 OK, `INTEGRITY_AFTER_KILL: PASS`, T3 `max_epochs_reached`,
+`STRICTLY_MONOTONIC_EPOCH_DESCENT: PASS`, `VRAM_UNDER_9_5_GIB: PASS`
+(peak reserved 2.24 GiB), HF run persisted — **but two honesty problems**:
+(i) run2 completed its 2 remaining steps before the 5 s-poll/10 s-delay
+kill could land, so "abrupt interruption" was really a natural exit, and
+(ii) T3 resumed the step-42 *completed* checkpoint and silently re-trained
+epoch 1 to step 63 — 21 repeated micro-batches, a #43 exact-continuation
+violation (**D-V2-047**, fixed at `925071d`: `progress.epoch` advances
+past a completed epoch; completed-run resume is a provable no-op; the
+T-chain driver made work-aware — T1 probes the total step count first and
+re-picks a budget leaving ≥ 15 steps, T2 polls at 2 s and kills 2 s after
+fresh telemetry, logging `ABRUPT_KILL_MID_TRAINING` only when the process
+was alive with fresh telemetry; suite 1687/22).
+
+Run 3 (at `6445929`, third T4): **clean end-to-end** —
+T1 probe 60 s completes (42 micro-steps total) → 30 s budget leaves only
+14 (rejected) → **15 s budget stops at step 12/42 (30 left)**;
+T2 **SIGKILL mid-training** (telemetry lines 1→3 while alive) +
+`INTEGRITY_AFTER_KILL: PASS`; T3 resumes the killed run's step-12
+checkpoint to **exactly 42 steps, history_len 42, epochs_completed 2**
+(zero repeats — D-V2-047 semantics visible: final `epoch: 2`);
+T4 `STRICTLY_MONOTONIC_EPOCH_DESCENT: PASS` (per-epoch means
+16.29 → 12.00; first/last micro-batch 27.61 → 0.0054),
+`VRAM_UNDER_9_5_GIB: PASS` (peak reserved 2292 MiB = 2.24 GiB, peak
+allocated 1501.8 MiB), last-completed logging (epoch 1, batch 20, step
+42), `HF_RUN_UPLOAD_DONE: session1` (131 MB run.tar →
+`runs/stage1_t4_session1/run.tar`), `TRAIN_CHAIN_DONE`.  Evidence bundle
+in `ssh_evidence/session1_chain/` (chain + restore logs, telemetry.jsonl
+— append-semantics confirmed across T1/T2/T3 — and the runtime's
+hardware preflight).
+
+### 3. #42's T4 execution-path benchmark (at `778ff1c`)
+
+`scripts/benchmark_torsion_refinement.py` ran on the authorized T4
+against **real pockets** loaded through the production loaders: 13
+terminal states over 13 real pockets (24 sampled; 11 PDBbind metal
+pockets fail-closed on MMFF94 typing — recorded in the report, never
+hidden), rotatable rxn_07 junctions vs the locked rxn_01 contrast, bins
+cycled 1–36 including the periodic boundary.  Per-junction: coarse scan
+9 evals + **Brent 8–10 evals**, objective improvement median 1.10 (max
+109.98, min 0.0), wall per terminal state mean 9.48 s (median 12.86 s —
+dominated by the scaffold-constrained MMFF94 relaxation of ≤700-atom
+pockets).  Report: `ssh_evidence/session1_chain/logs/torsion_refinement_benchmark.json`.
+
+### 4. #43's cross-session continuation — driver staged, run blocked on capacity
+
+`scripts/runtime_cross_session_continue.sh` (at `778ff1c`): fetches the
+persisted session-1 run from HF, verifies the sidecar, resumes on a NEW
+runtime with `max_epochs` extended (legalized by **D-V2-048** — run
+length is not a step semantic), asserts the exact-continuation contract
+(resumed history's first 42 records identical to the source; new records
+present; fresh hardware baseline in the resumed telemetry) and persists
+the cross-session run under its own HF tag.  **The execution is blocked
+on free-tier GPU capacity**: after session 3 was released, every
+provisioning attempt through the end of the session returned CPU-only
+runtimes (assign endpoint `Service Unavailable`).  The source run is
+persisted and the driver is one command away
+(`bootstrap_t4.sh session2 continue`).
+
+### 5. Session verification
+
+Suite **1687 passed / 22 skipped** (baseline in this rebuilt evalenv:
+1684/22; delta = the three new regression tests; an earlier flaky
+8-failure run was diagnosed as `/tmp` exhaustion — pytest's retained
+temp roots, Errno 28 — not code).  Commits: `ee28713` (D-V2-046),
+`925071d` (D-V2-047 + the work-aware driver), `6445929` (RUN_TAG
+parameterization), `778ff1c` (D-V2-048 + the continuation driver + the
+#42 benchmark), all pushed to `origin/3d-synV2`.

@@ -1637,3 +1637,91 @@ structures).
 
 **Affected:**  #34, #44, #35, the evidence artifacts in
 `docs/eval/evidence/`, future evaluation reruns on the T4 runtime.
+
+## D-V2-046 — 2026-11-05 — The profile-digest scope: operational scheduling knobs are not training semantics (#26/#43)
+
+**Context.**  The authorized T4 T-chain's first run (S-V2-21) failed T2/T3
+with `TrainerStateError: checkpoint profile digest does not match the
+active profile`: a checkpoint saved under `--time-budget-seconds 40`
+refused a budgetless resume.  `TrainerProfile.digest()` hashed
+`asdict(self)` — every field, including session-scheduling configuration.
+
+**Chosen approach.**  The digest hashes only the training-semantics fields
+(`_DIGEST_FIELDS`: batch/accum/pocket-cap/LR/decay/clip/precision/seed/
+profile-name).  `time_budget_seconds`, `num_workers`, `log_interval_steps`
+and `checkpoint_interval_steps` are excluded: #43 requires configurable
+time-aware checkpointing across sessions, so a checkpoint saved under one
+session's budget must resume under another's.  The full profile (budget
+included) is still recorded in the checkpoint payload for diagnostics.
+Pinned by `test_operational_knobs_do_not_fragment_the_profile_digest` and
+`test_resume_after_time_budget_stop_under_a_different_budget`.
+
+**Alternatives considered.**  Passing the same budget on every resume
+(pushes a scheduling detail into every continuation invocation and breaks
+the moment a session's budget differs); hashing a "compatibility version"
+constant instead of the fields (loses the per-field fail-closed property).
+
+**Evidence.**  The T-chain run 1 log (profile-digest failure), run 3
+(T1 `CONTROLLED_STOP_OK budget=15` → budgetless T2/T3 resumes →
+`TRAIN_CHAIN_DONE`); the two regression tests; suite 1686/22 at `ee28713`.
+
+**Affected:**  `syntree/engine/trainer.py`, #26, #43, every cross-session
+checkpoint continuation.
+
+## D-V2-047 — 2026-11-05 — Completed-run resume is a no-op: progress.epoch advances past a finished epoch (#43)
+
+**Context.**  T-chain run 2 exposed a silent exact-continuation violation:
+a step-42 `max_epochs_reached` checkpoint resumed and re-trained epoch 1 to
+step 63 (21 repeated micro-batches).  `progress.epoch` held the index of
+the last *started* epoch, so `range(start_epoch, max_epochs)` re-ran the
+completed final epoch.  An existing test manually assigned the correct
+state and thereby papered over the missing bookkeeping.
+
+**Chosen approach.**  On epoch completion the trainer advances
+`progress.epoch = epoch + 1` (mid-epoch stops keep the in-progress index,
+which equals the completed count); `epochs_completed` is `progress.epoch`
+directly.  Resuming a completed run is now a provable no-op — steps,
+history and weights do not move (pinned by
+`test_resume_of_a_completed_run_is_a_noop`); the manual-state test remains
+as the epoch-extension contract.
+
+**Alternatives considered.**  A separate `run_complete` flag on the
+checkpoint (a second source of truth that can drift from the counters);
+clamping `start_epoch` at resume time (hides the invariant instead of
+maintaining it).
+
+**Evidence.**  T-chain run 2 (step 42 → 63 repeat) vs run 3 (T3 resumes
+from the killed run's step-12 checkpoint to exactly 42, `history_len` 42,
+`epochs_completed: 2`); the regression test; suite 1687/22 at `925071d`.
+
+**Affected:**  `syntree/engine/trainer.py`, #43, the T-chain's T3/T4
+verifiers, `runtime_cross_session_continue.sh`'s prefix-identity
+assertion.
+
+## D-V2-048 — 2026-11-05 — max_epochs is run length, not a step semantic: cross-session continuation may extend it (#43)
+
+**Context.**  Writing the #43 cross-session continuation driver exposed a
+design tension: continuing a persisted run on a later session requires
+extending `max_epochs` past the checkpoint's saved value, but `max_epochs`
+was a digest field (after D-V2-046), so an extended resume would fail
+closed.
+
+**Chosen approach.**  `max_epochs` joins the operational set outside the
+digest.  #43's premise is that full-scale training exceeds a single
+session's lifetime; the epoch bound schedules run LENGTH, not what a step
+IS.  The per-step contract (batch/accum/pocket-cap/LR/decay/clip/
+precision/seed/profile-name) still fails closed — the regression test
+moves `max_epochs` to the excluded-knobs assertion.
+
+**Alternatives considered.**  A dedicated `--extend-epochs` resume flag
+that rewrites the checkpoint profile under a compatibility exception
+(special-case machinery for what is a legitimate continuation); keeping
+`max_epochs` digested and requiring new sessions to continue under the
+original bound (forbids the exact multi-session scaling #43 exists for).
+
+**Evidence.**  `test_operational_knobs_do_not_fragment_the_profile_digest`
+(max_epochs=7 digests equal; the eight semantics fields still differ);
+suite 1687/22 at `778ff1c`.
+
+**Affected:**  `syntree/engine/trainer.py`, #43,
+`scripts/runtime_cross_session_continue.sh`.
