@@ -739,9 +739,15 @@ class ResilientTrainer:
                     self.save_checkpoint()
             else:
                 # epoch completed on schedule: flush a trailing partial
-                # accumulation and reset the in-epoch cursor
+                # accumulation, reset the in-epoch cursor and advance the
+                # epoch counter PAST the completed epoch.  The advance is
+                # what makes a resumed COMPLETED run a no-op instead of a
+                # silent re-train of the final epoch (D-V2-047, caught live
+                # by the T-chain on 2026-11-05: a step-42 max_epochs
+                # checkpoint resumed and silently re-ran epoch 1 to step 63).
                 self._optimizer_step()
                 self.progress.batch_in_epoch = 0
+                self.progress.epoch = epoch + 1
                 if val_loader is not None and stop_reason == "max_epochs_reached":
                     self._log({"phase": "validation", **self.telemetry()})
                 if self.curriculum is not None:
@@ -764,9 +770,12 @@ class ResilientTrainer:
                 continue
             break  # time-budget break inside the batch loop
         self.save_checkpoint(extra={"stop_reason": stop_reason})
+        # ``progress.epoch`` counts COMPLETED epochs (it advances past an
+        # epoch only when that epoch finishes on schedule; a mid-epoch
+        # stop leaves it at the in-progress epoch index = completed count).
         return {
             "stop_reason": stop_reason,
-            "epochs_completed": self.progress.epoch + (1 if self.progress.batch_in_epoch == 0 else 0),
+            "epochs_completed": self.progress.epoch,
             "global_step": self.progress.global_step,
             "final_losses": self.history[-1] if self.history else None,
             "checkpoint": self.checkpoint_path,

@@ -364,6 +364,31 @@ class TestCheckpoints:
         trainer.fit(loader)
         assert trainer.progress.global_step > steps_before
 
+    def test_resume_of_a_completed_run_is_a_noop(self):
+        # D-V2-047: a max_epochs-reached checkpoint used to silently
+        # re-train the final epoch on resume — progress.epoch never
+        # advanced past a completed epoch, so range(start, max_epochs)
+        # re-ran it.  Caught live by the T-chain (2026-11-05: step-42
+        # checkpoint resumed and re-ran epoch 1 to step 63).  Resuming a
+        # COMPLETED run must not move at all.
+        run_dir = _mkdtmp()
+        first = _trainer(run_dir)
+        result = first.fit(_loader())
+        assert result["stop_reason"] == "max_epochs_reached"
+        assert result["epochs_completed"] == first.profile.max_epochs
+        steps = first.progress.global_step
+        history_len = len(first.history)
+        weights = {k: v.clone() for k, v in first.policy.state_dict().items()}
+        resumed = _trainer_via_resume(run_dir)
+        final = resumed.fit(_loader())
+        assert final["stop_reason"] == "max_epochs_reached"
+        assert final["epochs_completed"] == first.profile.max_epochs
+        assert resumed.progress.epoch == first.profile.max_epochs
+        assert resumed.progress.global_step == steps  # no re-training
+        assert len(resumed.history) == history_len  # no repeated samples
+        for key, value in weights.items():  # and no weight movement
+            assert torch.equal(resumed.policy.state_dict()[key], value)
+
 
 def _trainer_via_resume(run_dir: str) -> ResilientTrainer:
     block_classes, seed_rows, available = _mini_catalog_tensors()
