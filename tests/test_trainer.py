@@ -284,19 +284,22 @@ class TestCheckpoints:
             other.load_checkpoint(trainer.checkpoint_path)
 
     def test_operational_knobs_do_not_fragment_the_profile_digest(self):
-        # D-V2-046: the T-chain caught a live failure — a checkpoint saved
-        # under a 40 s session budget refused a budgetless resume because
-        # the digest hashed the operational knobs too.  Scheduling fields
-        # (budget / workers / telemetry+checkpoint cadence) are NOT
-        # training semantics; #43 makes them configurable per session.
+        # D-V2-046/D-V2-048: the T-chain caught a live failure — a checkpoint
+        # saved under a 40 s session budget refused a budgetless resume
+        # because the digest hashed the operational knobs too.  Scheduling
+        # fields (budget / workers / cadence / epoch bound — #43
+        # cross-session continuation extends epochs past a session) are
+        # NOT training semantics; they must not fragment the digest.
         base = TrainerProfile()
         assert TrainerProfile(
             time_budget_seconds=40,
             num_workers=2,
             log_interval_steps=5,
             checkpoint_interval_steps=50,
+            max_epochs=7,
         ).digest() == base.digest()
-        # ... while training semantics still change the digest (fail-closed):
+        # ... while per-step training semantics still change the digest
+        # (fail-closed):
         for field_name, value in (
             ("micro_batch_size", 6),
             ("gradient_accumulation_steps", 3),
@@ -305,7 +308,6 @@ class TestCheckpoints:
             ("weight_decay", 1e-6),
             ("gradient_clip_norm", 0.5),
             ("seed", 7),
-            ("max_epochs", 3),
             ("profile_name", "other_profile"),
         ):
             assert TrainerProfile(**{field_name: value}).digest() != base.digest(), field_name

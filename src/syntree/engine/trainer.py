@@ -126,13 +126,17 @@ class TrainerProfile:
 
     #: Profile fields that define training semantics and therefore
     #: checkpoint compatibility (#26 frozen Profile A).  The operational
-    #: session-scheduling knobs — ``time_budget_seconds``,
-    #: ``num_workers``, ``log_interval_steps`` and
-    #: ``checkpoint_interval_steps`` — are deliberately EXCLUDED: #43
-    #: requires configurable time-aware checkpointing, so a checkpoint
-    #: saved under one session budget must resume under another
-    #: (D-V2-046, caught live by the T-chain on 2026-11-05: a 40 s
-    #: budget checkpoint refused a budgetless resume).
+    #: session-scheduling knobs — ``time_budget_seconds``, ``num_workers``,
+    #: ``log_interval_steps``, ``checkpoint_interval_steps`` and
+    #: ``max_epochs`` — are deliberately EXCLUDED: #43 requires
+    #: configurable time-aware checkpointing and cross-session
+    #: continuation (a run whose epochs extend past one session's
+    #: lifetime), so a checkpoint saved under one session budget or epoch
+    #: bound must resume under another (D-V2-046/D-V2-048, caught live by
+    #: the T-chain on 2026-11-05: a 40 s budget checkpoint refused a
+    #: budgetless resume).  max_epochs bounds run LENGTH, not what a step
+    #: IS; the per-step contract (batch/accum/precision/optimizer/seed)
+    #: still fails closed.
     _DIGEST_FIELDS: ClassVar[tuple] = (
         "micro_batch_size",
         "gradient_accumulation_steps",
@@ -142,7 +146,6 @@ class TrainerProfile:
         "gradient_clip_norm",
         "precision",
         "seed",
-        "max_epochs",
         "profile_name",
     )
 
