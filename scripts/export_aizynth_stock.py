@@ -86,7 +86,20 @@ def main() -> int:
     smiles_list: list[str] = []
     duplicates: list[str] = []
     with h5py.File(args.catalog, "r") as h5:
-        attrs = {k: (v.decode() if isinstance(v, bytes) else v) for k, v in h5.attrs.items()}
+        def _plain(value):
+            import numpy as np_
+
+            if isinstance(value, np_.integer):
+                return int(value)
+            if isinstance(value, np_.floating):
+                return float(value)
+            if isinstance(value, bytes):
+                return value.decode()
+            if isinstance(value, (list, tuple)):
+                return [_plain(v) for v in value]
+            return value
+
+        attrs = {k: _plain(v) for k, v in h5.attrs.items()}
         ids = [b.decode() if isinstance(b, bytes) else str(b) for b in h5["catalog/block_ids"][:]]
         smiles = [
             s.decode() if isinstance(s, bytes) else str(s)

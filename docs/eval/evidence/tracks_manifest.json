@@ -1,0 +1,42 @@
+{
+  "track_a": {
+    "config": "/home/z/my-project/scratch/eval/track_a_stock_aligned.yml",
+    "label": "generator-stock-aligned route verification \u2014 NEVER report as independent of the generator's stock",
+    "stock": "/home/z/my-project/scratch/eval/stocks/enamine_stock.txt",
+    "stock_sha256": "299fc243cd4d5192655e72e464fc85305b08f59ef25623b7e9a9550281158ed5",
+    "stock_format": "aizynthfinder InMemoryInchiKeyQuery text"
+  },
+  "track_b": {
+    "config": "/home/z/my-project/scratch/eval/track_b_external_zinc.yml",
+    "label": "independent external-stock retrosynthesis",
+    "stock": "/home/z/my-project/scratch/aizynth_data/zinc_inchikeys.txt",
+    "stock_sha256": "c80161d04f27cce1698c34fb14e5dcc437f73c187a47b08e0b40f3333ef1a460",
+    "stock_source": "zinc_public_figshare_23086469"
+  },
+  "shared_policy": {
+    "models": {
+      "uspto_model.onnx": "/home/z/my-project/scratch/aizynth_data/uspto_model.onnx",
+      "uspto_templates.csv.gz": "/home/z/my-project/scratch/aizynth_data/uspto_templates.csv.gz",
+      "uspto_ringbreaker_model.onnx": "/home/z/my-project/scratch/aizynth_data/uspto_ringbreaker_model.onnx",
+      "uspto_ringbreaker_templates.csv.gz": "/home/z/my-project/scratch/aizynth_data/uspto_ringbreaker_templates.csv.gz",
+      "uspto_filter_model.onnx": "/home/z/my-project/scratch/aizynth_data/uspto_filter_model.onnx"
+    },
+    "model_sha256": {
+      "uspto_model.onnx": "bd0a3cb74cd7068de474c8fb789a00a66bc42c75636d66510ccac585ebe928f8",
+      "uspto_templates.csv.gz": "a4f1945e90cfa195538320833d68aed38f14e2fcc2f8afb5d958bc920edcafbe",
+      "uspto_ringbreaker_model.onnx": "1bf0690352d9e9212d7dbe8b35649caf74f73ef0b30edefdfdac37fce38085be",
+      "uspto_ringbreaker_templates.csv.gz": "5616a056454b10a2f044e69e027422128986856ebd958541a3bf9f837e3a0d14",
+      "uspto_filter_model.onnx": "ad29aa32bdfcbe37065045546493806cf04899c55386c438905d83fb14bb6320"
+    },
+    "source_urls": {
+      "uspto_model.onnx": "https://zenodo.org/record/7797465/files/uspto_model.onnx",
+      "uspto_templates.csv.gz": "https://zenodo.org/record/7341155/files/uspto_unique_templates.csv.gz",
+      "uspto_ringbreaker_model.onnx": "https://zenodo.org/record/7797465/files/uspto_ringbreaker_model.onnx",
+      "uspto_ringbreaker_templates.csv.gz": "https://zenodo.org/record/7341155/files/uspto_ringbreaker_unique_templates.csv.gz",
+      "uspto_filter_model.onnx": "https://zenodo.org/record/7797465/files/uspto_filter_model.onnx"
+    },
+    "note": "the public USPTO-derived policy of the aizynthfinder package \u2014 external to the generator's reaction taxonomy"
+  },
+  "never_merge": "the two tracks' solve rates are separate metrics (#44); no headline merge exists anywhere in this pipeline",
+  "generated_utc": "2026-11-04T23:28:00Z"
+}

@@ -47,8 +47,8 @@
 | #31 FLOW-03 | #29, #30 — **both closed 2026-11-04**; **CLOSED 2026-11-04** (S-V2-18: `scripts/train_stage2.py` + `configs/stage2_colab_t4.json` @ `6760b3d` — the V2-canonical form of the legacy `main.py --mode rl` (D-V2-040); Stage-1 weight init with verified provenance, `--resume-auto` exact continuation, fail-closed paths; 6 CLI tests against a REAL Stage-1 fit) | #37 (one dep closer: #31 satisfied) |
 | #32 TEST-01 | #5 — **closed 2026-11-03** (`0e1bf30`, S-V2-11: the five issue-pinned Suite A batteries 293/293 green + the canonical seeding module (`syntree/utils/seeding.py`) and shard-format primitive (`syntree/data/shards.py`) that #26/#43 and #19 consume) | #33 (satisfied) |
 | #33 TEST-02 | #7, #8, #21, #25, #26, #32 — **implemented + CPU-verified 2026-11-04** (S-V2-15: the five issue-pinned batteries under `tests/suite_b/` @ `7a6ea3b`; `pytest tests/suite_b/ -v` → 47 passed / 1 skipped — the single skip is the battery-4 T4 memory measurement, which by the issue's own scope requires the authorized #36 runtime and executes there without modification) | #34 (satisfied at the CPU level; the memory battery rides #36) |
-| #34 EVAL-01 | #29 | #35, #44 |
-| #35 EVAL-02 | #34, #44 | #37 |
+| #34 EVAL-01 | #29 — **closed 2026-11-04**; **CLOSED 2026-11-05** (S-V2-20: `syntree/engine/evaluator.py` + `scripts/run_benchmarks.py` + 35 tests; the external dependency RESOLVED — aizynthfinder 4.4.1 installable and runtime-verified with the public USPTO policy + the external ZINC stock (D-V2-044); the acceptance criterion verified with the real run: the 194-record corpus parsed, the independent solve rate (0.7333) in `evaluation_report.json`; evidence at `docs/eval/`) | #35 (unblocked), #44 (unblocked) |
+| #35 EVAL-02 | #34 ✓ closed, #44 ✓ closed — **implemented + harness-verified 2026-11-05** (S-V2-20: `syntree/engine/comparative.py` + `scripts/make_frozen_targets.py` + `scripts/run_comparative_benchmark.py` + 22 tests; the frozen 33-target manifest from the #18 test-split artifacts; the real run produced `comparative_benchmark.json` + markdown with bootstrap CIs on the 3D-SynTree side — the baseline structures await operator export) | #37 (one dep closer) |
 | #36 OPS-01 | — (no code deps; the **user authorization gate** is a hard external dependency, #45 §6/§29) — **prepared 2026-11-03** (S-V2-14: `notebooks/run_3d_syntree.ipynb` + `docs/ops/colab_ssh_workflow.md` @ `39e9a41`; the runtime-side init, the fail-closed T4 preflight, the operator `colab ssh` CLI flow and the §29.1 authentication handoff are ready; **no connection established — none claimed**) | #37, #43 (both ride the authorized session) |
 | #37 OPS-02 | #19, #26, #31, #35, #36 | — (final milestone) |
 | #38 FLOW-04 | implied: #15, #24 (from their `Blocks` lists) | — (**closed 2026-11-01**: spec delivered ahead of the cycle via the owner-directed reconciliation, D-V2-009; its deliverables live in `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/`) |
@@ -57,7 +57,7 @@
 | #41 DATA-06 | implied: #11, #12 — **closed 2026-11-03** (S-V2-12, `dea8809`: full-scale benchmark — exhaustive self-retrieval 68,417/0, brute-force equivalence 2,000/0, 888.7× reduction; the #18 consumer criterion demonstrated on real data) | #18 (satisfied) |
 | #42 CHEM-07 | implied: #13, #14, #24 — **all satisfied 2026-11-02** (#24 closed `74133c8`); remaining scope: the T4 benchmarking measurement (**advanced**: the #29 rollout driver @ `6eccd41` now consumes the #24 torsion head + the #42 oracle in the integrated generation loop) | — |
 | #43 OPS-03 | implied: #26, #36 | — |
-| #44 EVAL-03 | implied: #12, #34 — **#12 closed 2026-11-03**; remaining: #34 | — |
+| #44 EVAL-03 | implied: #12, #34 — **both closed**; **CLOSED 2026-11-05** (S-V2-20: both tracks through reproducible versioned configs; the Track A export preserves catalog IDs with the SHA-256 tie to the immutable catalog; the stock-mismatch test demonstrated with the REAL planner (gated test) + 22/8 classified mismatches in the corpus run; the two solve rates never merged — structural; evidence at `docs/eval/`) | — |
 
 \* #25 lists #39 and #29 lists #39 among dependencies (seed/anchor
 selection feeds the policy assembly and the GFlowNet forward probability);
@@ -79,9 +79,12 @@ before starting any of #39–#44 (#45 §17). Update 2026-11-02 (S-V2-08):
 #5 → #6 → #21 → #23 → #24 → #25 → #26 → #27 → #28 → #29 → #30 → #31 → #37
 ```
 
-Update (S-V2-18): #29/#30/#31 are closed — the remaining chain is
-**#34 → #44 → #35 → #37** (evaluation) with **#36 → #26/#42/#43** as
-the parallel authorized-hardware track and #28 the owner decision.
+Update (S-V2-20): the evaluation CPU track is complete — #34/#44
+closed with real-planner evidence.  The remaining work is
+**operator-gated**: the authorized-hardware track **#36 → #26/#42/#43**
+(operator `colab ssh` authentication), the baseline structures for
+**#35** (operator export), the **#28** licensed-data decision, and
+**#37** as the final milestone (blocked on #26 + #35).
 
 with the chemistry/data spur feeding in earlier:
 `#5 → #11 → #12/#15 → #18 → #19 → #26` and `#11 → #13 → #29`.
@@ -117,5 +120,5 @@ runs: **#41 → #18 → #19 → #20 → #26 → #27 → #28 → #29 → #30 → 
 | #16 | CrossDocked2020 / PDBbind refined / BindingMOAD raw sources | URLs + checksums + verification dates pinned in `docs/data/RAW_SOURCE_PROVENANCE.yaml` (verified 2026-10-28) |
 | #17 | MMseqs2 binary | **Resolved** (S-V2-11: static binary used for the full-scale run; splits closed) |
 | #26, #43 | Actual Tesla T4 runtime (Colab/Kaggle) | Requires user authorization per #45 §6/§28; NOT validatable in the CPU dev sandbox |
-| #34, #44 | AiZynthFinder + stock files | Unverified availability |
+| #34, #44 | AiZynthFinder + stock files | **Resolved 2026-11-05** (S-V2-20): aizynthfinder 4.4.1 pip-installable; the public USPTO policy (Zenodo 7797465/7341155) + the official public ZINC stock (figshare 23086469, 17,422,831 keys) downloaded and runtime-verified; the sandbox-side memory-bounded stock conversion is documented in `docs/eval/retrosynthesis_tracks.md` (D-V2-044) |
 | #37 | Hugging Face Hub write credentials (`HF_TOKEN` env var) | Available to authorized sessions only; never hardcode |

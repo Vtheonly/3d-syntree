@@ -58,6 +58,7 @@ from syntree.engine.evaluator import (  # noqa: E402
     EvaluationError,
     build_evaluation_report,
     load_generated_molecules,
+    parse_aizynth_output,
     posebusters_backend,
     run_aizynthfinder,
 )
@@ -127,6 +128,30 @@ def main() -> int:
         help="per-track planner wall-clock budget (seconds)",
     )
     parser.add_argument(
+        "--planner-checkpoint",
+        action="store_true",
+        help=(
+            "resume long planner runs across interruptions via the "
+            "aizynthcli --checkpoint protocol (the #43 session-safe "
+            "philosophy applied to evaluation)"
+        ),
+    )
+    parser.add_argument(
+        "--planner-retries",
+        type=int,
+        default=6,
+        help="max resume attempts per track when checkpointing is on",
+    )
+    parser.add_argument(
+        "--reuse-planner-output",
+        action="store_true",
+        help=(
+            "reuse an existing planner output whose target set matches "
+            "the corpus (#45 §15 artifact-reuse); mismatched outputs are "
+            "recomputed loudly, never silently accepted"
+        ),
+    )
+    parser.add_argument(
         "--replay-manifest",
         default=None,
         help="the #18 extraction manifest JSON (forward-replay block)",
@@ -159,9 +184,14 @@ def main() -> int:
     print(f"[eval] corpus inputs: {len(sdf_paths)} SDF artifacts")
     corpus = load_generated_molecules(sdf_paths)
     valid = [m for m in corpus if m.valid]
+    # planner targets are UNIQUE canonical SMILES: identical molecules
+    # need one search (the corpus multiplicity is recorded, not hidden —
+    # the #18 census accepts the same crystal ligand for many pockets)
+    unique_smiles = list(dict.fromkeys(m.smiles for m in valid))
     print(
         f"[eval] parsed {len(corpus)} records "
-        f"({len(valid)} valid, {len(corpus) - len(valid)} rejected)"
+        f"({len(valid)} valid, {len(corpus) - len(valid)} rejected; "
+        f"{len(unique_smiles)} unique structures)"
     )
 
     retro_tracks: dict[str, dict] = {}
@@ -170,14 +200,32 @@ def main() -> int:
     output_dir = os.path.dirname(os.path.abspath(args.output)) or "."
     for name, config in tracks.items():
         out_path = os.path.join(output_dir, f"aizynth_{name}.json")
-        print(f"[eval] retrosynthesis track {name!r}: planner -> {out_path}")
-        results = run_aizynthfinder(
-            [m.smiles for m in valid],
-            config,
-            out_path,
-            python_exe=args.aizynth_python,
-            timeout_seconds=args.planner_timeout,
-        )
+        corpus_smiles = unique_smiles
+        if args.reuse_planner_output and _reusable(out_path, corpus_smiles):
+            print(
+                f"[eval] retrosynthesis track {name!r}: reusing verified "
+                f"planner output {out_path} (targets match the corpus)"
+            )
+            results = parse_aizynth_output(out_path)
+        else:
+            print(
+                f"[eval] retrosynthesis track {name!r}: planner -> {out_path}"
+            )
+            results = _run_track_with_resume(
+                corpus_smiles,
+                config,
+                out_path,
+                python_exe=args.aizynth_python,
+                timeout_seconds=args.planner_timeout,
+                checkpoint_path=(
+                    os.path.join(
+                        output_dir, f"aizynth_{name}.checkpoint.jsonl"
+                    )
+                    if args.planner_checkpoint
+                    else None
+                ),
+                max_retries=args.planner_retries,
+            )
         retro_tracks[name] = results
         with open(config) as handle:
             config_payload = handle.read()
@@ -194,10 +242,19 @@ def main() -> int:
     if args.replay_manifest:
         with open(args.replay_manifest) as handle:
             manifest = json.load(handle)
+        totals = manifest.get("totals", {})
+        counts = manifest.get("counts", {})
         forward_replay = {
             "source": os.path.abspath(args.replay_manifest),
-            "accepted_trajectories": manifest.get("accepted"),
-            "rejected": manifest.get("rejected"),
+            "accepted_trajectories": totals.get("accepted"),
+            "rejected": totals.get("failed"),
+            "per_split": {
+                k: v.get("records")
+                for k, v in manifest.items()
+                if k.startswith("trajectories_")
+                and isinstance(v, dict)
+            },
+            "failure_vocabulary": counts,
             "replay_verified": True,
             "note": (
                 "internal forward-reaction replay (#18) — distinct from "
@@ -287,6 +344,60 @@ def main() -> int:
             f"no_route_found={section['num_no_route_found']}"
         )
     return 0
+
+
+def _reusable(out_path: str, corpus_smiles: list[str]) -> bool:
+    """True iff the planner artifact exists and covers exactly the corpus."""
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        return False
+    try:
+        existing = parse_aizynth_output(out_path)
+    except (EvaluationError, json.JSONDecodeError, OSError):
+        return False
+    return set(existing) == set(corpus_smiles)
+
+
+def _run_track_with_resume(
+    smiles: list[str],
+    config: str,
+    output_path: str,
+    python_exe: str,
+    timeout_seconds: float,
+    checkpoint_path: str | None,
+    max_retries: int,
+):
+    """Run one track, resuming across timeouts via aizynthcli checkpoints.
+
+    With ``--planner-checkpoint``, a timed-out attempt is not a failure:
+    the checkpoint records every processed target, and the retry skips
+    them — bounded foreground calls with resumable drivers (the same
+    contract as the #43 session-safe training resume).  Without
+    checkpointing, a timeout propagates as a loud error.
+    """
+    extra: list[str] = []
+    if checkpoint_path:
+        extra = ["--checkpoint", checkpoint_path]
+    attempts = 0
+    while True:
+        try:
+            return run_aizynthfinder(
+                smiles,
+                config,
+                output_path,
+                python_exe=python_exe,
+                timeout_seconds=timeout_seconds,
+                extra_args=extra,
+            )
+        except EvaluationError as err:
+            if not checkpoint_path or "timeout" not in str(err):
+                raise
+            if attempts >= max_retries:
+                raise
+            attempts += 1
+            print(
+                f"[eval] planner timeout; resuming from checkpoint "
+                f"(attempt {attempts}/{max_retries})"
+            )
 
 
 def _aizynthfinder_version(python_exe: str) -> str:

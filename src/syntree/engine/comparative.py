@@ -252,12 +252,19 @@ def method_section(
         "retrosynthesis": {},
     }
     if target_ids:
+        # a molecule's solve flag applies to EVERY target whose
+        # structure file carries it (pockets sharing one generated
+        # molecule must each see its retrosynthesis outcome)
         per_target: Dict[str, Dict[str, float]] = {}
         for track_name, results in retro_tracks.items():
             solved_flags: Dict[str, float] = {}
-            for target, result in results.items():
-                tid = target_ids.get(target, target)
-                solved_flags[tid] = 1.0 if result.is_solved else 0.0
+            for molecule in corpus:
+                stem = os.path.basename(molecule.source_path)
+                tid = stem.replace(".sdf", "").replace(".gz", "")
+                if tid in target_ids and molecule.smiles in results:
+                    solved_flags[tid] = (
+                        1.0 if results[molecule.smiles].is_solved else 0.0
+                    )
             per_target[track_name] = solved_flags
         section["per_target_retro"] = per_target
     for track_name, results in retro_tracks.items():
@@ -290,17 +297,11 @@ def comparative_report(
     target_ids = {t.target_id for t in targets}
     sections: Dict[str, Any] = {}
     for name, corpus in method_corpora.items():
-        id_map: Dict[str, str] = {}
-        for molecule in corpus:
-            stem = os.path.basename(molecule.source_path)
-            tid = stem.replace(".sdf", "").replace(".gz", "")
-            if tid in target_ids:
-                id_map[molecule.smiles] = tid
         sections[name] = method_section(
             name,
             corpus,
             method_retro.get(name, {}),
-            target_ids=id_map,
+            target_ids=target_ids,
             seed=seed,
         )
     reference = reference_method or next(iter(sections))

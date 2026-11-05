@@ -564,6 +564,81 @@ class TestRunBenchmarksCLI:
         assert report["retrosynthesis"]["stub_track"]["solve_rate"] == 1.0
         assert "stub corpus" in proc.stdout
 
+    def test_cli_planner_checkpoint_resume_across_timeout(self, tmp_path):
+        sdf = _write_sdf(str(tmp_path / "gen.sdf"), [ASPIRIN, ACETANILIDE])
+        # a stub planner that "hangs" (exceeds the per-call budget) on
+        # every molecule until the driver resumes from the checkpoint:
+        # molecules whose checkpoint line exists are skipped
+        stub = tmp_path / "slow_stub.py"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            + textwrap.dedent(
+                """
+                import json, os, sys, time
+                args = sys.argv[1:]
+                smi = args[args.index("--smiles") + 1]
+                out = args[args.index("--output") + 1]
+                ckpt = args[args.index("--checkpoint") + 1]
+                done = set()
+                if os.path.exists(ckpt):
+                    with open(ckpt) as h:
+                        done = {json.loads(l)["processed_smiles"] for l in h if l.strip()}
+                with open(smi) as h:
+                    targets = [l.strip() for l in h if l.strip()]
+                pending = [t for t in targets if t not in done]
+                if pending:
+                    # record one molecule, then exceed the budget: the
+                    # driver must retry and skip this molecule next time
+                    with open(ckpt, "a") as h:
+                        h.write(json.dumps({
+                            "processed_smiles": pending[0],
+                            "results": {"is_solved": True},
+                        }) + "\\n")
+                    time.sleep(30)
+                    sys.exit(0)
+                rows = [
+                    {"target": t, "is_solved": True, "number_of_routes": 1,
+                     "number_of_solved_routes": 1, "number_of_steps": 1,
+                     "search_time": 0.1, "precursors_in_stock": "Nc1ccccc1",
+                     "precursors_not_in_stock": ""}
+                    for t in targets
+                ]
+                with open(out, "w") as h:
+                    json.dump({"schema": {}, "data": rows}, h)
+                """
+            )
+        )
+        os.chmod(str(stub), 0o755)
+        output = tmp_path / "report.json"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(REPO_ROOT, "scripts", "run_benchmarks.py"),
+                "--sdf",
+                str(sdf),
+                "--corpus-description",
+                "resume corpus",
+                "--retro-track",
+                "t=" + _stub_config(str(tmp_path)),
+                "--aizynth-python",
+                str(stub),
+                "--planner-timeout",
+                "2",
+                "--planner-checkpoint",
+                "--planner-retries",
+                "8",
+                "--output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        report = json.loads(output.read_text())
+        assert report["retrosynthesis"]["t"]["num_targets"] == 2
+        assert "resuming from checkpoint" in proc.stdout
+
     def test_cli_rejects_missing_track_config(self, tmp_path):
         sdf = _write_sdf(str(tmp_path / "gen.sdf"), [ASPIRIN])
         proc = subprocess.run(

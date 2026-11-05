@@ -1,0 +1,156 @@
+{
+  "schema": "comparative-v2.0",
+  "corpus_description": "3D-SynTree V2 test-split constructions (33 forward-replay-verified target ligands of the frozen test manifest); the TargetDiff/DiffSBDD/SyntheMol baselines await operator-exported structures (their checkpoints/environments are external) \u2014 recorded as not_provided, never fabricated",
+  "frozen_targets": {
+    "num_targets": 33,
+    "target_ids": [
+      "pdbbind_1ws4",
+      "pdbbind_4k7o",
+      "crossdocked_LACI_ECOLI_61_332_0_1jye_A_rec_1tlf_ipt_lig_tt_min_0",
+      "crossdocked_LACI_ECOLI_61_332_0_1tlf_D_rec_1tlf_ipt_lig_tt_min_0",
+      "crossdocked_LACI_ECOLI_61_332_0_2pe5_A_rec_1tlf_ipt_lig_tt_min_0",
+      "crossdocked_LACI_ECOLI_61_332_0_4rzt_A_rec_1tlf_ipt_lig_tt_docked_10",
+      "crossdocked_LACI_ECOLI_61_332_0_4rzt_A_rec_1tlf_ipt_lig_tt_min_0",
+      "crossdocked_ATAD2_HUMAN_980_1108_0_5a5p_A_rec_4tz8_39u_lig_tt_min_0",
+      "crossdocked_ATAD2_HUMAN_980_1108_0_5a5q_A_rec_4tz8_39u_lig_tt_min_0",
+      "crossdocked_CARP_CRYPA_90_419_catalytic_0_3psy_A_rec_5isk_6lz_lig_tt_min_0",
+      "crossdocked_CARP_CRYPA_90_419_catalytic_0_3wz6_A_rec_5isk_6lz_lig_tt_docked_2",
+      "crossdocked_CARP_CRYPA_90_419_catalytic_0_4y3d_A_rec_5isk_6lz_lig_tt_min_0",
+      "crossdocked_CARP_CRYPA_90_419_catalytic_0_5hco_A_rec_5isk_6lz_lig_tt_min_0",
+      "crossdocked_CARP_CRYPA_90_419_catalytic_0_5lwr_A_rec_5isk_6lz_lig_tt_min_0",
+      "crossdocked_CARP_CRYPA_90_419_catalytic_0_5mb0_A_rec_5isk_6lz_lig_tt_min_0",
+      "crossdocked_CD44_MOUSE_21_171_0_4mre_A_rec_5bzc_4wt_lig_it2_tt_docked_19",
+      "crossdocked_AT2A1_BOVIN_1_993_0_2by4_A_rec_2agv_bhq_lig_tt_min_0",
+      "crossdocked_AT2A1_BOVIN_1_993_0_3nam_A_rec_2agv_bhq_lig_tt_min_0",
+      "crossdocked_AT2A1_BOVIN_1_993_0_3w5c_A_rec_2agv_bhq_lig_tt_min_0",
+      "crossdocked_PRDX5_HUMAN_53_214_0_1hd2_A_rec_4k7o_ekz_lig_tt_docked_0",
+      "crossdocked_PRDX5_HUMAN_53_214_0_1urm_A_rec_4k7o_ekz_lig_tt_docked_0",
+      "crossdocked_PRDX5_HUMAN_53_214_0_4k7i_A_rec_4k7o_ekz_lig_tt_min_0",
+      "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_docked_2",
+      "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_docked_3",
+      "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_min_0",
+      "crossdocked_PRDX5_HUMAN_53_214_0_4mmm_A_rec_4k7o_ekz_lig_tt_docked_1",
+      "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_1n9b_A_rec_4fh2_0rn_lig_tt_docked_0",
+      "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_3mke_A_rec_4fh2_0rn_lig_tt_docked_0",
+      "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_3oph_A_rec_4fh2_0rn_lig_tt_docked_0",
+      "bindingmoad_1WS4_GYP",
+      "bindingmoad_2AGV_BHQ",
+      "bindingmoad_4K7O_EKZ",
+      "bindingmoad_5L8N_6RQ"
+    ]
+  },
+  "reference_method": "syntree",
+  "methods": {
+    "syntree": {
+      "method": "syntree",
+      "num_structures": 33,
+      "num_valid": 33,
+      "not_provided": false,
+      "validity": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "fraction_sp3": [
+        0.5355634264725174,
+        0.4367482727710001,
+        0.6378606410424591
+      ],
+      "fingerprint_diversity": 0.8747317746084946,
+      "retrosynthesis": {
+        "stock_aligned": [
+          0.25,
+          0.0,
+          0.5
+        ],
+        "independent_external": [
+          0.6666666666666666,
+          0.4166666666666667,
+          0.9166666666666666
+        ]
+      },
+      "per_target_retro": {
+        "stock_aligned": {
+          "bindingmoad_1WS4_GYP": 0.0,
+          "bindingmoad_2AGV_BHQ": 1.0,
+          "bindingmoad_4K7O_EKZ": 1.0,
+          "bindingmoad_5L8N_6RQ": 0.0,
+          "crossdocked_AT2A1_BOVIN_1_993_0_2by4_A_rec_2agv_bhq_lig_tt_min_0": 1.0,
+          "crossdocked_AT2A1_BOVIN_1_993_0_3nam_A_rec_2agv_bhq_lig_tt_min_0": 1.0,
+          "crossdocked_AT2A1_BOVIN_1_993_0_3w5c_A_rec_2agv_bhq_lig_tt_min_0": 1.0,
+          "crossdocked_ATAD2_HUMAN_980_1108_0_5a5p_A_rec_4tz8_39u_lig_tt_min_0": 0.0,
+          "crossdocked_ATAD2_HUMAN_980_1108_0_5a5q_A_rec_4tz8_39u_lig_tt_min_0": 0.0,
+          "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_1n9b_A_rec_4fh2_0rn_lig_tt_docked_0": 0.0,
+          "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_3mke_A_rec_4fh2_0rn_lig_tt_docked_0": 0.0,
+          "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_3oph_A_rec_4fh2_0rn_lig_tt_docked_0": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_3psy_A_rec_5isk_6lz_lig_tt_min_0": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_3wz6_A_rec_5isk_6lz_lig_tt_docked_2": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_4y3d_A_rec_5isk_6lz_lig_tt_min_0": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_5hco_A_rec_5isk_6lz_lig_tt_min_0": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_5lwr_A_rec_5isk_6lz_lig_tt_min_0": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_5mb0_A_rec_5isk_6lz_lig_tt_min_0": 0.0,
+          "crossdocked_CD44_MOUSE_21_171_0_4mre_A_rec_5bzc_4wt_lig_it2_tt_docked_19": 1.0,
+          "crossdocked_LACI_ECOLI_61_332_0_1jye_A_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_1tlf_D_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_2pe5_A_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_4rzt_A_rec_1tlf_ipt_lig_tt_docked_10": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_4rzt_A_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_1hd2_A_rec_4k7o_ekz_lig_tt_docked_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_1urm_A_rec_4k7o_ekz_lig_tt_docked_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7i_A_rec_4k7o_ekz_lig_tt_min_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_docked_2": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_docked_3": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_min_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4mmm_A_rec_4k7o_ekz_lig_tt_docked_1": 1.0,
+          "pdbbind_1ws4": 0.0,
+          "pdbbind_4k7o": 0.0
+        },
+        "independent_external": {
+          "bindingmoad_1WS4_GYP": 1.0,
+          "bindingmoad_2AGV_BHQ": 1.0,
+          "bindingmoad_4K7O_EKZ": 1.0,
+          "bindingmoad_5L8N_6RQ": 1.0,
+          "crossdocked_AT2A1_BOVIN_1_993_0_2by4_A_rec_2agv_bhq_lig_tt_min_0": 1.0,
+          "crossdocked_AT2A1_BOVIN_1_993_0_3nam_A_rec_2agv_bhq_lig_tt_min_0": 1.0,
+          "crossdocked_AT2A1_BOVIN_1_993_0_3w5c_A_rec_2agv_bhq_lig_tt_min_0": 1.0,
+          "crossdocked_ATAD2_HUMAN_980_1108_0_5a5p_A_rec_4tz8_39u_lig_tt_min_0": 1.0,
+          "crossdocked_ATAD2_HUMAN_980_1108_0_5a5q_A_rec_4tz8_39u_lig_tt_min_0": 1.0,
+          "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_1n9b_A_rec_4fh2_0rn_lig_tt_docked_0": 0.0,
+          "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_3mke_A_rec_4fh2_0rn_lig_tt_docked_0": 0.0,
+          "crossdocked_BLA1_KLEPN_19_286_tazobactam2_0_3oph_A_rec_4fh2_0rn_lig_tt_docked_0": 0.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_3psy_A_rec_5isk_6lz_lig_tt_min_0": 1.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_3wz6_A_rec_5isk_6lz_lig_tt_docked_2": 1.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_4y3d_A_rec_5isk_6lz_lig_tt_min_0": 1.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_5hco_A_rec_5isk_6lz_lig_tt_min_0": 1.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_5lwr_A_rec_5isk_6lz_lig_tt_min_0": 1.0,
+          "crossdocked_CARP_CRYPA_90_419_catalytic_0_5mb0_A_rec_5isk_6lz_lig_tt_min_0": 1.0,
+          "crossdocked_CD44_MOUSE_21_171_0_4mre_A_rec_5bzc_4wt_lig_it2_tt_docked_19": 1.0,
+          "crossdocked_LACI_ECOLI_61_332_0_1jye_A_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_1tlf_D_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_2pe5_A_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_4rzt_A_rec_1tlf_ipt_lig_tt_docked_10": 0.0,
+          "crossdocked_LACI_ECOLI_61_332_0_4rzt_A_rec_1tlf_ipt_lig_tt_min_0": 0.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_1hd2_A_rec_4k7o_ekz_lig_tt_docked_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_1urm_A_rec_4k7o_ekz_lig_tt_docked_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7i_A_rec_4k7o_ekz_lig_tt_min_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_docked_2": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_docked_3": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4k7o_C_rec_4k7o_ekz_lig_tt_min_0": 1.0,
+          "crossdocked_PRDX5_HUMAN_53_214_0_4mmm_A_rec_4k7o_ekz_lig_tt_docked_1": 1.0,
+          "pdbbind_1ws4": 0.0,
+          "pdbbind_4k7o": 0.0
+        }
+      }
+    }
+  },
+  "paired_comparisons": [],
+  "notes": "retrosynthesis rates are per-track (#44): stock-aligned and independent external-stock are separate metrics and are never merged into a headline number",
+  "provenance": {
+    "wall_clock_s": 225.58,
+    "retro_tracks": [
+      "independent_external",
+      "stock_aligned"
+    ],
+    "bootstrap_seed": 0
+  }
+}

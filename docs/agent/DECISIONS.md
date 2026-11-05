@@ -1549,3 +1549,91 @@ regenerated pockets (0 failures).  Suite: **1615 passed / 20 skipped**.
 #29 (the rollout pool), #18 (the graft-spec machinery is now consumed
 by the supervised path), #42 (nothing — the terminal oracle is
 untouched).
+
+## D-V2-044 — 2026-11-05 — The evaluation-stack environment reconciliation (aizynthfinder 4.4.1 × rdkit 2026.09.1 × numpy 1.26) (#34/#44/#35)
+
+**Problem.**  The independent retrosynthesis planner required by
+#34/#44/#35 is `aizynthfinder` 4.4.1, whose metadata pins
+`rdkit>=2023.9.1,<2024.0.0` and `numpy<2.0.0`.  The V2 chemistry stack
+and its 1683-test suite are verified under modern rdkit (2026.09.1), and
+the data pipeline needs a pyarrow that co-exists with numpy<2 (the
+aizynthfinder dependency dask imports pyarrow; pyarrow ≥22 requires
+numpy ≥2 at import time).
+
+**Chosen approach.**  One environment running rdkit 2026.09.1 + numpy
+1.26.4 + pyarrow 16.1.0 + aizynthfinder 4.4.1 (onnxruntime policies —
+no TensorFlow).  The metadata conflict with aizynthfinder's
+conservative rdkit pin is **runtime-verified rather than obeyed**: the
+full planner pipeline (ONNX policy loading, rdchiral template
+application, tree searches on both stocks, route extraction) was
+exercised end-to-end under rdkit 2026.09.1 — acetanilide solved from a
+mini stock, aspirin solved with 36 routes from the full 17.4M ZINC
+stock, and the 194-record corpus evidence run completed without a
+single rdchiral/rdkit failure.  The conflict is recorded here and in
+`docs/eval/retrosynthesis_tracks.md` instead of silently downgrading
+the project's chemistry stack (the repo's own floor
+`rdkit>=2023.9.1` is satisfied either way, but the suite's verified
+behavior is the modern one).
+
+**Alternatives considered.**  (a) Obey the pin and downgrade to rdkit
+2023.9.6 — satisfies all metadata but re-validates 1683 chemistry
+tests against an unverified older toolchain; rejected.  (b) A separate
+planner-side venv — the subprocess isolation already provides the
+process boundary; a second interpreter adds operational complexity
+without removing the version question; rejected.  (c) The legacy
+TensorFlow policy backend — heavier and unmaintained; the ONNX backend
+is the package's current default; rejected.
+
+**Evidence.**  The evidence run of `scripts/run_benchmarks.py`
+(2026-11-05): Track A solve 0.2667, Track B solve 0.7333 over 30 unique
+structures, 0 planner failures; `pip check` reports exactly the one
+documented conflict (aizynthfinder × rdkit).
+
+**Affected:**  #34, #44, #35 (the evaluation stack), the dev
+environment bootstrap (pyarrow pinned <22 until aizynthfinder lifts
+numpy<2), future T4 runtime setup notes.
+
+## D-V2-045 — 2026-11-05 — The evaluation corpus semantics: unique-structure denominators, two-track separation, and planner checkpoint-resume (#34/#44/#35)
+
+**Problem.**  Three operational/scientific questions surfaced during
+the first real evaluation run: (1) the #18 corpus is 194 records over
+only **30 unique ligand structures** (the same crystal ligand is
+accepted for many pockets — e.g. the inositol-type sugar 36×) — which
+denominator defines a solve rate?; (2) how to keep two planner runs
+inside bounded tool-call budgets without losing work; (3) how to report
+per-target retrospective outcomes when several frozen targets share
+one generated molecule.
+
+**Chosen approach.**
+1. **Planner targets are deduplicated unique canonical SMILES**;
+   the solve-rate denominator is the unique-structure count (30), and
+   the corpus multiplicity (194 records over 30 structures) is recorded
+   in the report (`num_unique_valid_smiles` + the per-record corpus
+   list) — never hidden, never silently weighted.
+2. **Checkpoint-resume evaluation**: `run_benchmarks.py` /
+   `run_comparative_benchmark.py` pass the aizynthcli `--checkpoint`
+   protocol and retry across per-attempt timeouts; the aizynthcli
+   checkpoint is **positional** (input order must be identical across
+   resumes — guaranteed by the deterministic corpus order), and
+   finished planner outputs are **reused** only when their target set
+   exactly matches the corpus (#45 §15 artifact-reuse; mismatches
+   recompute loudly).
+3. **Per-target retro vectors map every frozen target whose structure
+   file carries a molecule to that molecule's solve flag** — pockets
+   sharing a generated molecule each see its outcome (33 test targets
+   over 12 unique structures → 33 per-target entries).
+
+**Alternatives considered.**  Per-record weighted solve rates (weight
+duplicated molecules by multiplicity — hides the uniqueness structure
+of the corpus behind a pocket-count artifact); id-keyed checkpoint
+resume (the aizynthcli protocol is positional — we guarantee order
+instead of patching the planner); no reuse (re-searching 194 targets
+per invocation wastes ~30 min per call for identical results).
+
+**Evidence.**  The Track A run (4 checkpoint-resumed calls, 53→99→147→
+194 lines), the final both-track report (220 KB), and the comparative
+run's `per_target_retro` counts (33 per track from 12 unique
+structures).
+
+**Affected:**  #34, #44, #35, the evidence artifacts in
+`docs/eval/evidence/`, future evaluation reruns on the T4 runtime.

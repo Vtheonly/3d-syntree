@@ -245,7 +245,11 @@ route is impossible. Comparative SBDD benchmarking against frozen held-out
 targets (#35) reports statistical uncertainty and paired comparisons where
 justified. Internal forward replay verifies internal construction
 consistency only — it does not prove an independent planner can rediscover
-a route.
+a route. The measured two-track evidence run (2026-11-05, on the
+194-record / 30-unique-structure #18 construction corpus) lives in
+`docs/eval/` with full provenance: stock-aligned solve rate 0.267 vs
+independent external-stock 0.733, every failure classified as a stock
+mismatch (never a planner failure).
 
 ## 10. Installation (development)
 
@@ -351,7 +355,7 @@ tracker; last updated 2026-11-02, session S-V2-09):
 | Approach-C quantile curriculum (9 levels / 6 stages / 0.03 floor) | **Done, verified, closed** | `syntree/engine/curriculum.py` + trainer/CLI integration (#27, S-V2-15): per-item difficulty over the five issue-named axes (pocket atoms, rotatable bonds, rings, pocket charge magnitude, handle rarity — D-V2-037), 9 quantile-balanced bins, floor-exact 6-stage distribution (D-V2-038), exactly-N deterministic epoch draws, milestone machine (val improvement ≥ 0.005, patience-2 fallback), checkpointable sampler state in the trainer payload; canonical `--curriculum` CLI flag (D-V2-039); 40/40 tests incl. the CLI smoke — both #27 acceptance criteria verified |
 | 2D → 3D transfer pretraining | Not started — code deps satisfied (#11/#12/#27 closed); **externally blocked on licensed reaction data** (owner decision) | #28 |
 | Test suites A/B | Suite A **done, verified, closed** (293/293); Suite B **implemented + CPU-verified** (47 passed / 1 skipped — the skip is the T4 memory measurement, gated on the authorized #36 session) | #32 (`tests/suite_a/`); #33 (`tests/suite_b/`) |
-| Evaluation pipelines | Not started | #34, #35, #44 |
+| Retrosynthesis & comparative evaluation stack | **#34/#44 done, verified, closed with real-planner evidence**; #35 harness verified on the frozen 33-target test manifest — baseline structures (TargetDiff/DiffSBDD/SyntheMol) await operator export | `syntree/engine/evaluator.py` + `syntree/engine/comparative.py` + `scripts/run_benchmarks.py` / `export_aizynth_stock.py` / `prepare_aizynth_tracks.py` / `make_frozen_targets.py` / `run_comparative_benchmark.py` (#34/#44/#35): the fail-closed generated-SDF corpus parser, the isolated `aizynthcli` subprocess boundary (public USPTO policy), the two never-merged stock tracks (generator-aligned Enamine 50k with catalog-ID/checksum tie + independent external ZINC 17,422,831), stock-mismatch vs planner-failure classification (real-planner-tested), seeded bootstrap CIs, paired-over-common-targets comparisons, `evaluation_report.json` / `comparative_benchmark.json` + markdown; evidence run on the 194-record / 30-unique-structure #18 corpus: validity 100%, PoseBusters 194/194, Track A solve 0.267 (22 stock mismatches), Track B solve 0.733 — see `docs/eval/` |
 | T4 GPU execution / training | **Prepared — awaiting operator authentication** | #36: `notebooks/run_3d_syntree.ipynb` (fail-closed T4 preflight, sshd setup, exact-commit checkout, separate RAM/VRAM preflight, canonical training launch) + `docs/ops/colab_ssh_workflow.md` (the operator's `colab ssh` CLI flow + the #45 §29.1 authorization handoff). No connection has been established and none is claimed; #43 profiling/resume rides the same session |
 | HF artifact synchronization | **Partially exercised** — one-time preservation upload of the #12 catalog dataset to HF (`JJKK1212/3d-syntree-v2-catalog`, private) under the owner's directive; the automated sync pipeline is #37's gated scope | #37 |
 

@@ -2519,3 +2519,146 @@ retry window (balance 0.00 — no compute units to buy priority).  The
 training chain (`launch_final.sh`: restore → D-V2-043 precheck on the
 runtime → suite-B → T1–T4) is staged and ready; **#26/#36/#43 remain
 open pending that run** — nothing is claimed without it.
+
+## Session S-V2-20 — 2026-11-05 — the evaluation stack: #34/#44 closed with real-planner evidence; #35 harness verified on the frozen test manifest (the CPU critical path of the S-V2-19 handoff)
+
+### 0. State discovery
+
+Read #45 in full (1,368 lines) + HANDOFF/STATUS/DEPENDENCIES at
+`4affac2` + the GitHub issue states re-fetched via the API (31 of 40
+closed; open: #26, #28, #34, #35, #36, #37, #42, #43, #44).  The
+authorized-hardware track (A in the S-V2-19 handoff) is **operator-gated
+and genuinely unavailable here**: no `ssh` binary and no `colab` CLI
+exist in this sandbox, and §29.1 forbids the agent from authenticating
+as the user — no GPU work was attempted and none is claimed.  The CPU
+track (handoff §1.B) was the session plan: **#34 → #44 → #35**.
+
+### 1. The external dependency resolution (#34's gate)
+
+`aizynthfinder` 4.4.1 pip-installable and **runtime-verified**: the
+public USPTO policy (Zenodo 7797465/7341155: ONNX rollout + ringbreaker
++ filter models, template libraries) downloaded; the official public
+ZINC stock (figshare 23086469) downloaded.  The stock's legacy
+fixed-format HDF5 cannot be unpickled inside the sandbox's 4 GB RAM —
+solved by a **memory-bounded exact extraction**: the pickle byte-stream
+is regex-scanned in windows anchored on the opcode + the 27-char
+InChIKey body — 17,422,831 keys = the HDF5 row count exactly (the
+first two window-boundary implementations over/under-counted by
+125/97 — caught by the row-count check and fixed with absolute-position
+tracking; the final SHA-256 `c80161d0…` is recorded).  Smoke
+evidence: aspirin solved with 36 routes (acetic anhydride +
+salicylic acid) from the full stock at 2.7 GB peak RSS.  Environment
+reconciliations recorded as **D-V2-044** (rdkit 2026.09.1 vs the
+package's conservative `<2024` pin — runtime-verified; numpy 1.26.4 ×
+pyarrow 16.1.0).  The evaluation corpus was pulled from the HF
+training bundle (`JJKK1212/3d-syntree-v2-runs`, tar sha-verified
+contents: 194 ligand + 194 pocket artifacts + the three .pt trajectory
+files 111/50/33) and the catalog re-downloaded + sha256-verified
+(`8b8c13a0…`, matches the pinned value).  Baseline suite: **1616
+passed / 19 skipped** (catalog-gated tests re-enabled).
+
+### 2. The implementation (#34/#44/#35, commit `6c8c2bc`)
+
+* `syntree/engine/evaluator.py` — the #34 library: the fail-closed
+  corpus parser (multi-record, gzipped, closed rejection vocabulary,
+  loud failure on wrong-file inputs), the physicochemical surface,
+  the **isolated aizynthcli subprocess boundary** (file-delivered
+  targets, flat-JSON results, non-zero/timeout/no-output all fail
+  loudly), the #44 failure vocabulary (`stock_mismatch` vs
+  `no_route_found` — never conflated), the optional fail-closed
+  PoseBusters/Vina adapters, and the `evaluation_report.json`
+  assembly with per-track provenance and the forward-replay block.
+* `scripts/run_benchmarks.py` — the canonical #34 CLI (+
+  checkpoint-resume and artifact-reuse per D-V2-045).
+* #44: `scripts/export_aizynth_stock.py` (Track A stock export with
+  the catalog-ID mapping + the SHA-256 tie) and
+  `scripts/prepare_aizynth_tracks.py` (the two track configs +
+  `tracks_manifest.json` with per-file checksums and the public
+  source URLs).
+* #35: `syntree/engine/comparative.py` (frozen-target loader,
+  deterministic seeded bootstrap CIs, paired differences over the
+  common-target intersection, the identical-evaluation-code path,
+  markdown summaries) + `scripts/make_frozen_targets.py` (the manifest
+  generator from the #18 test-split artifacts — **33 targets**, the
+  honest actual count, with the 100-target design target recorded as
+  not yet reachable) + `scripts/run_comparative_benchmark.py`.
+* Tests: `tests/test_evaluator.py` (35), `tests/test_eval_stock_tracks.py`
+  (11 + 3 real-planner gated on `SYNTREE_AIZYNTH_MODELS`), 
+  `tests/test_comparative_benchmark.py` (22).  Full suite: **1683
+  passed / 22 skipped**.
+
+### 3. The evidence runs (all real, all labelled)
+
+* **#34/#44**: the 194-record / **30-unique-structure** corpus through
+  the isolated public-USPTO planner, both tracks, with PoseBusters:
+  validity 194/194 (100%), mean Fsp3 0.5339, diversity 0.8934,
+  PoseBusters (`mol`) 194/194; **Track A (generator-stock-aligned
+  Enamine 50k): solve 0.2667** — 22 stock mismatches, 0 planner
+  failures; **Track B (independent external ZINC 17,422,831): solve
+  0.7333** — 8 stock mismatches, 0 planner failures.  The honest
+  reading: every unsolved target is a classified stock limitation; the
+  BB-filtered generator stock cannot cover the purchasable
+  intermediates the USPTO routes need, while the 17.4M-compound
+  external stock covers most.  The two rates answer different
+  questions and are never merged.
+* **#35**: the frozen 33-target manifest (test split) through the
+  comparative harness: validity 1.000 [1.000, 1.000], Fsp3 0.536
+  [0.437, 0.638], diversity 0.875, retro[stock_aligned] 0.250 [0.000,
+  0.500], retro[independent_external] 0.667 [0.417, 0.917]; the
+  baselines (TargetDiff/DiffSBDD/SyntheMol) are recorded as
+  not_provided — their structures await operator export.
+* Evidence copies: `docs/eval/evidence/` (evaluation_report.json 220 KB,
+  comparative_benchmark.json + .md, frozen_targets.json, the stock
+  manifests) + the provenance doc `docs/eval/retrosynthesis_tracks.md`.
+
+### 4. Operational events (recorded for future sessions)
+
+The sandbox recycles wiped the in-repo `.venv` **twice mid-session**
+(a cleaner targeting repo-local venvs) — resolved by the persistent
+`/home/z/my-project/evalenv` (outside the repo; survived every
+subsequent boundary; the reinstall is ~4 min).  A stray planner-output
+leak into the repo root from a relative-path test was caught by the
+pre-commit diff review and fixed at the source (outputs now land next
+to the report).  The corpus initially globbed both `.sdf` and
+`.sdf.gz` copies (388 = 2×194) — caught by the unique-structure count
+and cleaned.  Track A needed 4 checkpoint-resumed calls (53→99→147→194);
+Track B and the comparative run completed in single calls after the
+unique-target dedup (D-V2-045).
+
+### 5. Final state and next actions
+
+- Suite: **1683 passed / 22 skipped**.  Clean-room closures: **33 of
+  40** (#34 and #44 this session, both with real-planner evidence).
+- Open items: #26/#42/#43 (the authorized-T4 session — unchanged),
+  #36 (the operator's `colab ssh` authentication), #28 (licensed
+  reaction data — owner decision), #35 (baseline structures —
+  operator export), #37 (blocked on #26 + #35).
+- Next session (CPU): nothing on the critical path — the remaining
+  open items are operator-gated; if the owner authenticates the T4
+  runtime, run the S-V2-19 staged chain (restore → precheck →
+  suite-B → T1–T4), which closes #26/#36/#43 (and #42's benchmark).
+  If the owner exports baseline structures, #35 closes via
+  `scripts/run_comparative_benchmark.py --method NAME=DIR`.
+
+### 6. Honest verification ledger
+
+- Attempted: #34, #44, #35 (all three implemented + tested; #34/#44
+  closed; #35 harness verified, baseline data pending).
+- Implemented: `syntree/engine/evaluator.py`,
+  `syntree/engine/comparative.py`, five evaluation scripts, three
+  test batteries (67 tests + 3 planner-gated), the evidence corpus +
+  two-track planner runs, the frozen-target comparative run, the
+  provenance docs.
+- Tested locally: the full suite (1683/22 green with the catalog
+  artifact present); the real-planner integration tests re-enabled
+  with `SYNTREE_AIZYNTH_MODELS` (14/14 in that gate).
+- Tested on T4: **none this session** — CPU-only sandbox; no GPU claim
+  is made (the T4-gated items remain #26/#42/#43 riding #36).
+- Scientifically verified: the independent retrosynthesis evidence on
+  the honest #18 construction corpus (two tracks, failure-category
+  classification, PoseBusters geometry, CIs) — **the corpus is NOT
+  trained-policy output**, and no such claim is made anywhere.
+- NOT claimed: any baseline comparison (the structures are not
+  provided); any Vina docking score (the adapter is implemented and
+  fail-closed but was not exercised in the evidence run — no receptor
+  preparation was run on the pocket artifacts); any T4 behavior.

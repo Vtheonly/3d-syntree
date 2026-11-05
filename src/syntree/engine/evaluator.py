@@ -646,6 +646,7 @@ def build_evaluation_report(
             "description": corpus_description,
             "num_records": len(corpus),
             "num_valid": len(valid),
+            "num_unique_valid_smiles": len({m.smiles for m in valid}),
             "validity_rate": (len(valid) / len(corpus)) if corpus else 0.0,
             "rejections": {
                 code: sum(

@@ -55,6 +55,7 @@ from syntree.engine.comparative import (  # noqa: E402
 from syntree.engine.evaluator import (  # noqa: E402
     EvaluationError,
     load_generated_molecules,
+    parse_aizynth_output,
     run_aizynthfinder,
 )
 
@@ -101,6 +102,53 @@ def parse_method_specs(specs: list[str]) -> dict[str, str]:
     return methods
 
 
+def _reusable(out_path: str, corpus_smiles: list[str]) -> bool:
+    """True iff the planner artifact exists and covers exactly the corpus."""
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        return False
+    try:
+        existing = parse_aizynth_output(out_path)
+    except (EvaluationError, json.JSONDecodeError, OSError):
+        return False
+    return set(existing) == set(corpus_smiles)
+
+
+def _run_with_resume(
+    smiles: list[str],
+    config: str,
+    output_path: str,
+    python_exe: str,
+    timeout_seconds: float,
+    checkpoint_path: str | None,
+    max_retries: int,
+):
+    """Run one track, resuming across timeouts via aizynthcli checkpoints."""
+    extra: list[str] = []
+    if checkpoint_path:
+        extra = ["--checkpoint", checkpoint_path]
+    attempts = 0
+    while True:
+        try:
+            return run_aizynthfinder(
+                smiles,
+                config,
+                output_path,
+                python_exe=python_exe,
+                timeout_seconds=timeout_seconds,
+                extra_args=extra,
+            )
+        except EvaluationError as err:
+            if not checkpoint_path or "timeout" not in str(err):
+                raise
+            if attempts >= max_retries:
+                raise
+            attempts += 1
+            print(
+                f"[bench] planner timeout; resuming from checkpoint "
+                f"(attempt {attempts}/{max_retries})"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="#35 EVAL-02 comparative SBDD benchmark driver"
@@ -130,6 +178,19 @@ def main() -> int:
     )
     parser.add_argument(
         "--planner-timeout", type=float, default=3600.0, help="per-track budget"
+    )
+    parser.add_argument(
+        "--planner-checkpoint",
+        action="store_true",
+        help="resume long planner runs across interruptions (aizynthcli checkpoint)",
+    )
+    parser.add_argument(
+        "--planner-retries", type=int, default=6, help="max resume attempts"
+    )
+    parser.add_argument(
+        "--reuse-planner-output",
+        action="store_true",
+        help="reuse an existing planner output whose targets match (#45 §15)",
     )
     parser.add_argument(
         "--reference",
@@ -182,22 +243,43 @@ def main() -> int:
             valid = [m for m in corpus if m.valid]
             if not valid:
                 continue
+            # unique structures only: identical molecules need one search
+            unique_smiles = list(dict.fromkeys(m.smiles for m in valid))
             for track_name, config in retro_tracks.items():
                 out_path = os.path.join(
                     output_dir, f"aizynth_{method_name}_{track_name}.json"
                 )
+                if args.reuse_planner_output and _reusable(
+                    out_path, unique_smiles
+                ):
+                    print(
+                        f"[bench] retro[{track_name}] on {method_name!r}: "
+                        f"reusing verified planner output {out_path}"
+                    )
+                    method_retro[method_name][track_name] = parse_aizynth_output(
+                        out_path
+                    )
+                    continue
                 print(
                     f"[bench] retro[{track_name}] on {method_name!r} "
-                    f"({len(valid)} molecules)"
+                    f"({len(unique_smiles)} unique structures)"
                 )
-                results = run_aizynthfinder(
-                    [m.smiles for m in valid],
+                method_retro[method_name][track_name] = _run_with_resume(
+                    unique_smiles,
                     config,
                     out_path,
                     python_exe=args.aizynth_python,
                     timeout_seconds=args.planner_timeout,
+                    checkpoint_path=(
+                        os.path.join(
+                            output_dir,
+                            f"aizynth_{method_name}_{track_name}.checkpoint.jsonl",
+                        )
+                        if args.planner_checkpoint
+                        else None
+                    ),
+                    max_retries=args.planner_retries,
                 )
-                method_retro[method_name][track_name] = results
 
     description = args.corpus_description or (
         "exported generated structures evaluated on the frozen "

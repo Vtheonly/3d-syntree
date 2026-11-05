@@ -12,24 +12,21 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-05 (session S-V2-19 **in progress**: the
-> authorized-T4 data reconstruction completed **bit-exact** — 204,005
-> records, splits 136,764/17,096/17,095 zero-leakage, index
-> byte-deterministic, TRAJECTORY_BITEXACT: PASS on all three pinned
-> .pt SHA-256s; the Suite-B memory battery re-run on the T4 for the
-> record (peak reserved 3.758 GiB — exact reproduction).  The first
-> canonical `train_stage1.py` launch failed closed on a real bug —
-> **D-V2-043**: the molecule-side pool matched reactant templates
-> against product-form graphs, structurally blinding it to the nine
-> graft classes (4ITP's Negishi methyl; every aryl C-H) — fixed with
-> reactant-form graft matching (`b7e0f3d`, suite **1615/20**); the fix
-> also corrects the #29 rollout pool.  Runtime-recycle recovery
-> engineered and proven (the complete 388-artifact bundle on HF + the
-> committed sanitized drivers, `02f4443`).  **#26/#36/#43 remain open
-> pending the training run — the free-tier T4 endpoint returned
-> Service Unavailable through the session's retry window**; suite
-> **1615 passed / 20 skipped**; clean-room closures remain **31 of
-> 40**.)
+> Last synchronized: 2026-11-05 (session S-V2-20: the **evaluation
+> stack landed and closed with real-planner evidence** — #34 EVAL-01
+> and #44 EVAL-03 closed; #35 EVAL-02 implemented + harness-verified on
+> the frozen 33-target test manifest (baseline structures await
+> operator export).  Evidence run (dev sandbox, CPU): the 194-record /
+> 30-unique-structure #18 corpus through the isolated public-USPTO
+> AiZynthFinder — validity 194/194, PoseBusters 194/194, mean Fsp3
+> 0.5339, diversity 0.8934; Track A (generator-stock-aligned Enamine)
+> solve 0.2667 with 22 stock mismatches, Track B (independent external
+> ZINC 17,422,831) solve 0.7333 with 8 — every unsolved target is a
+> classified stock mismatch, never a planner failure; the two rates are
+> separate metrics, never merged.  The T4 track is unchanged:
+> #26/#36/#43 remain open pending the authorized runtime.  Suite
+> **1683 passed / 22 skipped** (+3 planner-gated tests re-enabled with
+> `SYNTREE_AIZYNTH_MODELS`); clean-room closures **33 of 40**.)
 
 ## Legend
 
@@ -70,8 +67,8 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 31 | FLOW-03 | Stage-2 CLI + checkpoint state | **Closed** (2026-11-04, S-V2-18: the V2-canonical form of `main.py --mode rl` — `scripts/train_stage2.py` + `configs/stage2_colab_t4.json` @ `6760b3d` (D-V2-040: the branching `--algorithm` flag is structurally absent, Stage 2 IS GFlowNet-TB): catalog-H5-driven mask surfaces + the environment BuildingBlock pool (the D-V2-041 bridges), the pocket pool from the #18 records + processed artifacts (Stage-1 loaders reused, capped), Stage-1 weight initialization with SHA-256 sidecar verification + exact provenance telemetry (checkpoint path + policy parameter hash), `--resume-auto` fail-closed semantics (resume Stage-2 exactly — the log Z θ state + both optimizer groups + progress + RNG ride the atomic SHA-256 payload; else initialize from Stage-1; else refuse — never random weights), the on-policy TB loop with deterministic (seed, update) pocket permutations, per-update telemetry (separate host-RAM/GPU-VRAM), checkpoint cadence + time-budget graceful stop (#43 contract). Both acceptance criteria verified against a REAL in-process Stage-1 fit: the init record's policy hash equals the Stage-1 checkpoint's model exactly; `--resume-auto` continues an interrupted run (updates 2 → 4, history intact) | `scripts/train_stage2.py` + `configs/stage2_colab_t4.json` | `6760b3d` | `tests/test_stage2_cli.py` 6/6; full suite 1613/20 | — |
 | 32 | TEST-01 | Suite A capability regression | **Closed** (2026-11-03, S-V2-11: the five issue-pinned batteries under `tests/suite_a/` — reaction execution + isotope provenance (all 32 reactions), posebusters filters, conformer snapping (scaffold restraints), shard I/O (deterministic gzip + sha256 fail-closed), seeding determinism) | `tests/suite_a/` + `syntree/utils/seeding.py` + `syntree/data/shards.py` | `0e1bf30` | `pytest tests/suite_a/ -q` **293/293 green**; the seeding module + shard primitive are the canonical modules #26/#43 and #19 consume (no duplication) | — |
 | 33 | TEST-02 | Suite B invariant tests | **Closed** (2026-11-04, S-V2-15 implemented + CPU-verified: the five issue-pinned batteries under `tests/suite_b/` @ `7a6ea3b` — mathematical singularities, SE(3) invariance/covariance, tensor-contract separation, the T4 memory boundary, GFlowNet deterministic reverse + TB loss; **closed with the authorized T4 evidence** — S-V2-16/17: the hardware-gated memory measurement executed on the live Tesla T4 after `cac741e` fixed the cross-device accumulators + the CUDA generator hazard, with #25's on-device finiteness assertions pinned in the same battery) | `tests/suite_b/` | `7a6ea3b` + `cac741e` | 47 CPU tests green + the on-T4 memory measurement executed; full suite 1613/20 | — |
-| 34 | EVAL-01 | Independent AiZynthFinder evaluation | Blocked (needs #29) | `scripts/` | — | — | AiZynthFinder availability unverified |
-| 35 | EVAL-02 | Comparative SBDD benchmark | Blocked (needs #34, #44) | `scripts/` | — | — | |
+| 34 | EVAL-01 | Unlinked independent retrosynthesis evaluation (AiZynthFinder) | **Closed** (2026-11-05, S-V2-20: `syntree/engine/evaluator.py` + `scripts/run_benchmarks.py` + 35 tests — the fail-closed generated-SDF corpus parser (multi-record/gzipped/closed rejection vocabulary), the physicochemical surface (Fsp³/MW/Morgan-diversity), the **isolated aizynthcli subprocess boundary** (public USPTO policy + external stock), the flat-output parser with the #44 failure vocabulary, the optional fail-closed PoseBusters/Vina adapters, and `evaluation_report.json` with per-track provenance + the forward-replay block; acceptance verified with the real run: `run_benchmarks.py` parsed the 194-record corpus and output the independent solve rate in `evaluation_report.json` — validity 194/194, independent-external solve 0.7333 (8 stock mismatches, 0 planner failures), PoseBusters 194/194; evidence at `docs/eval/`) | `syntree/engine/evaluator.py` + `scripts/run_benchmarks.py` | `6c8c2bc` | `tests/test_evaluator.py` 35/35 + the real-planner evidence run | — |
+| 35 | EVAL-02 | Comparative SBDD benchmark suite (TargetDiff, DiffSBDD, SyntheMol) | **Implemented — harness verified on the available corpus; baseline structures await operator export** (2026-11-05, S-V2-20: `syntree/engine/comparative.py` + `scripts/make_frozen_targets.py` + `scripts/run_comparative_benchmark.py` + 22 tests — the frozen target manifest generated from the #18 test-split artifacts (33 targets, the honest actual count recorded), deterministic seeded percentile bootstrap CIs, paired differences over the common-target intersection only (empty intersections fail loudly), the identical-evaluation-code guarantee (structural, tested), `comparative_benchmark.json` + summary markdown with CIs; the real run on the frozen manifest: validity 1.000 [1.000, 1.000], Fsp3 0.536 [0.437, 0.638], diversity 0.875, retro[stock_aligned] 0.250 [0.000, 0.500], retro[independent_external] 0.667 [0.417, 0.917]; the TargetDiff/DiffSBDD/SyntheMol rows are recorded as not_provided (their checkpoints/environments are external — operator exports pending); evidence at `docs/eval/evidence/`) | `syntree/engine/comparative.py` + `scripts/run_comparative_benchmark.py` | `6c8c2bc` | `tests/test_comparative_benchmark.py` 22/22 + the real frozen-target run | Operator exports the baseline structures (one SDF per target_id) |
 | 36 | OPS-01 | Colab SSH remote workflow | **Prepared — Awaiting Operator Authentication** (2026-11-03, S-V2-14: `notebooks/run_3d_syntree.ipynb` — fail-closed Tesla-T4 preflight (#45 §29.2), aria2/libxrender1/openssh-server install, sshd start, exact branch/commit checkout, repo-declared environment, the mandatory separate host-RAM/GPU-VRAM preflight, GPU forward/backward smoke, the canonical training launch; `docs/ops/colab_ssh_workflow.md` — the owner's `colab ssh` CLI patterns + the exact §29.1 authentication handoff) | `notebooks/run_3d_syntree.ipynb` + `docs/ops/colab_ssh_workflow.md` | `39e9a41` | No runtime tests yet — **the session criteria (authorized connection, T4 via nvidia-smi AND PyTorch ~15 GB, separate RAM/VRAM capture, remote fwd/bwd test, remote training launch) all require the operator's `colab ssh` authentication**; no connection established, none claimed | Operator runs `colab ssh`, authenticates with their Google account, confirms; then the agent connects and executes the §29.2 verification |
 | 37 | OPS-02 | Hugging Face artifact sync | Blocked (needs #19, #26, #31, #35, #36) — final milestone | `syntree/utils/` | — | — | |
 | 38 | FLOW-04 | MDP state / derivation DAG semantics | **Closed** (2026-11-01) | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` | (this session) | All 5 acceptance criteria: written spec distinguishing MDP vs DAG; proven + implemented uniform-leaf `P_B` (STOP term zero by proof); multi-path/symmetric flow tests; toy-DAG `P(x) = R(x)/Z` verification (19 states / 31 trajectories, residuals < 1e-9); #29 references #38's semantics | — |
@@ -80,32 +77,33 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 41 | DATA-06 | Hashed inverted synthon index | **Closed** (2026-11-03, S-V2-12: built + benchmarked at full scale — exhaustive self-retrieval 68,417 checks/0 lost, brute-force equivalence 2,000 queries/0 mismatches, 888.7× mean candidate reduction, 1.34 µs lookups, byte-deterministic rebuilds, fail-closed version guards; the #18 consumer criterion demonstrated on real data) | `syntree/chemistry/synthon_index.py` + `scripts/build_synthon_index.py` | `dea8809` | `tests/test_synthon_index.py` 28/28; full-scale benchmark manifest | — |
 | 42 | CHEM-07 | Terminal Sub-Bin Geometry Refinement (re-scoped) | Implemented — Awaiting Verification of remaining scope (core + tests closed at S-V2-03/D-V2-009/015; the #13 stages integrated behind the D-V2-017 flags; **S-V2-18 advanced the integrated-generation wiring**: the #29 rollout driver now consumes the #24 torsion head + the #42 terminal oracle in the production generation loop); remaining: the T4 benchmarking measurement (rides the authorized #36 session) | `syntree/engine/environment.py` (terminal oracle) + `syntree/engine/rollout.py` (integration) | `d1a9167` + `6eccd41` | coarse-scan-seeded Brent ±5° + MMFF94 restraints, bin-containment + dense-scan comparison + covalent-geometry preservation tests; consumed end-to-end by the rollout driver battery | T4 benchmark (#36) |
 | 43 | OPS-03 | Measured T4 profiling + session-safe resume | Blocked (needs #26, #36) | `syntree/engine/` | — | — | |
-| 44 | EVAL-03 | Stock-aligned + independent retrosynthesis tracks | Blocked (needs #12, #34) | `scripts/` | — | — | |
+| 44 | EVAL-03 | Stock-aligned + independent AiZynthFinder tracks | **Closed** (2026-11-05, S-V2-20: both tracks through reproducible versioned configs — `scripts/export_aizynth_stock.py` (Track A: 50,000 unique InChIKeys, catalog-ID mapping preserved, the SHA-256 tie to the immutable catalog `8b8c13a0…` recorded) + `scripts/prepare_aizynth_tracks.py` (the two configs + `tracks_manifest.json` with per-file SHA-256s and the documented Zenodo/figshare URLs); Track B = the official AiZynthFinder public ZINC stock (17,422,831 keys, the exact memory-bounded extraction documented); the stock-mismatch test demonstrated with the REAL planner (gated test + 22/8 classified mismatches in the corpus run); the two solve rates are separate report sections — no merged headline key exists in the schema (pinned by tests); the report distinguishes forward replay / stock-aligned / independent; #35's output includes both; provenance doc `docs/eval/retrosynthesis_tracks.md`) | `scripts/export_aizynth_stock.py` + `scripts/prepare_aizynth_tracks.py` + `docs/eval/` | `6c8c2bc` | `tests/test_eval_stock_tracks.py` 11/11 (+3 real-planner gated) + the evidence run | — |
 
-**Progress denominator: 40 issues (#5–#44).** Closed: **31** (#5–#25,
-#27, #29, #30, #31, #32, #33, #38–#41 — clean-room era; the FLOW track
-#29/#30/#31 closed S-V2-18; #25/#33 closed with the S-V2-16/17 T4
-evidence). Implemented-awaiting: #26 (the two training-run T4 criteria
-— the canonical `train_stage1.py` launch), #42 (the T4 benchmarking
-measurement; its integrated-generation wiring now exists in the #29
-rollout driver) — both ride the authorized #36 session.
-Prepared-awaiting: #36 (the operator's runtime: S-V2-16/17 captured
-the authorized connection, the T4 verification, the RAM/VRAM preflight
-and the fwd/bwd peaks; the remote training launch, persisted training
-telemetry and the #43 cross-session continuation remain).
-Blocked-external: #28 (licensed reaction data — owner decision).
-Dependency-READY: **#34 EVAL-01** (deps #29 ✓ closed, #12 ✓ closed;
-AiZynthFinder availability is its external dependency), then #44 →
-#35 → #37. #45 excluded by standing rule.
+
+**Progress denominator: 40 issues (#5–#44).** Closed: **33** (#5–#25,
+#27, #29, #30, #31, #32, #33, #34, #38–#41, #44 — clean-room era; the
+FLOW track closed S-V2-18; #25/#33 closed with the S-V2-16/17 T4
+evidence; #34/#44 closed S-V2-20 with the real-planner evaluation
+evidence).  Implemented-awaiting: #26 (the two training-run T4
+criteria), #42 (the T4 benchmarking measurement), #35 (the baseline
+structures — the harness, frozen manifest and 3D-SynTree side are
+verified) — #26/#42 ride the authorized #36 session; #35 rides the
+operator's baseline exports.  Prepared-awaiting: #36 (the authorized
+connection, T4 verification, RAM/VRAM preflight and fwd/bwd peaks are
+captured; the remote training launch, persisted training telemetry and
+the #43 cross-session continuation remain).  Blocked-external: #28
+(licensed reaction data — owner decision).  Dependency-READY: **#37
+OPS-02** is the final milestone — its remaining blockers are #26 (the
+T4 run) and #35 (the baseline comparison). #45 excluded by standing rule.
 
 ## Pre-existing failures
 
-None. The clean-room suite is **1613 passed / 20 skipped** green (S-V2-18
-without the catalog artifact present; 20 skips = 16 by-design #11 stereo
-pairs + 3 catalog-artifact-gated, re-enabling with
-`SYNTREE_CATALOG_H5` pointed at a verified catalog, + 1 Suite-B T4
-memory measurement gated on the authorized #36 runtime); there are no
-inherited failures.
+None. The clean-room suite is **1683 passed / 22 skipped** green
+(S-V2-20 with the catalog artifact present: 22 skips = 16 by-design #11
+stereo pairs + 2 catalog-artifact-gated (the `work/catalog/…` path) +
+3 real-planner tests gated on `SYNTREE_AIZYNTH_MODELS` pointing at the
+documented public download, + 1 Suite-B T4 memory measurement gated on
+the authorized #36 runtime); there are no inherited failures.
 
 ## Session log pointer
 
