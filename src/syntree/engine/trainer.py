@@ -28,6 +28,23 @@ frozen in version-controlled configuration, never probed from VRAM):
   ``RuntimeConfig`` of :func:`syntree.utils.hardware.configure_runtime_environment`);
 * AdamW (lr ``3e-4``, weight decay ``1e-5``), gradient clipping norm 1.0.
 
+**The R3 profile extension (``colab_t4_profile_a_r3``, owner-directed
+2026-11-06, D-V2-050):** AdamW weight decay ``1e-2``; a cosine LR schedule
+``3e-4 → 3e-5`` with a scale-aware warmup (a frozen fraction of a frozen
+step horizon — never re-shaped by cross-session epoch extension,
+D-V2-048); validation-based early stopping (patience 5, ``min_delta``
+0.10 absolute in the measured ~12–16 validation-loss units) with
+best-validation checkpoint selection (``best_state.pt``, same atomic
+SHA-256 contract); and the anchor-margin monitor (warn −800 / graceful
+stop −700 / hard guard −1000, degradation-increasing energy-like
+convention — no pre-existing ``-1000`` guard was found in either branch,
+and no Stage-1 quantity lives on that scale, so the thresholds ship in
+the documented calibration-pending mode until an environment-side
+energy source is wired; see :class:`AnchorMarginMonitor`).  Every R3
+field defaults to its Profile-A value, and the Profile-A digest is
+bit-identical to the pre-R3 digest, so all persisted Profile-A
+checkpoints (``runs/stage1_t4_session*``) remain resumable.
+
 Losses (Stage-1 behavioural cloning, #45 §12.1): discrete
 cross-entropies over the strictly categorical laws (seed/anchor, STOP,
 handle, family/reaction, synthon, parity) plus the circular von Mises
@@ -52,7 +69,7 @@ import math
 import os
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional, Sequence
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Sequence
 
 import torch
 from torch.utils.data import DataLoader
@@ -77,6 +94,11 @@ __all__ = [
     "TrainerProfile",
     "TrainingDivergenceError",
     "TrainerStateError",
+    "AnchorMarginMonitor",
+    "ANCHOR_MARGIN_OK",
+    "ANCHOR_MARGIN_WARN",
+    "ANCHOR_MARGIN_GRACEFUL_STOP",
+    "ANCHOR_MARGIN_HARD_GUARD",
     "host_memory_telemetry",
     "gpu_memory_telemetry",
     "ResilientTrainer",
@@ -103,10 +125,23 @@ class TrainerStateError(RuntimeError):
 
 @dataclass(frozen=True)
 class TrainerProfile:
-    """The static training profile (Profile A — Tesla T4 FP32).
+    """The static training profile (Profile A — Tesla T4 FP32; R3 extension).
 
     Every field is frozen in version-controlled configuration; nothing is
     probed from free VRAM at runtime (#45 §5.2).
+
+    **The R3 extension (``colab_t4_profile_a_r3``, owner-directed
+    2026-11-06).**  Beyond Profile A, the R3 profile freezes: AdamW weight
+    decay ``1e-2``, a cosine learning-rate schedule ``3e-4 → 3e-5`` with a
+    scale-aware warmup (``warmup_fraction`` of the frozen horizon
+    ``schedule_total_steps``), validation-based early stopping (patience 5,
+    ``min_delta`` 0.10 in the *measured* validation-loss units — the
+    #26 T-chain scale is ~12–16, so 0.10 ≈ 0.6–0.8 % relative),
+    best-validation checkpoint selection (``best_state.pt``), and the
+    anchor-margin monitor thresholds.  All R3 fields carry
+    backward-compatible defaults (schedule off / stopping off / monitor
+    off) so the frozen Profile A and its persisted checkpoints are bit-
+    compatible with this class.
     """
 
     micro_batch_size: int = 12
@@ -123,6 +158,41 @@ class TrainerProfile:
     checkpoint_interval_steps: int = 200
     time_budget_seconds: Optional[int] = None
     profile_name: str = "colab_t4_profile_a"
+    # -- the R3 extension (all defaults preserve Profile A exactly) --------
+    #: ``"none"`` = constant Profile-A learning rate; ``"cosine_warmup"`` =
+    #: the R3 schedule (per-step semantics → digest-pinned when active).
+    lr_schedule: str = "none"
+    #: The cosine floor (R3: 3e-5).  Must satisfy ``0 < min_lr < learning_rate``.
+    min_lr: float = 3e-5
+    #: Scale-aware warmup: ``ceil(warmup_fraction × schedule_total_steps)``
+    #: optimizer steps ramping linearly ``0 → learning_rate``.
+    warmup_fraction: float = 0.05
+    #: The FROZEN cosine horizon in optimizer steps (R3: 252 = 12 epochs ×
+    #: the measured 21 steps/epoch of the #18 census at B=12/accum 6).
+    #: Deliberately NOT derived from ``max_epochs`` at runtime: #43/D-V2-048
+    #: legalized cross-session epoch extension, so the schedule horizon is
+    #: itself frozen config; steps beyond it hold at ``min_lr``.
+    schedule_total_steps: int = 252
+    #: Validation-based early stopping (R3).  ``0`` = disabled.  Patience is
+    #: in *completed epochs without a ≥ min_delta validation improvement*.
+    #: Run-length control (like ``max_epochs``), NOT per-step semantics —
+    #: excluded from the digest per the D-V2-046 precedent.
+    early_stopping_patience: int = 0
+    #: Minimum absolute validation-loss improvement (same units as
+    #: ``_validation_loss``; measured T4 scale ~12–16 → 0.10 ≈ 0.6–0.8 %).
+    early_stopping_min_delta: float = 0.10
+    #: The R3 anchor-margin monitor thresholds (owner-specified constants:
+    #: warn −800 / graceful-stop −700 / hard guard −1000).  ``None`` = the
+    #: monitor is fully off.  See :class:`AnchorMarginMonitor` for the
+    #: documented convention and the D-V2-050 scale finding.
+    anchor_margin_warn: Optional[float] = None
+    anchor_margin_graceful_stop: Optional[float] = None
+    anchor_margin_hard_guard: Optional[float] = None
+    #: ``"none"`` = thresholds are recorded but no Stage-1 energy-scale
+    #: source exists (loud calibration-pending telemetry, never silent —
+    #: D-V2-050); ``"external"`` = the caller must supply
+    #: ``anchor_margin_fn`` (fail-closed) and the monitor fully gates.
+    anchor_margin_source: str = "none"
 
     #: Profile fields that define training semantics and therefore
     #: checkpoint compatibility (#26 frozen Profile A).  The operational
@@ -148,6 +218,19 @@ class TrainerProfile:
         "seed",
         "profile_name",
     )
+    #: R3 per-step scheduling semantics — hashed ONLY when a schedule is
+    #: active, so the frozen Profile A digest (and every persisted
+    #: Profile-A checkpoint, S-V2-21/22) is bit-identical to before, while
+    #: any R3 schedule change still fails closed at resume.  Early
+    #: stopping and the anchor-margin thresholds are run-LENGTH/monitoring
+    #: control (they change WHEN a run stops, never what a step IS) and
+    #: stay out of the digest per the D-V2-046 precedent.
+    _R3_DIGEST_FIELDS: ClassVar[tuple] = (
+        "lr_schedule",
+        "min_lr",
+        "warmup_fraction",
+        "schedule_total_steps",
+    )
 
     def __post_init__(self) -> None:
         if int(self.micro_batch_size) < 1:
@@ -167,6 +250,69 @@ class TrainerProfile:
             )
         if int(self.max_epochs) < 1:
             raise ValueError("max_epochs must be >= 1")
+        # -- the R3 extension validation --------------------------------
+        if self.lr_schedule not in ("none", "cosine_warmup"):
+            raise ValueError(
+                f"lr_schedule must be 'none' or 'cosine_warmup' (got "
+                f"{self.lr_schedule!r})"
+            )
+        if self.lr_schedule == "cosine_warmup":
+            if not (0.0 < float(self.min_lr) < float(self.learning_rate)):
+                raise ValueError(
+                    "cosine_warmup requires 0 < min_lr < learning_rate "
+                    f"(got min_lr={self.min_lr!r}, "
+                    f"learning_rate={self.learning_rate!r})"
+                )
+            if not (0.0 < float(self.warmup_fraction) < 1.0):
+                raise ValueError(
+                    "warmup_fraction must be in (0, 1) — the scale-aware "
+                    f"warmup (got {self.warmup_fraction!r})"
+                )
+            if int(self.schedule_total_steps) < 1:
+                raise ValueError("schedule_total_steps must be >= 1")
+        if int(self.early_stopping_patience) < 0:
+            raise ValueError("early_stopping_patience must be >= 0 (0 = off)")
+        if float(self.early_stopping_min_delta) < 0.0:
+            raise ValueError("early_stopping_min_delta must be >= 0")
+        _thresholds = (
+            self.anchor_margin_warn,
+            self.anchor_margin_graceful_stop,
+            self.anchor_margin_hard_guard,
+        )
+        if self.anchor_margin_source not in ("none", "external"):
+            raise ValueError(
+                "anchor_margin_source must be 'none' or 'external' (got "
+                f"{self.anchor_margin_source!r})"
+            )
+        if any(t is not None for t in _thresholds) and not all(
+            t is not None for t in _thresholds
+        ):
+            raise ValueError(
+                "the anchor-margin monitor requires all three thresholds "
+                "(warn / graceful_stop / hard_guard) to be set together"
+            )
+        if all(t is not None for t in _thresholds):
+            warn, stop, guard = (
+                float(self.anchor_margin_warn),
+                float(self.anchor_margin_graceful_stop),
+                float(self.anchor_margin_hard_guard),
+            )
+            # Degradation-increasing energy-like convention (see
+            # AnchorMarginMonitor): value rises toward 0 as anchoring
+            # degrades, so the warn must sit BELOW the graceful stop, and
+            # the hard guard (implausibly favorable) below both.
+            if not (guard < warn < stop):
+                raise ValueError(
+                    "anchor-margin thresholds must satisfy "
+                    f"hard_guard < warn < graceful_stop on the "
+                    f"degradation-increasing convention (got guard={guard}, "
+                    f"warn={warn}, stop={stop})"
+                )
+            if self.anchor_margin_source == "none":
+                # thresholds recorded but no source: legal only as the
+                # documented calibration-pending mode (D-V2-050) — the
+                # trainer will state this loudly at fit() start.
+                pass
 
     @property
     def effective_batch_size(self) -> int:
@@ -180,12 +326,21 @@ class TrainerProfile:
         that resuming under a different session budget, worker count or
         telemetry cadence stays legal (#43 continuation contract); any
         change to the actual training semantics still fails closed.
+        When a learning-rate schedule is ACTIVE
+        (``lr_schedule != "none"``), the R3 schedule semantics
+        (:data:`TrainerProfile._R3_DIGEST_FIELDS`) join the digest; with the
+        default ``"none"`` schedule the digest is bit-identical to the
+        pre-R3 Profile A digest, so every persisted Profile-A checkpoint
+        (S-V2-21/22 T-chain, ``runs/stage1_t4_session*``) stays resumable.
         """
-        payload = json.dumps(
-            {name: getattr(self, name) for name in self._DIGEST_FIELDS},
-            sort_keys=True,
-        ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+        payload = {name: getattr(self, name) for name in self._DIGEST_FIELDS}
+        if self.lr_schedule != "none":
+            payload.update(
+                {name: getattr(self, name) for name in self._R3_DIGEST_FIELDS}
+            )
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
 
 
 def load_profile(path: str = DEFAULT_PROFILE_PATH) -> TrainerProfile:
@@ -193,6 +348,77 @@ def load_profile(path: str = DEFAULT_PROFILE_PATH) -> TrainerProfile:
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     return TrainerProfile(**data)
+
+
+# ---------------------------------------------------------------------------
+# The R3 anchor-margin monitor
+# ---------------------------------------------------------------------------
+
+#: Monitor verdicts, in escalation order.
+ANCHOR_MARGIN_OK = "ok"
+ANCHOR_MARGIN_WARN = "warn"
+ANCHOR_MARGIN_GRACEFUL_STOP = "graceful_stop"
+ANCHOR_MARGIN_HARD_GUARD = "hard_guard"
+
+
+@dataclass(frozen=True)
+class AnchorMarginMonitor:
+    """The R3 anchor-margin run-health monitor (fail-closed, loud).
+
+    **Convention (D-V2-050, recorded 2026-11-06).**  The monitored
+    quantity is an energy-like *anchor margin* where larger-magnitude
+    negative values mean better anchoring and degradation moves the value
+    UP toward zero:
+
+    * ``value >= warn`` — degradation warning (telemetry record).
+    * ``value >= graceful_stop`` — controlled graceful stop at the next
+      batch boundary (``stop_reason="anchor_margin_graceful_stop"``).
+    * ``value <= hard_guard`` — implausibly favorable margin (a
+      degenerate/numerically broken anchoring, e.g. a physically
+      impossible energy): fail-closed :class:`TrainingDivergenceError`.
+
+    Hence the required ordering ``hard_guard < warn < graceful_stop``
+    (the owner's R3 constants: ``-1000 < -800 < -700``).
+
+    **Verified finding (D-V2-050):** no pre-existing ``-1000`` anchor
+    guard exists anywhere in the V2 or legacy ``main`` codebases (both
+    searched this session), and no Stage-1 supervised quantity lives on
+    this energy scale (measured loss scale ~12–16; seed/anchor
+    log-probabilities ~0–25).  The thresholds are therefore carried as
+    owner-specified constants in the R3 profile with
+    ``anchor_margin_source="none"`` — the monitor records its
+    configuration loudly (calibration-pending telemetry, never a silent
+    gate) until an environment-side energy source is wired via
+    ``anchor_margin_source="external"`` + ``anchor_margin_fn``.
+    """
+
+    warn: float
+    graceful_stop: float
+    hard_guard: float
+
+    def classify(self, value: float) -> str:
+        """Classify one margin value (escalation order: guard > stop > warn)."""
+        if not math.isfinite(value):
+            # A non-finite margin is a divergence — never skipped (#45 s8).
+            raise TrainingDivergenceError(
+                f"non-finite anchor-margin value ({value}) — failing closed"
+            )
+        if value <= self.hard_guard:
+            return ANCHOR_MARGIN_HARD_GUARD
+        if value >= self.graceful_stop:
+            return ANCHOR_MARGIN_GRACEFUL_STOP
+        if value >= self.warn:
+            return ANCHOR_MARGIN_WARN
+        return ANCHOR_MARGIN_OK
+
+    @property
+    def thresholds(self) -> Dict[str, float]:
+        return {
+            "warn": float(self.warn),
+            "graceful_stop": float(self.graceful_stop),
+            "hard_guard": float(self.hard_guard),
+        }
+
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +537,7 @@ class ResilientTrainer:
         catalog_seed_rows: Optional[torch.Tensor] = None,
         available_block_classes: Optional[Sequence[str]] = None,
         curriculum: Optional[CurriculumSampler] = None,
+        anchor_margin_fn: Optional[Callable[[], float]] = None,
         resume: bool = False,
     ) -> None:
         self.profile = profile
@@ -343,6 +570,26 @@ class ResilientTrainer:
             weight_decay=float(profile.weight_decay),
         )
         self.scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None
+        if profile.lr_schedule == "cosine_warmup":
+            self.scheduler = self._build_cosine_warmup_scheduler()
+
+        # -- the R3 anchor-margin monitor (D-V2-050) -------------------------
+        # thresholds set + source "external": full gating, anchor_margin_fn
+        # required at fit() (fail-closed).  thresholds set + source "none":
+        # the documented calibration-pending mode — loud telemetry, no gate.
+        self.anchor_margin_monitor: Optional[AnchorMarginMonitor] = None
+        if profile.anchor_margin_warn is not None:
+            self.anchor_margin_monitor = AnchorMarginMonitor(
+                warn=float(profile.anchor_margin_warn),
+                graceful_stop=float(profile.anchor_margin_graceful_stop),
+                hard_guard=float(profile.anchor_margin_hard_guard),
+            )
+        self._anchor_margin_fn = anchor_margin_fn
+
+        # -- the R3 early-stopping state (run-control; restore-if-present) ---
+        self._best_val_loss: Optional[float] = None
+        self._best_epoch: Optional[int] = None
+        self._epochs_since_improvement: int = 0
 
         # -- catalog surfaces for the legality masks ------------------------
         if catalog_block_handle_classes is not None:
@@ -372,6 +619,49 @@ class ResilientTrainer:
     @property
     def checkpoint_path(self) -> str:
         return os.path.join(self.run_dir, "trainer_state.pt")
+
+    @property
+    def best_state_path(self) -> str:
+        """The R3 best-validation checkpoint (best_state.pt)."""
+        return os.path.join(self.run_dir, "best_state.pt")
+
+    def _build_cosine_warmup_scheduler(
+        self,
+    ) -> torch.optim.lr_scheduler.LambdaLR:
+        """The R3 cosine schedule ``learning_rate → min_lr`` with a
+        scale-aware warmup, as a :class:`~torch.optim.lr_scheduler.LambdaLR`
+        over the AdamW base learning rate.
+
+        * warmup steps ``= ceil(warmup_fraction × schedule_total_steps)``
+          (the "scale-aware" form: the ramp length is a frozen fraction
+          of the frozen horizon — it scales with the run, never with the
+          session);
+        * linear ``0 → learning_rate`` ramp during warmup (step 0 uses
+          ``1/warmup`` of the base rate so the very first update is
+          non-zero);
+        * cosine decay ``learning_rate → min_lr`` over the remaining
+          horizon;
+        * steps beyond the horizon hold at ``min_lr`` (D-V2-048: the
+          horizon is frozen config, so cross-session epoch extension
+          never re-shapes the schedule).
+        """
+        profile = self.profile
+        total = max(1, int(profile.schedule_total_steps))
+        warmup = max(1, math.ceil(float(profile.warmup_fraction) * total))
+        base = float(profile.learning_rate)
+        floor = float(profile.min_lr)
+        span = base - floor
+
+        def lr_lambda(step: int) -> float:
+            if step < warmup:
+                return (step + 1) / warmup
+            progress = (step - warmup) / max(1, total - warmup)
+            if progress >= 1.0:
+                return floor / base
+            decay = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+            return (floor + span * decay) / base
+
+        return torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
     # -- losses ----------------------------------------------------------------
 
@@ -528,6 +818,9 @@ class ResilientTrainer:
             "epoch": self.progress.epoch,
             "global_step": self.progress.global_step,
             "elapsed_seconds": round(time.monotonic() - self._started, 3),
+            "learning_rate": float(
+                self.optimizer.param_groups[0]["lr"]
+            ),
             "runtime": self.runtime.summary(),
             "host_memory": host_memory_telemetry(),
             "gpu_memory": gpu_memory_telemetry(self.device
@@ -577,6 +870,10 @@ class ResilientTrainer:
             "curriculum": (
                 self.curriculum.state_dict() if self.curriculum is not None else None
             ),
+            # the R3 early-stopping run-control state (best/validation
+            # tracking) — restore-if-present, never required (a fresh run
+            # has none; the state is control, not per-step semantics)
+            "early_stopping": self._early_stopping_state_dict(),
             "extra": extra or {},
         }
         tmp = path + ".tmp"
@@ -623,11 +920,30 @@ class ResilientTrainer:
         self.policy.load_state_dict(payload["model"])
         self.policy.to(device=self.device, dtype=torch.float32)
         self.optimizer.load_state_dict(payload["optimizer"])
-        if payload["scheduler"] and self.scheduler:
-            self.scheduler.load_state_dict(payload["scheduler"])
+        # the R3 LR-schedule state: symmetric fail-closed — a checkpoint
+        # saved under an active schedule must resume under the same
+        # schedule (the profile digest already pins this, but a silent
+        # drop of scheduler state is still refused loudly)
+        checkpoint_scheduler = payload.get("scheduler", None)
+        if checkpoint_scheduler is not None and self.scheduler is None:
+            raise TrainerStateError(
+                "the checkpoint carries LR-scheduler state while no "
+                "schedule is active (wiring mismatch — fail-closed, R3)"
+            )
+        if self.scheduler is not None:
+            if checkpoint_scheduler is None:
+                raise TrainerStateError(
+                    "an active LR schedule cannot resume a checkpoint that "
+                    "carries no scheduler state (fail-closed, R3)"
+                )
+            self.scheduler.load_state_dict(checkpoint_scheduler)
         self.progress = _Progress(**payload["progress"])
         self.history = list(payload["history"])
         restore_rng_state(rng_state_from_dict(payload["rng"]))
+        # the R3 early-stopping run-control state: restore-if-present
+        # (control state, not per-step semantics — a fresh run carries
+        # none, and patience/min_delta may legitimately differ on resume)
+        self._load_early_stopping_state(payload.get("early_stopping", None))
         # the sampler/curriculum state (#45 s12.1/s13.6): a symmetric
         # fail-closed check — a curriculum run must resume its exact
         # curriculum state, and a non-curriculum run must not silently
@@ -670,6 +986,46 @@ class ResilientTrainer:
                 "the train loader's dataset must be the train split "
                 "(augmentation is train-only; fail-closed)"
             )
+        # -- the R3 wiring checks (fail-closed, loud) -----------------------
+        if self._early_stopping_active() and val_loader is None:
+            raise TrainerStateError(
+                "the R3 early stopping requires a validation loader "
+                "(fail-closed)"
+            )
+        if (
+            val_loader is not None
+            and getattr(val_loader.dataset, "split", None) is not None
+            and getattr(val_loader.dataset, "split", None) != "val"
+        ):
+            raise TrainerStateError(
+                "the validation signal must come from the val split "
+                "(fail-closed)"
+            )
+        if self.anchor_margin_monitor is not None:
+            if self.profile.anchor_margin_source == "external":
+                if self._anchor_margin_fn is None:
+                    raise TrainerStateError(
+                        "the anchor-margin monitor is armed "
+                        "(anchor_margin_source='external') but no "
+                        "anchor_margin_fn was supplied — refusing to run "
+                        "ungated (fail-closed, D-V2-050)"
+                    )
+            else:
+                # source == "none": the documented calibration-pending mode
+                # — recorded LOUDLY, never a silent gate (D-V2-050)
+                self._log(
+                    {
+                        "phase": "anchor_margin",
+                        "anchor_margin_mode": "calibration_pending",
+                        "note": (
+                            "thresholds recorded but inactive: no Stage-1 "
+                            "energy-scale source exists; wire "
+                            "anchor_margin_source='external' + "
+                            "anchor_margin_fn to gate (D-V2-050)"
+                        ),
+                        **self.anchor_margin_monitor.thresholds,
+                    }
+                )
         if self.curriculum is not None:
             if val_loader is None:
                 raise TrainerStateError(
@@ -735,6 +1091,10 @@ class ResilientTrainer:
                 )
                 if self.progress.global_step % self.profile.log_interval_steps == 0:
                     self._log(self.telemetry(batch))
+                    anchor_verdict = self._check_anchor_margin()
+                    if anchor_verdict == ANCHOR_MARGIN_GRACEFUL_STOP:
+                        stop_reason = "anchor_margin_graceful_stop"
+                        break
                 if (
                     self.profile.checkpoint_interval_steps
                     and self.progress.global_step % self.profile.checkpoint_interval_steps == 0
@@ -751,25 +1111,41 @@ class ResilientTrainer:
                 self._optimizer_step()
                 self.progress.batch_in_epoch = 0
                 self.progress.epoch = epoch + 1
-                if val_loader is not None and stop_reason == "max_epochs_reached":
-                    self._log({"phase": "validation", **self.telemetry()})
-                if self.curriculum is not None:
+                # -- the R3 end-of-epoch validation pass ---------------------
+                # one validation sweep per completed epoch feeds both the
+                # #27 curriculum milestones and the R3 early stopping /
+                # best-state selection (never two sweeps).
+                validate_now = val_loader is not None and (
+                    self.curriculum is not None or self._early_stopping_active()
+                )
+                if validate_now:
                     val_loss = self._validation_loss(val_loader)
-                    advanced = self.curriculum.observe_validation_loss(val_loss)
-                    self._log(
-                        {
-                            "phase": "curriculum",
-                            **self.telemetry(),
-                            "validation_loss": val_loss,
-                            "stage": self.curriculum.stage,
-                            "stage_advanced": advanced,
-                            "level_counts": self.curriculum.last_level_counts,
-                            "level_probabilities": [
-                                round(float(value), 6)
-                                for value in self.curriculum.level_probabilities()
-                            ],
-                        }
-                    )
+                    if self.curriculum is not None:
+                        advanced = self.curriculum.observe_validation_loss(val_loss)
+                        self._log(
+                            {
+                                "phase": "curriculum",
+                                **self.telemetry(),
+                                "validation_loss": val_loss,
+                                "stage": self.curriculum.stage,
+                                "stage_advanced": advanced,
+                                "level_counts": self.curriculum.last_level_counts,
+                                "level_probabilities": [
+                                    round(float(value), 6)
+                                    for value in self.curriculum.level_probabilities()
+                                ],
+                            }
+                        )
+                    if self._early_stopping_active():
+                        record = self._observe_validation(val_loss)
+                        self._log(
+                            {"phase": "validation", **self.telemetry(), **record}
+                        )
+                        if record["early_stop"]:
+                            stop_reason = "early_stopping"
+                            break
+                elif val_loader is not None and stop_reason == "max_epochs_reached":
+                    self._log({"phase": "validation", **self.telemetry()})
                 continue
             break  # time-budget break inside the batch loop
         self.save_checkpoint(extra={"stop_reason": stop_reason})
@@ -782,6 +1158,12 @@ class ResilientTrainer:
             "global_step": self.progress.global_step,
             "final_losses": self.history[-1] if self.history else None,
             "checkpoint": self.checkpoint_path,
+            "best_state": (
+                self.best_state_path
+                if self._best_epoch is not None
+                else None
+            ),
+            "early_stopping": self._early_stopping_state_dict(),
             "curriculum": (
                 {
                     "stage": self.curriculum.stage,
@@ -791,6 +1173,133 @@ class ResilientTrainer:
                 else None
             ),
         }
+
+    # -- the R3 early stopping / best-state machinery -------------------------
+
+    def _early_stopping_active(self) -> bool:
+        return int(self.profile.early_stopping_patience) >= 1
+
+    def _early_stopping_state_dict(self) -> Optional[Dict[str, Any]]:
+        """The best/validation tracking state (None before any sweep)."""
+        if self._best_val_loss is None:
+            return None
+        return {
+            "best_val_loss": self._best_val_loss,
+            "best_epoch": self._best_epoch,
+            "epochs_since_improvement": self._epochs_since_improvement,
+            "min_delta": float(self.profile.early_stopping_min_delta),
+            "patience": int(self.profile.early_stopping_patience),
+        }
+
+    def _load_early_stopping_state(
+        self, state: Optional[Dict[str, Any]]
+    ) -> None:
+        """Restore-if-present (run-control state, never required)."""
+        if not state:
+            self._best_val_loss = None
+            self._best_epoch = None
+            self._epochs_since_improvement = 0
+            return
+        self._best_val_loss = (
+            float(state["best_val_loss"])
+            if state.get("best_val_loss") is not None
+            else None
+        )
+        self._best_epoch = state.get("best_epoch")
+        self._epochs_since_improvement = int(
+            state.get("epochs_since_improvement", 0)
+        )
+
+    def _observe_validation(self, val_loss: float) -> Dict[str, Any]:
+        """One end-of-epoch validation observation (R3).
+
+        Absolute ``min_delta`` in ``_validation_loss`` units (the measured
+        T4 scale is ~12–16, so the R3 0.10 ≈ 0.6–0.8 % relative — a
+        deliberately conservative noise floor); the relative improvement
+        is recorded alongside so both readings are always visible.
+        On every improvement the best model is atomically persisted as
+        ``best_state.pt`` (same SHA-256 sidecar contract as the
+        continuation checkpoint).
+        """
+        improved = (
+            self._best_val_loss is None
+            or val_loss
+            <= self._best_val_loss - float(self.profile.early_stopping_min_delta)
+        )
+        if improved:
+            previous = self._best_val_loss
+            self._best_val_loss = val_loss
+            self._best_epoch = self.progress.epoch - 1  # the just-completed epoch
+            self._epochs_since_improvement = 0
+            self.save_checkpoint(
+                self.best_state_path,
+                extra={
+                    "kind": "best_val",
+                    "val_loss": val_loss,
+                    "epoch": self._best_epoch,
+                    "previous_best": previous,
+                },
+            )
+        else:
+            self._epochs_since_improvement += 1
+        return {
+            "validation_loss": val_loss,
+            "best_val_loss": self._best_val_loss,
+            "best_epoch": self._best_epoch,
+            "epochs_since_improvement": self._epochs_since_improvement,
+            "improved": improved,
+            "relative_improvement_vs_best": (
+                round(
+                    (self._best_val_loss - val_loss)
+                    / max(abs(self._best_val_loss), 1e-12),
+                    6,
+                )
+                if self._best_val_loss is not None
+                else None
+            ),
+            "early_stop": (
+                self._epochs_since_improvement
+                >= int(self.profile.early_stopping_patience)
+            ),
+        }
+
+    # -- the R3 anchor-margin observation (external source only) -------------
+
+    def _check_anchor_margin(self) -> Optional[str]:
+        """Sample the external anchor-margin source and classify it.
+
+        Called at the telemetry cadence.  Returns the verdict (or None when
+        the monitor is inactive); the hard guard raises
+        :class:`TrainingDivergenceError` and the graceful stop is surfaced
+        via the returned verdict for the caller to act on.
+        """
+        if (
+            self.anchor_margin_monitor is None
+            or self.profile.anchor_margin_source != "external"
+            or self._anchor_margin_fn is None
+        ):
+            return None
+        value = float(self._anchor_margin_fn())
+        verdict = self.anchor_margin_monitor.classify(value)
+        self._log(
+            {
+                "phase": "anchor_margin",
+                "anchor_margin_mode": "external",
+                "value": value,
+                "verdict": verdict,
+                **self.anchor_margin_monitor.thresholds,
+            }
+        )
+        if verdict == ANCHOR_MARGIN_HARD_GUARD:
+            # implausibly favorable margin — a degenerate anchoring, never
+            # a value to train past (fail-closed, D-V2-050)
+            raise TrainingDivergenceError(
+                f"anchor-margin hard guard tripped (value {value} <= "
+                f"{self.anchor_margin_monitor.hard_guard}) — implausibly "
+                "favorable anchoring is a degenerate/numerically broken "
+                "state, failing closed"
+            )
+        return verdict
 
     def _to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         return batch  # tensors are moved per-sub-batch in the loss methods
@@ -843,6 +1352,8 @@ class ResilientTrainer:
                 if param.grad is not None:
                     self._assert_finite(param, "parameter (post-update check pending)")
         self.optimizer.step()
+        if self.scheduler is not None:
+            self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
             for param in self.policy.parameters():

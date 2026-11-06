@@ -27,6 +27,7 @@ from syntree.data.supervised import (
     supervised_collate,
 )
 from syntree.engine.trainer import (
+    AnchorMarginMonitor,
     ResilientTrainer,
     TrainerProfile,
     TrainingDivergenceError,
@@ -566,3 +567,326 @@ class TestCanonicalCLI:
         assert telemetry, "telemetry must be logged"
         record = telemetry[-1]
         assert "host_memory" in record and "gpu_memory" in record
+
+
+# ---------------------------------------------------------------------------
+# The R3 profile extension (colab_t4_profile_a_r3, owner-directed 2026-11-06)
+# ---------------------------------------------------------------------------
+
+
+class TestR3Profile:
+    def test_r3_config_is_pinned(self):
+        profile = load_profile("configs/train_colab_t4_r3.json")
+        assert profile.profile_name == "colab_t4_profile_a_r3"
+        # optimizer: AdamW weight decay 1e-2 (R3), lr unchanged 3e-4
+        assert profile.weight_decay == 1e-2
+        assert profile.learning_rate == 3e-4
+        # cosine schedule 3e-4 -> 3e-5 with scale-aware warmup
+        assert profile.lr_schedule == "cosine_warmup"
+        assert profile.min_lr == 3e-5
+        assert 0.0 < profile.warmup_fraction < 1.0
+        assert profile.schedule_total_steps == 252
+        # early stopping: patience 5, min_delta 0.10 (absolute, loss units)
+        assert profile.early_stopping_patience == 5
+        assert profile.early_stopping_min_delta == 0.10
+        # anchor-margin monitor: the owner constants, calibration-pending
+        assert profile.anchor_margin_warn == -800.0
+        assert profile.anchor_margin_graceful_stop == -700.0
+        assert profile.anchor_margin_hard_guard == -1000.0
+        assert profile.anchor_margin_source == "none"
+
+    def test_profile_a_digest_is_bit_identical_to_pre_r3(self):
+        """The R3 fields must NOT fragment the frozen Profile-A digest."""
+        import hashlib as _hashlib
+
+        a = TrainerProfile()
+        legacy_payload = {
+            name: getattr(a, name) for name in a._DIGEST_FIELDS
+        }
+        legacy = _hashlib.sha256(
+            json.dumps(legacy_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        assert a.digest() == legacy
+        # run-control knobs stay out of the digest (D-V2-046 precedent)
+        assert (
+            TrainerProfile(early_stopping_patience=9, anchor_margin_warn=-800.0,
+                           anchor_margin_graceful_stop=-700.0,
+                           anchor_margin_hard_guard=-1000.0).digest()
+            == a.digest()
+        )
+        # but R3 schedule semantics ARE pinned once active
+        r3 = load_profile("configs/train_colab_t4_r3.json")
+        assert r3.digest() != a.digest()
+        assert (
+            TrainerProfile(lr_schedule="cosine_warmup", min_lr=2e-5).digest()
+            != TrainerProfile(lr_schedule="cosine_warmup", min_lr=3e-5).digest()
+        )
+
+    def test_r3_validation_rejects_inconsistent_configuration(self):
+        with pytest.raises(ValueError, match="min_lr"):
+            TrainerProfile(lr_schedule="cosine_warmup", min_lr=3e-4)
+        with pytest.raises(ValueError, match="cosine_warmup"):
+            TrainerProfile(lr_schedule="poly")
+        with pytest.raises(ValueError, match="warmup_fraction"):
+            TrainerProfile(lr_schedule="cosine_warmup", warmup_fraction=1.5)
+        with pytest.raises(ValueError, match="thresholds"):
+            TrainerProfile(anchor_margin_warn=-800.0)  # partial set
+        with pytest.raises(ValueError, match="hard_guard < warn"):
+            TrainerProfile(anchor_margin_warn=-700.0,
+                           anchor_margin_graceful_stop=-800.0,
+                           anchor_margin_hard_guard=-1000.0)
+        with pytest.raises(ValueError, match="anchor_margin_source"):
+            TrainerProfile(anchor_margin_warn=-800.0,
+                           anchor_margin_graceful_stop=-700.0,
+                           anchor_margin_hard_guard=-1000.0,
+                           anchor_margin_source="magic")
+
+
+class TestR3CosineSchedule:
+    def test_warmup_cosine_floor_shape(self):
+        base, floor = 3e-4, 1e-4
+        trainer = _trainer(
+            _mkdtmp(), lr_schedule="cosine_warmup", min_lr=floor,
+            warmup_fraction=0.25, schedule_total_steps=8,
+        )
+        assert trainer.scheduler is not None
+        lrs = [trainer.optimizer.param_groups[0]["lr"]]
+        for _ in range(11):
+            trainer.scheduler.step()
+            lrs.append(trainer.optimizer.param_groups[0]["lr"])
+        # warmup = ceil(0.25*8) = 2: construction applies lambda(0) = 1/2
+        assert lrs[0] == pytest.approx(base * 0.5)
+        assert lrs[1] == pytest.approx(base)          # warmup complete
+        assert lrs[2] == pytest.approx(base)          # cosine starts at base
+        for i in range(2, 8):                          # monotonic decay
+            assert lrs[i] > lrs[i + 1]
+        assert lrs[8] == pytest.approx(floor)          # horizon end
+        assert lrs[11] == pytest.approx(floor)         # held beyond horizon
+
+    def test_scheduler_state_rides_checkpoints(self):
+        run_dir = _mkdtmp()
+        first = _trainer(
+            run_dir, lr_schedule="cosine_warmup", min_lr=1e-4,
+            warmup_fraction=0.25, schedule_total_steps=64, max_epochs=1,
+        )
+        first.fit(_loader())
+        assert first.scheduler is not None and first.scheduler.last_epoch > 0
+        saved = first.scheduler.last_epoch
+        second = ResilientTrainer(
+            SynTreePolicy(catalog_size=3),
+            _test_profile(lr_schedule="cosine_warmup", min_lr=1e-4,
+                          warmup_fraction=0.25, schedule_total_steps=64,
+                          max_epochs=1),
+            run_dir=run_dir,
+            catalog_block_handle_classes=_mini_catalog_tensors()[0],
+            catalog_seed_rows=_mini_catalog_tensors()[1],
+            available_block_classes=_mini_catalog_tensors()[2],
+            resume=True,
+        )
+        assert second.scheduler is not None
+        assert second.scheduler.last_epoch == saved
+
+    def test_active_schedule_cannot_resume_an_unscheduled_checkpoint(self):
+        """The digest pins the schedule: an R3-scheduled trainer refuses a
+        Profile-A checkpoint (the symmetric scheduler-state check inside
+        ``load_checkpoint`` is defense-in-depth behind this primary gate)."""
+        run_dir = _mkdtmp()
+        plain = _trainer(run_dir, max_epochs=1)
+        plain.fit(_loader())
+        assert plain.scheduler is None
+        with pytest.raises(TrainerStateError, match="profile digest"):
+            ResilientTrainer(
+                SynTreePolicy(catalog_size=3),
+                _test_profile(lr_schedule="cosine_warmup", min_lr=1e-4,
+                              schedule_total_steps=64, max_epochs=1),
+                run_dir=run_dir,
+                catalog_block_handle_classes=_mini_catalog_tensors()[0],
+                catalog_seed_rows=_mini_catalog_tensors()[1],
+                available_block_classes=_mini_catalog_tensors()[2],
+                resume=True,
+            )
+
+
+class TestR3EarlyStopping:
+    def test_min_delta_semantics_are_absolute_in_loss_units(self):
+        trainer = _trainer(
+            _mkdtmp(), early_stopping_patience=5,
+            early_stopping_min_delta=0.10,
+        )
+        first = trainer._observe_validation(16.0)
+        assert first["improved"] and first["best_val_loss"] == 16.0
+        # 0.05 below best: below the 0.10 bar -> NOT an improvement
+        second = trainer._observe_validation(15.95)
+        assert not second["improved"]
+        assert second["epochs_since_improvement"] == 1
+        # exactly 0.10 below best: at the bar -> improvement
+        third = trainer._observe_validation(15.85)
+        assert third["improved"]
+        assert third["best_val_loss"] == 15.85
+        # above best: never an improvement
+        fourth = trainer._observe_validation(16.5)
+        assert not fourth["improved"]
+        assert fourth["epochs_since_improvement"] == 1
+
+    def test_early_stopping_fires_after_patience_plateau_epochs(self):
+        run_dir = _mkdtmp()
+        trainer = _trainer(
+            run_dir, max_epochs=6, early_stopping_patience=2,
+            early_stopping_min_delta=1e9,  # nothing can ever improve again
+        )
+        result = trainer.fit(_loader(), val_loader=_loader("val", shuffle=False))
+        # epoch 0 sets the (unbeatable) best; epochs 1..2 count against it
+        assert result["stop_reason"] == "early_stopping"
+        assert result["epochs_completed"] == 3
+        assert result["early_stopping"]["epochs_since_improvement"] == 2
+        assert os.path.exists(trainer.best_state_path)
+        assert os.path.exists(trainer.best_state_path + ".sha256")
+
+    def test_best_state_saved_on_improvement_with_full_payload(self):
+        run_dir = _mkdtmp()
+        trainer = _trainer(
+            run_dir, max_epochs=3, early_stopping_patience=10,
+            early_stopping_min_delta=0.0,
+        )
+        result = trainer.fit(_loader(), val_loader=_loader("val", shuffle=False))
+        assert result["stop_reason"] == "max_epochs_reached"
+        assert os.path.exists(trainer.best_state_path)
+        payload = torch.load(
+            trainer.best_state_path, map_location="cpu", weights_only=False
+        )
+        assert payload["extra"]["kind"] == "best_val"
+        assert payload["extra"]["val_loss"] == result["early_stopping"]["best_val_loss"]
+        assert payload["extra"]["epoch"] == result["early_stopping"]["best_epoch"]
+        # the full continuation contract rides the best checkpoint too
+        for key in ("model", "optimizer", "scheduler", "progress", "history",
+                    "rng", "curriculum", "early_stopping"):
+            assert key in payload
+
+    def test_validation_telemetry_records_the_overfitting_observables(self):
+        run_dir = _mkdtmp()
+        trainer = _trainer(
+            run_dir, max_epochs=2, early_stopping_patience=5,
+            early_stopping_min_delta=0.10, log_interval_steps=1,
+        )
+        trainer.fit(_loader(), val_loader=_loader("val", shuffle=False))
+        records = [
+            json.loads(line)
+            for line in open(os.path.join(run_dir, "telemetry.jsonl"))
+        ]
+        val_records = [r for r in records if r.get("phase") == "validation"]
+        assert len(val_records) >= 2  # one per completed epoch
+        for record in val_records:
+            for key in ("validation_loss", "best_val_loss",
+                        "epochs_since_improvement", "improved",
+                        "learning_rate", "host_memory", "gpu_memory"):
+                assert key in record, key
+
+    def test_early_stopping_requires_a_validation_loader(self):
+        trainer = _trainer(_mkdtmp(), early_stopping_patience=5)
+        with pytest.raises(TrainerStateError, match="validation loader"):
+            trainer.fit(_loader())
+
+    def test_resume_restores_the_early_stopping_state(self):
+        run_dir = _mkdtmp()
+        first = _trainer(
+            run_dir, max_epochs=2, early_stopping_patience=5,
+            early_stopping_min_delta=1e9,
+        )
+        first.fit(_loader(), val_loader=_loader("val", shuffle=False))
+        assert first._epochs_since_improvement >= 1
+        counter = first._epochs_since_improvement
+        second = ResilientTrainer(
+            SynTreePolicy(catalog_size=3),
+            _test_profile(max_epochs=4, early_stopping_patience=5,
+                          early_stopping_min_delta=1e9),
+            run_dir=run_dir,
+            catalog_block_handle_classes=_mini_catalog_tensors()[0],
+            catalog_seed_rows=_mini_catalog_tensors()[1],
+            available_block_classes=_mini_catalog_tensors()[2],
+            resume=True,
+        )
+        assert second._epochs_since_improvement == counter
+        assert second._best_val_loss is not None
+
+
+class TestR3AnchorMarginMonitor:
+    def test_classification_escalates_in_the_documented_direction(self):
+        monitor = AnchorMarginMonitor(warn=-800.0, graceful_stop=-700.0,
+                                      hard_guard=-1000.0)
+        assert monitor.classify(-900.0) == "ok"
+        assert monitor.classify(-800.0) == "warn"        # at the threshold
+        assert monitor.classify(-750.0) == "warn"
+        assert monitor.classify(-700.0) == "graceful_stop"  # at the threshold
+        assert monitor.classify(-690.0) == "graceful_stop"
+        assert monitor.classify(-1000.0) == "hard_guard"    # implausibly good
+        with pytest.raises(TrainingDivergenceError, match="non-finite"):
+            monitor.classify(float("nan"))
+
+    def test_calibration_pending_mode_is_loud_not_silent(self):
+        run_dir = _mkdtmp()
+        trainer = _trainer(
+            run_dir, max_epochs=1, anchor_margin_warn=-800.0,
+            anchor_margin_graceful_stop=-700.0, anchor_margin_hard_guard=-1000.0,
+            anchor_margin_source="none",
+        )
+        trainer.fit(_loader())  # no source: must run, and must SAY it is ungated
+        records = [
+            json.loads(line)
+            for line in open(os.path.join(run_dir, "telemetry.jsonl"))
+        ]
+        pending = [
+            r for r in records
+            if r.get("phase") == "anchor_margin"
+            and r.get("anchor_margin_mode") == "calibration_pending"
+        ]
+        assert pending, "the calibration-pending mode must be logged loudly"
+        assert pending[0]["warn"] == -800.0
+        assert pending[0]["graceful_stop"] == -700.0
+        assert pending[0]["hard_guard"] == -1000.0
+
+    def test_external_source_is_required_fail_closed(self):
+        profile = _test_profile(
+            anchor_margin_warn=-800.0, anchor_margin_graceful_stop=-700.0,
+            anchor_margin_hard_guard=-1000.0, anchor_margin_source="external",
+        )
+        trainer = ResilientTrainer(
+            SynTreePolicy(catalog_size=3), profile, run_dir=_mkdtmp(),
+            catalog_block_handle_classes=_mini_catalog_tensors()[0],
+            catalog_seed_rows=_mini_catalog_tensors()[1],
+            available_block_classes=_mini_catalog_tensors()[2],
+        )
+        with pytest.raises(TrainerStateError, match="anchor_margin_fn"):
+            trainer.fit(_loader())
+
+    def test_external_graceful_stop_stops_at_a_batch_boundary(self):
+        profile = _test_profile(
+            anchor_margin_warn=-800.0, anchor_margin_graceful_stop=-700.0,
+            anchor_margin_hard_guard=-1000.0, anchor_margin_source="external",
+            log_interval_steps=1,
+        )
+        trainer = ResilientTrainer(
+            SynTreePolicy(catalog_size=3), profile, run_dir=_mkdtmp(),
+            catalog_block_handle_classes=_mini_catalog_tensors()[0],
+            catalog_seed_rows=_mini_catalog_tensors()[1],
+            available_block_classes=_mini_catalog_tensors()[2],
+            anchor_margin_fn=lambda: -690.0,  # degraded past the stop line
+        )
+        result = trainer.fit(_loader())
+        assert result["stop_reason"] == "anchor_margin_graceful_stop"
+        assert os.path.exists(trainer.checkpoint_path)
+
+    def test_external_hard_guard_fails_closed(self):
+        profile = _test_profile(
+            anchor_margin_warn=-800.0, anchor_margin_graceful_stop=-700.0,
+            anchor_margin_hard_guard=-1000.0, anchor_margin_source="external",
+            log_interval_steps=1,
+        )
+        trainer = ResilientTrainer(
+            SynTreePolicy(catalog_size=3), profile, run_dir=_mkdtmp(),
+            catalog_block_handle_classes=_mini_catalog_tensors()[0],
+            catalog_seed_rows=_mini_catalog_tensors()[1],
+            available_block_classes=_mini_catalog_tensors()[2],
+            anchor_margin_fn=lambda: -1500.0,  # implausibly favorable
+        )
+        with pytest.raises(TrainingDivergenceError):
+            trainer.fit(_loader())
