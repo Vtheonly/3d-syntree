@@ -1,0 +1,32 @@
+{
+  "track": "A \u2014 generator-stock-aligned (NEVER report as independent)",
+  "stock_name": "enamine_stock",
+  "catalog_path": "/home/z/my-project/scratch/hf/enamine_real_50k_pharm3d_d256.h5",
+  "catalog_sha256": "8b8c13a0581ec91db6ace643e13d9d46c8b29211e1a264b2bdd62bb90bf2ab7e",
+  "catalog_attributes": {
+    "catalog_schema_version": "catalog-v2.0",
+    "catalog_size": 50000,
+    "created_utc": "2026-11-02T17:44:05Z",
+    "d_embed": 256,
+    "d_raw": 2137,
+    "projection_seed": 2026,
+    "registry_digest": "32ea6db9ce9d56747c6a3cc957e3dfa0c2413fa02a6a583cd07e23ff6f4c3f3d",
+    "schema_version": "pharm3d-v2.0",
+    "source_sdf": "Enamine_Rush-Delivery_Building_Blocks-US_290648cmpd_20260916.sdf",
+    "source_sdf_sha256": "e91a26c9f8f7aa226a138bf36884100dac51e97112b6f0c31f5a97a00a676eb9"
+  },
+  "num_rows": 50000,
+  "num_unique_inchikeys": 50000,
+  "duplicate_inchikeys": [],
+  "stock_file": "/home/z/my-project/scratch/eval/stocks/enamine_stock.txt",
+  "stock_file_sha256": "299fc243cd4d5192655e72e464fc85305b08f59ef25623b7e9a9550281158ed5",
+  "mapping_file": "/home/z/my-project/scratch/eval/stocks/enamine_stock_mapping.csv",
+  "mapping_file_sha256": "dda5c32a55527bd19e9b657235e91aa13c6b84c72c3d5f51875b4acd30398f85",
+  "format": "aizynthfinder InMemoryInchiKeyQuery text stock",
+  "tool_versions": {
+    "syntree": "2.0.0.dev0",
+    "rdkit": "2026.09.1"
+  },
+  "generated_utc": "2026-11-04T23:27:55Z",
+  "policy": "Track A verifies routes aligned with the generator's own building-block inventory; the solve rate under this stock is reported separately from any independent-stock track (#44)."
+}

@@ -1,41 +1,50 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "syntree"
-version = "0.1.0"
-description = "Structure-Based Molecular Design via Reaction-Constrained Synthon Assembly"
+dynamic = ["version"]
+description = "3D-SynTree V2 — structure-based molecular design via reaction-constrained, pocket-aware synthon assembly"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "3D-SynTree Contributors" }]
+keywords = [
+    "structure-based-drug-design",
+    "equivariant-neural-networks",
+    "gflownet",
+    "retrosynthesis",
+    "computational-chemistry",
+]
 dependencies = [
     "torch>=2.1.0",
     "torch-geometric>=2.4.0",
-    "rdkit>=2023.9.1",
-    "pandas>=2.1.0",
-    "pyarrow>=14.0.0",
     "numpy>=1.24.0",
-    "scipy>=1.11.0",
-    "huggingface-hub>=0.20.0",
-    "tqdm>=4.66.0",
-    "pyyaml>=6.0",
+    "scipy>=1.10.0",
+    "rdkit>=2023.9.1",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=7.4.0"]
-evaluation = ["aizynthfinder>=4.0.0"]
-hdf5 = ["h5py>=3.10.0"]
+# #19 DATA-04 shard streaming/upload path (ShardedDataset(repo_id=...))
+hf = ["huggingface_hub>=0.23.0"]
+
+[project.urls]
+Repository = "https://github.com/Vtheonly/3d-syntree"
+Issues = "https://github.com/Vtheonly/3d-syntree/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "syntree.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["syntree*", "core*", "download*", "craft*"]
-exclude = ["tests*"]
+where = ["src"]
+include = ["syntree*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
 filterwarnings = [
     "ignore::DeprecationWarning",
-    "ignore::UserWarning",
+    "ignore: `torch.jit.script` is deprecated:FutureWarning",
 ]

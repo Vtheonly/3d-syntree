@@ -1,1 +1,0 @@
-"""3D-SynTree Core Registry and System Utilities."""

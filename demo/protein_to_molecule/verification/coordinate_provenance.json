@@ -1,0 +1,13 @@
+{
+ "experimental_crystal_coordinates": [
+  "structures/protein.pdb (pocket, X-ray)",
+  "structures/seed.sdf (induced crystal subgraph)",
+  "structures/step_XX/reactant_intermediate.sdf (induced crystal subgraph)",
+  "structures/step_XX/product.sdf (induced crystal subgraph)",
+  "structures/final_ligand.sdf (the full crystal ligand)"
+ ],
+ "computational_coordinates": [
+  "structures/step_XX/incoming_building_block.sdf (RDKit ETKDG conformers, seed 2026 \u2014 the incoming blocks have NO experimentally established position in the pocket)"
+ ],
+ "no_fabricated_coordinates": true
+}

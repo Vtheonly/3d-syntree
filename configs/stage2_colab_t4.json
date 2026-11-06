@@ -1,0 +1,12 @@
+{
+  "profile_name": "gflownet-stage2-t4",
+  "learning_rate": 0.0003,
+  "log_z_learning_rate": 0.01,
+  "weight_decay": 1e-05,
+  "gradient_clip_norm": 1.0,
+  "seed": 2026,
+  "rollout_batch_size": 12,
+  "max_blocks": 4,
+  "max_pocket_atoms": 700,
+  "updates_per_checkpoint": 50
+}

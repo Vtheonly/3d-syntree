@@ -1,0 +1,16 @@
+{
+  "profile_name": "colab_t4_profile_a",
+  "micro_batch_size": 12,
+  "gradient_accumulation_steps": 6,
+  "max_pocket_atoms": 700,
+  "learning_rate": 0.0003,
+  "weight_decay": 1e-05,
+  "gradient_clip_norm": 1.0,
+  "precision": "fp32",
+  "seed": 2026,
+  "max_epochs": 2,
+  "num_workers": 0,
+  "log_interval_steps": 10,
+  "checkpoint_interval_steps": 200,
+  "time_budget_seconds": null
+}

@@ -1,0 +1,49 @@
+{
+ "complex_id": "bindingmoad_4ITP_1GD",
+ "ligand_smiles": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+ "pocket_artifact": "bindingmoad_4ITP_1GD_pocket.pdb.gz",
+ "seed_block_id": "REC0153714",
+ "seed_centroid": [
+  16.34541666666667,
+  2.6992500000000006,
+  15.5315
+ ],
+ "seed_class": "amine",
+ "seed_row": 39841,
+ "seed_smiles": "NCc1ccc(S(N)(=O)=O)cc1",
+ "split": "train",
+ "steps": [
+  {
+   "block_id": "REC0176965",
+   "block_reactant_smiles": "CC(=O)Cl",
+   "block_row": 4713,
+   "candidates_considered": 1,
+   "dihedral_rad": 0.010335362912271254,
+   "exact_candidates": 1,
+   "molecule_reactant_smiles": "NCc1ccc(S(N)(=O)=O)cc1",
+   "order": 1,
+   "product_smiles": "CC(=O)NCc1ccc(S(N)(=O)=O)cc1",
+   "query_form_smiles": "CC(=O)Cl",
+   "reaction_id": "rxn_01",
+   "replay_product_count": 2,
+   "resonance_locked": true,
+   "torsion_bin": 19
+  },
+  {
+   "block_id": "REC0127681",
+   "block_reactant_smiles": "Brc1ccccc1",
+   "block_row": 35887,
+   "candidates_considered": 1,
+   "dihedral_rad": 2.481023231631709,
+   "exact_candidates": 1,
+   "molecule_reactant_smiles": "NS(=O)(=O)c1ccc(CNC(=O)[CH2][Zn][Cl])cc1",
+   "order": 2,
+   "product_smiles": "NS(=O)(=O)c1ccc(CNC(=O)Cc2ccccc2)cc1",
+   "query_form_smiles": "Brc1ccccc1",
+   "reaction_id": "rxn_15",
+   "replay_product_count": 1,
+   "resonance_locked": false,
+   "torsion_bin": 33
+  }
+ ]
+}

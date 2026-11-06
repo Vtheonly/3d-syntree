@@ -1,846 +1,394 @@
-# 3D-SynTree: Structure-Based Molecular Design via Reaction-Constrained Synthon Assembly with 3D-Conformational Guidance
+# 3D-SynTree V2
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.1+](https://img.shields.io/badge/PyTorch-2.1+-ee4c2c.svg)](https://pytorch.org/)
-[![PyG](https://img.shields.io/badge/PyG-2.4+-3C2179.svg)](https://www.pyg.org/)
-[![RDKit](https://img.shields.io/badge/RDKit-2023.09+-green.svg)](https://www.rdkit.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+**Structure-based molecular design via reaction-constrained, pocket-aware
+synthon assembly in 3D.**
 
----
+3D-SynTree V2 generates synthesizable, pocket-aware drug candidates by
+combining two constraints that most generative approaches treat separately:
 
-## 1. Executive Summary
+1. **3D geometric awareness** — growth is conditioned on the atomic
+   environment of a protein binding pocket, processed by SE(3)-equivariant
+   neural networks, and
+2. **synthetic accessibility** — every construction step is a *certified
+   chemical reaction* applied to purchasable building blocks, so each
+   generated molecule comes with an auditable synthetic construction
+   history rather than a post-hoc synthesizability guess.
 
-**3D-SynTree** is a structure-based drug design (SBDD) generative framework that
-attacks the **synthesizability wall** in computational drug discovery.
-
-Current 3D generative diffusion models (e.g., *TargetDiff*, *DiffSBDD*) construct
-ligands by diffusing continuous coordinates of individual atoms inside a protein
-pocket. While these models achieve strong computational docking scores, they
-systematically generate **chemical chimeras**: pentavalent carbons, unstable
-peroxides, extreme ring strain, and zero feasible synthesis routes (retrosynthetic
-planning tools solve <20% of them). Conversely, forward-synthesis algorithms
-(e.g., *SynNet*, *SyntheMol*) guarantee synthesis by assembling buyable building
-blocks, but operate strictly in flat 2D space, generating aromatic, grease-like
-compounds that cannot conform to complex 3D binding cavities.
-
-**3D-SynTree bridges this divide.** We formulate 3D molecular design as a
-**Markov Decision Process over a Reaction-Constrained Synthon Action Space with
-Equivariant Dihedral Torsion Guidance**:
-
-$$
-\pi_\theta(a_t \mid \mathcal{P}, \mathcal{M}_t) = P(r_t \mid \mathcal{P}, \mathcal{M}_t) \times P(B_t \mid r_t, \mathcal{P}, \mathcal{M}_t) \times p(\phi_t \mid B_t, r_t, \mathcal{P}, \mathcal{M}_t)
-$$
-
-Instead of
-$
-
-Instead of placing unconstrained atoms, 3D-SynTree iteratively selects certified
-building blocks (synthons) from a curated high-Fsp3 3D catalog, connects them
-using validated medicinal-chemistry reaction rules, and predicts the continuous
-single-bond dihedral angles (SO(2) space) that minimise steric clash within the
-SE(3) protein pocket. **Every generated compound outputs both a 3D molecular
-structure and an actionable, multi-step synthetic recipe.**
+> **Project status: clean-room V2 rebuild in progress.**
+> The `3d-synV2` branch was deliberately emptied on 2026-11-01 (commit
+> `075f86d`) and is being rebuilt as a completely new codebase from that
+> empty starting point. Nothing in this repository is inherited from the
+> previous implementation: every file is newly designed and newly written
+> against the approved issue roadmap (#5–#44) and the permanent operating
+> constitution (#45). See **Implementation status** below for exactly what
+> exists, and read claims there — not in this overview — as the source of
+> truth for what is implemented.
 
 ---
 
-## 2. The Problem: The Synthesizability Wall
+## 1. Scientific objective
 
-```mermaid
-flowchart TD
-    A["ATOM-BY-ATOM 3D DIFFUSION<br/>(TargetDiff, DiffSBDD)<br/><br/>• Continuous 3D coordinate noise<br/>• Strong pocket fit / docking scores<br/>• 85%+ fail retrosynthetic planning<br/>• Can violate chemical validity"] 
-    W["THE SYNTHESIZABILITY WALL"]
-    B["2D FORWARD-SYNTHESIS TREES<br/>(SynNet, SyntheMol)<br/><br/>• Real catalog building blocks + reactions<br/>• High synthesis feasibility<br/>• Blind to 3D protein pockets<br/>• Tends toward flat aromatic chemistry"]
-    A --> W --> B
+Structure-based drug design (SBDD) needs molecular generation that respects
+both the three-dimensional protein binding environment and chemical /
+synthetic constraints. Purely coordinate-driven generation can produce
+plausible-looking poses without guaranteeing chemically valid or
+synthesizable structures; purely 2D reaction-based generation encodes
+chemical transformations and purchasable building blocks but ignores the 3D
+geometry of the pocket. 3D-SynTree performs **reaction-constrained molecular
+growth conditioned on a 3D protein pocket**: at each construction step the
+policy selects applicable chemical actions — an initial seed fragment and
+pocket anchor, an eligible reactive handle, a certified reaction, a
+compatible catalog synthon, a categorical torsion/rotamer action, or an
+explicit termination — and the environment applies the valid reaction,
+places the new fragment, refines its geometry, and updates the molecular
+state. The system targets both a 3D ligand candidate and an auditable
+synthetic construction history.
+
+## 2. Formulation: MDP, construction DAG, and GFlowNet
+
+These three concepts are complementary and are used precisely throughout
+the project (this distinction is binding, see #45 §2.3):
+
+- **MDP** — the sequential decision problem: state, action, transition,
+  termination, reward.
+- **Construction DAG** — the directed acyclic graph of valid molecular
+  construction states and transitions induced by the MDP's growth rules.
+- **GFlowNet** — learns a forward sampling policy over that construction
+  state space, aiming to sample terminal objects in proportion to their
+  positive reward under the fixed conditioning context (the target pocket).
+- **Trajectory Balance (TB)** — the training objective enforcing flow
+  consistency along sampled trajectories.
+
+A molecular graph can have multiple valid construction histories. Uniqueness
+of a derivation-tree parent does not by itself prove that molecule-level
+samples follow P(x) ∝ R(x); derivation multiplicity must be handled
+explicitly (canonical derivations, a mathematically justified correction, or
+a graph-state / backward-policy formulation). This design item — issue #38 —
+**is resolved in V2**: states are order-quotiented discrete assembly
+objects, the backward policy is the uniform leaf deletion policy, the STOP
+backward term is zero by proof, and the identities are verified on an
+enumerable toy DAG through the real Trajectory Balance engine
+(`docs/architecture/MDP_STATE_SPACE.md`, decision D-V2-009).
+
+## 3. Architecture overview
+
+The target V2 system (issue numbers mark ownership; see
+`docs/architecture/ARCHITECTURE.md` for the full layered map):
+
+| Concern | Canonical home | Issue |
+|---|---|---|
+| Frozen state tensor schemas & PyG batch contracts | `syntree.core.schema` | #6 |
+| Non-singular equivariant math kernels | `syntree.models.equivariant` | #7, #8 |
+| Continuous cosine cutoff envelope for all spatial RBFs | `syntree.models.cutoff` | #9 |
+| Fail-closed pure-FP32 precision engine | `syntree.utils` | #10 |
+| Bipartite SE(3) backbone over pocket ∪ ligand (`BipartitePaiNN`) | `syntree.models` | #21 |
+| Agency-enabled handle-selection head (`P(handle \| s)`) | `syntree.models` | #22 |
+| Two-layer cross-attention decoder + hierarchical policy heads | `syntree.models.policy` | #23, #24 |
+| Certified 32-reaction taxonomy (9 coarse families) | `syntree.chemistry` | #11 |
+| Enamine REAL synthon catalog + `pharm3d` descriptors | `syntree.chemistry` | #12, #40 |
+| MMFF94 relaxation, soft-core LJ, torsion refinement | `syntree.chemistry` | #13, #14, #42 |
+| Multi-source data pipeline, clustered splits, exact replay, sharding | `syntree.data` | #16–#20 |
+| Supervised trainer, curriculum, transfer | `syntree.engine` | #26–#28 |
+| GFlowNet Trajectory-Balance engine + stationary reward | `syntree.engine` | #29, #30, #38 |
+| Test suites A (capability) and B (invariants) | `tests/` | #32, #33 |
+| Retrosynthesis & comparative SBDD evaluation | `scripts/` | #34, #35, #44 |
+
+Binding architectural invariants (details in the architecture document):
+
+- **Strict separation of chemistry from geometry.** Invariant chemical
+  features (`[N, d]`), Cartesian positions (`[N, 3]`), atomic numbers, and
+  charges are separate tensors. The legacy "Franken-tensor" that glued 64
+  chemical descriptors to 3 raw coordinates is a hard error everywhere.
+- **One equivariant backbone** over the union of pocket and ligand atoms
+  (pocket–pocket, ligand–ligand, and pocket–ligand interactions), never a
+  pocket-only encoder blind to the growing ligand.
+- **Non-singular geometry operators.** All norms and directional unit
+  vectors use the ε-smoothed formulation below; no raw `torch.norm`
+  divisions by near-zero distances anywhere in the model path.
+- **One authoritative representation chain into the policy.** The
+  cross-attention decoder (#23) refines a per-graph handle query built
+  solely from the backbone's pooled contexts and the handle head's pooled
+  surface (no second pocket/handle encoder) and projects no spatial
+  distances itself — every geometric quantity it consumes already passed
+  through the enveloped radial basis upstream.
+- **Pure FP32 on Tesla T4 only** (see §7).
+
+## 4. Mathematical foundations
+
+**Non-singular norms and bounded unit vectors (#7, implemented).** All
+geometric norms use the ε-smoothed form
+
+```
+||x||_eps = sqrt( sum_k x_k^2 + eps^2 ) - eps,        eps = 1e-5
+grad_x ||x||_eps = x / sqrt( sum_k x_k^2 + eps^2 )
 ```
 
-Three obstacles make this wall hard to tear down:
+which equals `0.0` with a strictly-zero, bounded gradient at `x = 0` — the
+raw L2 norm is undefined there and its gradient diverges, which corrupted
+training in the previous system at coincident / clashing coordinates.
+Directional unit vectors are computed as `v / sqrt(Σv² + ε²)`, which is
+well-defined for every input (the zero vector maps to the zero direction)
+and strictly bounded (`‖unit‖ < 1`). See `syntree.models.equivariant`.
 
-1. **The Representation Mismatch** – 3D pocket geometry lives in continuous
-   Euclidean space, while chemical synthesis operates on a discrete,
-   combinatorial graph grammar of reaction templates and functional groups.
-2. **The Rigidity vs. Fit Dilemma** – restricting generation to real, stable
-   building blocks means rigid bond angles (109.5°, 120°) can smash pieces
-   into the pocket walls (steric clash).
-3. **The "Flat Grease" Trap** – reaction-based models default to foolproof
-   couplings (amide, Suzuki), linking flat aromatic rings with terrible Fsp3,
-   poor solubility, and fast clinical clearance.
+**Equivariant message passing (PaiNN).** Scalar features `s ∈ R^d` and
+vector features `v ∈ R^{3×d}` are propagated with the published PaiNN
+update scheme (Schütt, Unke & Gastegger, ICML 2021): radial filter banks
+and shared scalar transforms gate scalar and vector messages along
+non-singular directions, and per-atom mixing blocks couple the channels
+through the invariant quantities `‖Vv‖` and `⟨Uv, Vv⟩`. Scalar outputs are
+provably invariant and vector outputs equivariant under rigid motions; both
+properties are pinned by tests with random rotations.
 
----
+**Continuous cosine cutoff envelope.** Every spatial distance RBF
+projection is multiplied by the `C¹` cosine envelope
+`f_cut(d) = 0.5 (cos(π d / r_cut) + 1)` that decays to zero at the cutoff
+(`syntree.models.cutoff`, integrated inside `GaussianRadialBasis` — the
+one authoritative producer for the backbone's edge distances and the
+handle head's centroid distances alike, issue #9 / decision D-V2-011).
+Beyond the cutoff the radial features are *identically* zero (bitwise),
+killing the legacy failure mode where clamped raw Gaussians handed every
+far spectator atom an identical non-zero bias feature; the derivative
+approaches zero continuously at the boundary, so features taper smoothly
+instead of switching abruptly.
 
-## 3. The 3D-SynTree Paradigm
+**Planned, not yet implemented:** analytic Amos-ratio autograd for the von
+Mises circular torsion objective (#8); the fail-closed FP32 precision
+engine (#10). These are listed for design completeness — no claim of
+existence is made until their issues close with evidence.
 
-Four architectural commitments break the wall:
+## 5. Chemistry: reactions, catalog, geometry
 
-1. **Lego-Rule Action Space** – the model never generates individual atoms.
-   Every action attaches a pre-validated building block from a curated
-   Enamine REAL 3D-Diversity subset (Fsp3 ≥ 0.42, MW ≤ 220 Da).
-2. **Relative 3D Cross-Attention + Reaction Grammar** – the reacting handle
-   includes chemical state plus pocket-frame position. Invariant handle-to-
-   pocket distances condition the attention keys, while the reaction grammar
-   masks chemically illegal synthons.
-3. **Equivariant Torsion Guidance** – rather than predicting all atom
-   coordinates, the 3D geometry of each added synthon is set by predicting the
-   **dihedral angle** around the newly formed single bond with an
-   SE(3)-equivariant network conditioned on pocket atoms, expressed as a
-   von Mises distribution on the circle.
-4. **Stratified 3D Synthon Catalog** – multifunctional linkers/expanders are
-   distinguished from terminal caps. Early growth masks monofunctional caps,
-   while a learned STOP action provides explicit termination control.
+- **Reaction taxonomy (#11):** 32 certified reaction transformations
+  grouped into 9 coarse policy families, each with SMARTS templates, handle
+  requirements, atom/bond mapping, stereochemical behaviour, validity
+  constraints, product sanitization, failure behaviour, and family
+  membership. A SMARTS string executing is not certification.
+- **Synthon catalog (#12, #40):** a curated 50,000-building-block Enamine
+  REAL subset with `pharm3d` invariant descriptors (2D, 3D shape,
+  electrostatic, dipole, handle-direction information) projected through a
+  versioned orthonormal QR projection, persisted as an immutable HDF5
+  artifact with a manifest. Reaction-aware chemoselectivity screening
+  (competing handles, orthogonal protection) is part of curation — basic
+  MW/Fsp3 filtering is explicitly insufficient.
+- **Geometry (#13, #14, #42):** scaffold-constrained MMFF94 relaxation with
+  resonance-locked geometry; soft-core Lennard-Jones pocket contact and
+  volume-floor terms; 36-bin categorical torsion actions over [-π, π) with
+  environment-side bounded (±5°) pocket-conditioned refinement inside the
+  selected bin — refinement is a geometry operation attached to the
+  categorical action, never an unnormalized continuous density inside the
+  Trajectory-Balance log-probability.
 
-```mermaid
-flowchart TD
-    P["PROTEIN POCKET<br/>(PDB)"]
-    E["PaiNN SE(3) Encoder"]
-    X["Cross-Attention Core<br/>Intermediate Ligand M_t<br/>(Attachment Handle u)"]
-    S["Synthon Head<br/>(Reaction Masked)"]
-    T["Continuous Torsion Head<br/>(SO(2) Space)"]
-    R["RDKit Conformer Engine<br/>(Deterministic Snap + Kabsch + MMFF relax)"]
-    I["Intermediate Ligand M_(t+1)"]
-    F["FINAL 3D DRUG CANDIDATE + LAB RECIPE"]
+## 6. Data, leakage prevention, and integrity
 
-    P --> E
-    E -->|Invariant / Equivariant Embeddings| X
-    X -->|Context Latent z_t| S
-    X -->|Context Latent z_t| T
-    S -->|Top-1 Synthon B_t| R
-    T -->|Dihedral Angle φ_t| R
-    R --> I
-    I -->|Iterate until cavity is filled| X
-    R --> F
-```
+Sources (verified URLs, checksums, and dates in
+`docs/data/RAW_SOURCE_PROVENANCE.yaml`): CrossDocked2020 Pocket10, PDBbind
+refined (2020), and BindingMOAD. Pockets are standardized on the
+co-crystallized ligand centroid (10 Å radius) with a documented policy for
+waters, salts, additives, and metals. Splits are produced by MMseqs2
+clustering at 30% sequence identity / 80% coverage across all protein
+chains from all sources; complexes sharing homologous chains form connected
+components that are allocated whole to 80/10/10 splits — **no homologous
+component crosses a split**. Every supervised trajectory step is accepted
+only under exact forward reaction replay (the selected reaction + catalog
+synthon must reproduce the observed product graph exactly, with rejection
+reasons recorded). Datasets are persisted as compressed shards with
+SHA-256 manifests. Counts always come from manifests, never from
+estimates.
 
----
+## 7. Hardware and precision policy
 
-## 4. Mathematical Formulation
+The only supported GPU production environments are **Google Colab with an
+NVIDIA Tesla T4** and **Kaggle with an NVIDIA Tesla T4**. The production
+path is **pure FP32**: no FP16, no BF16, no autocast, no `GradScaler`, no
+silent precision fallback. Architecture dimensions are frozen in
+version-controlled configuration (no VRAM-probing auto-scaling); memory is
+engineered explicitly (pocket/ligand atom caps, micro-batch ×
+gradient-accumulation settings, activation checkpointing) and measured on
+real T4 hardware before any throughput claim is made (#43). GPU-dependent
+verification runs only on authorized T4 runtimes (#36); a CPU development
+sandbox can never establish T4 behaviour.
 
-**Pocket Encoder (SE(3)-equivariant PaiNN).** Scalar features
-$s_i \in \mathbb{R}^d$ and vector features $\vec{v}_i \in \mathbb{R}^{3 \times d}$
-are updated over edges within cutoff $r_{\mathrm{cut}} = 5.0$ Å:
+## 8. Training stages
 
-$$\vec{v}_i^{(l+1)}, s_i^{(l+1)} = \text{PaiNN-Update}\left(s_i^{(l)}, \vec{v}_i^{(l)}, \mathbf{X}_P\right)$$
+1. **Stage 1 — supervised behavioral cloning** on forward-replay-validated
+   trajectories (#26): discrete action losses, circular torsion loss,
+   Approach-C quantile curriculum with 9 difficulty levels (#27), 2D
+   reaction-grammar pretraining → 3D fine-tuning transfer (#28),
+   coordinate/dihedral augmentation on the training split only (#20).
+2. **Stage 2 — GFlowNet Trajectory Balance** (#29, #38): the forward
+   probability includes the seed, STOP, handle, reaction, synthon, stereo,
+   and torsion actions; backward semantics are resolved by #38 (see §2).
+   PPO/DPO are not production alternatives in V2. Implemented (#29
+   closed): the seed-conditioned partition function `log Z_θ(P, s_0)`
+   (a 2-layer MLP over the pooled pocket and seed latents, trained at
+   `lr_Z = 1e-2`), the on-policy rollout driver
+   (`syntree/engine/rollout.py` — the policy drives the assembly
+   environment with its own categorical laws), the TB trainer
+   (`GFlowNetTrainer`), and the canonical CLI
+   `scripts/train_stage2.py` (#31) which initializes from Stage-1
+   weights and resumes interrupted runs exactly.
+3. **Reward (#30):** a stationary, reproducible, positive function of the
+   terminal object and the fixed conditioning context only. Batch-relative
+   diversity terms inside R(x) are forbidden; population diversity is
+   managed outside the terminal reward. Hard chemical validity is never
+   tradable against a favourable score.
 
-**Synthon Selection
-$
+## 9. Evaluation
 
-**Synthon Selection (reaction-masked cross-attention).** Given attachment
-handle representation $\mathbf{q}_u$ and catalog embeddings
-$\mathbf{E}_B \in \mathbb{R}^{K \times d}$:
+Chemical validity, PoseBusters validity, docking/contact metrics,
+diversity, and Fsp3 — plus two *separately reported* retrosynthesis tracks
+(#34, #44): **Track A (generator-stock-aligned)** exports the exact
+versioned Enamine subset the generator used as the planner stock; **Track B
+(independent)** uses a separately sourced external stock. Solve rates are
+never merged, and a missing building block is never treated as proof a
+route is impossible. Comparative SBDD benchmarking against frozen held-out
+targets (#35) reports statistical uncertainty and paired comparisons where
+justified. Internal forward replay verifies internal construction
+consistency only — it does not prove an independent planner can rediscover
+a route. The measured two-track evidence run (2026-11-05, on the
+194-record / 30-unique-structure #18 construction corpus) lives in
+`docs/eval/` with full provenance: stock-aligned solve rate 0.267 vs
+independent external-stock 0.733, every failure classified as a stock
+mismatch (never a planner failure).
 
-$$\mathbf{p}_{\text{synthon}} = \text{Softmax}\left(\frac{\mathbf{q}_u \mathbf{E}_B^T}{\sqrt{d}} + \mathbf{M}_{\text{rxn}}\right)$$
-
-where
-$
-
-where $\mathbf{M}_{\text{rxn}}(u, j) = 0$ if synthon $j$ can legally react with
-handle $u$, and $-\infty$ otherwise.
-
-**Dihedral Torsion Head (continuous SO(2) parameterization).** Emits von Mises
-parameters $(\mu, \kappa)$:
-
-$$p(\phi \mid \mu, \kappa) = \frac{\exp(\kappa \cos(\phi - \mu))}{2\pi I_0(\kappa)}$$
-
-trained
-$
-
-trained via the exact circular negative log-likelihood (with a numerically
-stable $\log I_0$), plus an auxiliary soft Lennard-Jones steric clash penalty:
-
-$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{synthon}} + \lambda_1 \mathcal{L}_{\text{torsion}} + \lambda_2 \sum_{i \in B_t} \sum_{j \in \mathcal{P}} \max\left(0, (r_i + r_j)^2 - \|\mathbf{x}_i(\phi) - \mathbf{x}_j\|^2\right)$$
-
-**Atom provenance
-$
-
-**Atom provenance.** Reactions are executed with isotope-tagged reactants
-(core: $1000+i$, synthon: $2000+j$), which survive RDKit's product construction
-even when leaving groups are deleted — enabling exact 3D coordinate inheritance,
-Kabsch rigid alignment onto the locked scaffold, and frozen-scaffold MMFF
-relaxation of the junction bonds.
-
----
-
-## 5. Repository Structure
-
-```text
-3d-syntree/
-├── configs/
-│   ├── default_config.json          # Master hyperparameter manifest
-│   └── train_colab_12h.json         # 12-hour budgeted execution profile
-├── notebooks/
-│   └── run_3d_syntree.ipynb         # 7-cell headless Colab/Kaggle wrapper
-├── syntree/
-│   ├── chemistry/
-│   │   ├── catalog.py               # Enamine 3D synthon loader & masks
-│   │   ├── conformer.py             # 3D snapping, Kabsch, dihedrals, clashes
-│   │   ├── reactions.py             # SMARTS engine + isotope provenance
-│   │   └── validator.py             # PoseBusters-style validity checks
-│   ├── data/
-│   │   ├── crossdocked.py           # PyG dataset (real + synthetic modes)
-│   │   ├── featurizer.py            # Pocket & handle featurization
-│   │   └── synthon_library.py       # HDF5/NPZ embedding store
-│   ├── models/
-│   │   ├── equivariant.py           # PaiNN layers, radial basis, radius graph
-│   │   ├── pocket_encoder.py        # SE(3) cavity encoder
-│   │   ├── synthon_head.py          # Grammar-masked cross-attention
-│   │   ├── torsion_head.py          # von Mises torsion head
-│   │   └── policy.py                # End-to-end policy network
-│   ├── engine/
-│   │   ├── evaluator.py             # PoseBusters / retrosynthesis / docking
-│   │   ├── generator.py             # Autoregressive SBDD inference
-│   │   └── trainer.py               # Time-budgeted resilient training
-│   └── utils/
-│       ├── checkpoint.py            # Local + Hugging Face Hub sync
-│       ├── hardware.py              # CUDA/TF32/mixed-precision profiling
-│       └── logger.py                # JSONL metrics + WandB mirroring
-├── scripts/
-│   ├── download_assets.py           # Offline-capable asset builder
-│   └── run_benchmarks.py            # Evaluation battery runner
-├── tests/                           # 302 unit/integration tests
-├── requirements.txt
-├── setup.py / pyproject.toml
-└── main.py                          # Unified CLI (train/generate/evaluate/info)
-```
-
----
-
-## 6. Quickstart
-
-### Local installation
+## 10. Installation (development)
 
 ```bash
-git clone https://github.com/Vtheonly/3d-syntree.git
+git clone --branch 3d-synV2 https://github.com/Vtheonly/3d-syntree.git
 cd 3d-syntree
-pip install -r requirements.txt
-pip install -e .
+python -m venv .venv && source .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA build on an authorized T4 runtime
+pip install -e ".[test]"
 ```
 
-### Download assets (offline fallback included)
+Requirements: Python ≥ 3.10, PyTorch ≥ 2.1, PyTorch Geometric ≥ 2.4.
+
+## 11. Execution
+
+There is **no end-to-end CLI yet** — the training/generation entry points
+arrive with their owning issues (#26, #31). What can be executed today is
+the library surface and its test suite:
 
 ```bash
-python scripts/download_assets.py --target-dataset crossdocked2020 \\
-    --synthon-subset 3d-diversity-15k
+python -m pytest tests/ -q          # full local (CPU) verification suite
 ```
 
-With no network access the builder creates a chemically verified offline
-catalog (Fsp3/MW computed with RDKit, handles detected by the real reaction
-engine) plus a sample protein pocket, so the entire pipeline runs end-to-end.
+GPU-dependent tests and training run only on authorized Colab/Kaggle T4
+runtimes via the SSH workflow (#36) and are never claimed from a CPU
+sandbox.
 
-### Train (wall-clock budgeted, resumable)
+## 12. Reproducibility
 
-```bash
-python main.py --mode train --config configs/default_config.json --resume-auto
+Version-controlled frozen configurations; deterministic, checksum-verified
+shards and artifacts; checkpoints persisting model / optimizer / scheduler
+/ step / RNG / sampler-curriculum / data-progress / GFlowNet-partition
+state atomically with integrity checks and session-safe resume (#43);
+artifact synchronization to Hugging Face with checksums (#37). Credentials
+are read from environment variables only (`HF_TOKEN`, `GITHUB_TOKEN`) and
+never hardcoded or logged.
+
+## 13. Repository structure
+
+```
+src/syntree/            # the V2 package
+  core/                 # frozen state tensor contract & batch path (#6)
+  models/               # equivariant math kernels (#7), cosine cutoff
+                        # envelope (#9), union-graph backbone (#21),
+                        # handle-selection head (#22), cross-attention
+                        # decoder (#23), von Mises torsion mathematics
+                        # (#8); remaining policy heads (later issues)
+  utils/                # fail-closed FP32 hardware precision engine +
+                        # standard logit masks (#10)
+  chemistry/            # production pocket physics: flat-bottom soft-core
+                        # LJ clash + cavity/heavy-atom volume floors (#14);
+                        # reaction registry/catalog arrive with #11/#12
+  engine/               # GFlowNet TB engine + rollout driver + trainer
+                        # geometry / #38 semantics / #42+#13 terminal
+                        # oracle (production clash objective per #14) /
+                        # #30 stationary reward with #14 volume floors /
+                        # #29 TB core)
+docs/
+  architecture/         # global architecture specification + MDP state space
+  data/                 # verified raw-source provenance
+  agent/                # STATUS, WORK_LOG, DECISIONS, DEPENDENCIES, HANDOFF
+tests/                  # pytest suites (Suite A/B grow with #32/#33)
 ```
 
-### Generate pocket-conditioned ligands + synthesis recipes
-
-```bash
-python main.py --mode generate --config configs/default_config.json \\
-    --pocket data/crossdocked/sample_pocket.pdb --num-ligands 8 --resume-auto
-```
-
-### Evaluate
-
-```bash
-python scripts/run_benchmarks.py --sdf-dir outputs/
-```
-
-### Run the test suite
-
-```bash
-python -m pytest tests/ -q
-```
-
----
-
-## 7. Colab / Kaggle Execution (12-hour budget)
-
-Open `notebooks/run_3d_syntree.ipynb` in Google Colab or Kaggle and hit
-**Run All**. The notebook is intentionally an execution/download wrapper; all
-data processing, model logic, training, and checkpoint orchestration remain in
-the codebase.
-
-The production run uses two separate Hugging Face repositories:
-* **Dataset:** `JJKK1212/3d-syntree-multidataset` (HF Dataset repo)
-* **Model checkpoints:** `JJKK1212/3d-syntree-checkpoints` (HF Model repo)
-
-The notebook:
-
-1. **Asks for your Hugging Face write token** via a hidden input prompt
-   (auto-detected first from Colab/Kaggle secrets or `HF_TOKEN`; leave blank
-   to keep checkpoints local-only).
-2. Clones (or pulls) this repository.
-3. Installs dependencies and verifies RDKit / PyTorch / PyG.
-4. Verifies the pre-filtered dataset manifests and exact synthon catalog from the HF Dataset repo.
-5. Profiles the GPU (TF32 on Ampere+, fp16 on T4/V100).
-6. Launches the time-budgeted training loop with automatic Hugging Face
-   checkpoint sync every 2 epochs.
-7. Verifies the remote checkpoint state.
-
-**Disconnection immunity:** if Colab disconnects at hour 4, simply hit **Run All**
-again — the trainer detects the remote checkpoints on the HF Hub, restores model +
-optimizer + RNG state, and resumes from the correct epoch.
-
-### GPU auto-scaling
-
-A fresh `train` run on a CUDA device fills the card instead of idling at
-~1 GB:
-
-* **Model tier** — free VRAM >= 12 GB trains hidden 256 / 8 layers / 8 heads
-  (T4, A100, ...); 8–12 GB trains 192/6/6; 4–8 GB trains 160/5/4; smaller
-  runtimes keep the portable 128/4/4 default.
-* **Batch size** — the trainer probes real forward+backward passes with
-  doubling + binary refinement until peak reserved VRAM reaches
-  `training.auto_scale.target_vram_fraction` (default 0.85, i.e. ~12 GB of a
-  T4's 14.4 GB free). Gradient accumulation is rebalanced so the effective
-  batch stays close to the configured value; probing is RNG-transparent and
-  never updates weights.
-* **Architecture persistence** — the (possibly scaled) model config is stored
-  inside every checkpoint, so `generate` and resume runs rebuild the exact
-  trained architecture even on a different GPU.
-
-Controlled by `training.auto_scale` in the config (enabled in
-`configs/train_colab_12h.json`, disabled in `configs/default_config.json`
-for bit-reproducible reference runs). If the dataset is too small to fill
-the card, the trainer prints a note suggesting a larger
-`data.synthetic_samples` or the real CrossDocked data.
-
-### Fully offline execution on the RTX 6000 Ada accelerator (96 GB)
-
-Kaggle's RTX 6000 Ada sessions have **no internet access** — any network
-call (`huggingface_hub`, `urllib`, `pip install`) crashes immediately. The
-`kaggle_offline` data backend serves the exact same sharded dataset format
-entirely from a mounted read-only directory, with zero sockets:
-
-```bash
-# 1. On an internet-connected machine: build shards + catalog once
-python scripts/build_full_dataset.py --output-dir ./dataset
-python scripts/shard_and_upload.py --dataset-dir ./dataset --no-upload
-# (then upload ./dataset as a private Kaggle Dataset, e.g. "3d-syntree-dataset")
-
-# 2. In the offline notebook/session (dataset mounted at /kaggle/input):
-python main.py --mode train --config configs/train_kaggle_96gb.json \
-    --output-dir /kaggle/working --fresh
-
-# 3. Next session (Persistence: Files only) — resume exactly where it stopped:
-python main.py --mode train --config configs/train_kaggle_96gb.json \
-    --output-dir /kaggle/working --resume-auto
-```
-
-`configs/train_kaggle_96gb.json` encodes the full battle-tested profile for
-the 96 GB card: `data.backend: kaggle_offline`, **RAM preloading** of the
-entire dataset (`preload_to_ram: true` — a 30k-complex dataset is only
-~8–15 GB against 175 GB host RAM, making batch collation instantaneous),
-**bf16 autocast + TF32** (the RTX 6000 Ada's compute capability 8.9 tensor
-cores; bfloat16 carries float32's dynamic range so no loss scaling is ever
-needed), a **512-dim / 12-layer / 8-head** model with a 6.5 Å cutoff,
-`time_budget_hours: 11.2` (graceful checkpoint-and-exit before the 12-hour
-session kill), and `keep_last_n_checkpoints: 2` (~500 MB, safely inside the
-57.6 GB disk quota). Every shard is SHA-256-verified against its manifest on
-load — data integrity does not depend on network transport.
-
-**Precision safety:** `mixed_precision: "bf16"` is now resolved end-to-end —
-the trainer passes `dtype=torch.bfloat16` into every autocast region and
-disables the GradScaler (bf16 has fp32's exponent range). On pre-Ampere
-GPUs (T4, compute capability < 8) a `bf16` config automatically falls back
-to fp16 + loss scaling with a warning instead of silently mis-running.
-`system.tf32` is honoured explicitly (`true` / `false` / omitted = auto).
-
-### Stage 2 algorithm choice: PPO → GFlowNet / DPO
-
-`reinforcement_learning.algorithm` selects the Stage-2 optimizer:
-
-* **`ppo`** (default) — the buffered PPO loop with GAE, unchanged.
-* **`gflownet`** — Trajectory-Balance GFlowNet (Malkin et al., 2022). Instead
-  of maximising expected reward (which provably collapses onto one greedy
-  hit), the policy learns to sample molecules *proportional to their
-  reward*, `P(x) ∝ R(x)`, so every high-reward scaffold gets sampled
-  according to its reward mass. The learnable `log Z` normalizer trains at
-  its own higher learning rate and is persisted inside checkpoints.
-* **`dpo`** — Direct Preference Optimization over reward-ranked same-batch
-  pairs; no value network, no clipping, supervised-like stability.
-
-All three share the mode-collapse-hardened reward
-(`reinforcement_learning.reward`): a **batch Tanimoto diversity term**
-(`diversity_weight`, computed over each rollout batch exactly as the
-R_div formula prescribes) and a **pharmacophore key-interaction bonus**
-(`key_interaction_weight`: +1.5 for a verified salt bridge with a charged
-Asp/Glu/Lys/Arg pocket residue; hydrogen bonds contribute up to half the
-bonus) so the policy cannot win by burying lipophilic grease.
-
-### Reaction grammar: 10 certified reaction classes
-
-`syntree/chemistry/reactions.py` implements ten medicinal-chemistry
-reactions: the original eight (amide coupling, reductive amination, Suzuki,
-SNAr, urea formation, Buchwald–Hartwig, esterification, click triazole)
-plus **sulfonamide coupling** (sulfonyl chloride + primary/secondary amine —
-the R–SO2–NH–R' junction found in celecoxib, sildenafil and darunavir) and
-**SN2 sp3-alkylation** (alkyl halide + amine). Both new reactions work
-forward (generation) and retro (dataset supervision), and all indices are
-append-only so previously built datasets and shards stay compatible.
-
-### Synthon embedding encoder: 3D pharmacophore descriptors
-
-`catalog.encoder` selects how building blocks are embedded:
-
-* **`pharm3d`** (default) — a deterministic, fully offline 3D-pharmacophore
-  descriptor: seeded ETKDG + MMFF94 conformer, Gasteiger charge statistics
-  and dipole, shape descriptors (radius of gyration, asphericity,
-  eccentricity, NPR1/2), pharmacophore fractions, per-handle attachment
-  direction vectors, classical 2D descriptors and the Morgan fingerprint,
-  projected through a seeded orthonormal (QR) Johnson–Lindenstrauss matrix.
-  The expensive conformer pass is cached on disk next to the catalog
-  (validated by ids/dim/seed; gracefully skipped on read-only mounts).
-* **`morgan2d`** — the legacy seeded random projection, bit-for-bit
-  reproducible for backward compatibility.
-
-Checkpoints record a `catalog_signature` (encoder, dim, ids hash) and the
-trainer warns loudly when a resumed checkpoint was trained against a
-different catalog or encoder.
-
-### Tokens / credentials
-
-Never paste live tokens into tracked files — GitHub push protection rejects
-the push and the credential must be considered compromised. Provide them at
-runtime instead: `export HF_TOKEN=...`, `git` credentials for pushes, or an
-untracked `.secrets/tokens.env` (already matched by `.gitignore`).
-
----
-
-## 8. What is learned vs. guaranteed
-
-The project deliberately separates **learned predictions** from **deterministic
-chemical constraints**.
-
-| Component | Mechanism | What a benchmark number means |
-| :--- | :--- | :--- |
-| Reaction-family prediction | Learned neural reaction head | Accuracy on held-out, reaction-validated CrossDocked decompositions |
-| Synthon selection | Learned pocket/handle-to-catalog scoring + reaction mask | Top-1 / top-k accuracy; report both oracle-family and joint-policy results |
-| Dihedral prediction | Learned von Mises torsion head | Circular error / NLL on held-out observed junction torsions |
-| Chemical validity | RDKit reaction execution + sanitization | A hard construction constraint, not model intelligence |
-| Recipe validity | Catalog membership + certified forward reaction replay | A property enforced by the action space, not a learned hit rate |
-| Pose quality | RDKit conformers plus the neural torsion prediction | Must be measured separately with blinded docking / PoseBusters-style evaluation |
-| Binding affinity | External docking / experimental assay | **Not trained by the core policy and not inferred from validity alone** |
-
-### Real CrossDocked supervision
-
-Real pocket/ligand pairs are no longer assigned random labels. The
-ReactionConstrainedFragmenter searches non-ring single bonds, reconstructs
-chemically meaningful precursor handles, matches the resulting synthon against
-the filtered catalog, and then replays the forward reaction with the real
-ReactionEngine.
-
-A training example is accepted only when the replayed product has the same
-molecular connectivity as the observed ligand and an observed 3D junction
-torsion is available. Unmatched complexes are skipped rather than being
-converted into fabricated targets.
-
-SNAr and Buchwald-Hartwig substitutions share one learned aryl_amination
-family because the final product structure does not contain enough information
-to identify which experimental conditions produced that bond.
-
-### Synthetic mode
-
-The deterministic synthetic dataset remains available for CPU/Colab smoke
-tests and unit tests. Its labels are intentionally learnable but synthetic.
-It must not be used as evidence of molecular-design performance, and production
-configs now disable automatic fallback to it.
-
-### Evaluation policy
-
-Claims about binding, docking, PoseBusters, retrosynthetic success, or wet-lab
-hit rates must come from an explicit held-out evaluation using real complexes,
-with the evaluation protocol and sample population reported alongside the
-numbers. The core repository does not assume that a valid molecule binds its
-target.
-
-## 9. Thesis Training Pipeline
-
-The implementation separates the scientific stages explicitly.
-
-**Offline expert trajectories.** scripts/build_trajectories.py recursively inverts supported reactions on co-crystallized ligands, considers exact and high-Tanimoto catalog candidates, and accepts supervision only after exact forward replay reproduces observed connectivity. Accepted states retain crystal pocket coordinates and observed junction dihedral.
-
-**Behavioral cloning.** Set data.trajectory_dataset_path to the generated trajectories.pt file and run Stage 1 training. Synthetic data remains restricted to explicit smoke-test configurations.
-
-**Hotspot-conditioned seeding.** Protein residue chemistry is converted into deterministic positive, negative, donor, acceptor, and hydrophobic hotspots. Seed handles are anchored near compatible hotspots before clash-aware geometric refinement.
-
-**PPO fine-tuning.** main.py --mode rl --resume-auto loads Stage 1 weights and optimizes the same chemistry-constrained generator with a multi-objective 3D reward. The reward supports GNINA/Vina docking plus clash avoidance, Fsp3, QED, and chemical validity. Missing docking tools never become fabricated docking scores.
-
-### Action-space constraints
-
-The synthon policy outputs K + 1 actions, where index K is the learned STOP action. During early growth, monofunctional terminal caps are masked until the scaffold reaches data.terminal_cap_min_mw (default 250 Da). Multifunctional catalog entries are indexed by every detected reactive handle.
-
-## 10. Engineering Notes
-
-* **Deterministic real-target extraction** – real labels require a catalog
-  synthon match plus successful RDKit forward replay; there is no random
-  target_synthon or target_dihedral path in real mode.
-* **Non-overlapping deterministic splits** – paired CrossDocked examples are deterministically
-  partitioned into train/val/test buckets instead of loading every pair into
-  every split.
-* **Reaction policy** – the network predicts a reaction family before synthon
-  selection. The synthon logits are then masked by the selected family and
-  the current core handle.
-* **Torsion integrity** – the neural torsion prediction is applied directly by
-  default. A brute-force clash grid remains available as an explicit diagnostic
-  option, but it no longer silently overwrites the model prediction.
-* **Chemical guarantees** – catalog membership and RDKit reaction execution
-  constrain the action space, but those guarantees are not presented as
-  learned accuracy.
-* **Determinism** – seeded everywhere (Python/NumPy/Torch); catalog embeddings
-  are deterministic projections of Morgan fingerprints, so identical catalogs
-  produce reproducible embedding tables.
-* **Resilience** – the trainer checkpoints atomically and restores optimizer,
-  scheduler, and RNG state. Legacy checkpoints can still be read after the
-  reaction head expansion, with newly introduced parameters initialized fresh.
-* **Fresh-start safety (2026-10-29)** – non-resume runs archive prior local
-  checkpoints instead of purging them; restores refuse non-finite payloads;
-  `--fresh` + `--resume-auto` is a hard error; remote purging requires the
-  explicit `--purge-remote`.
-* **Curriculum learning (2026-10-29)** – optional 9-level difficulty-aware
-  sampling over the full train split (`curriculum.enabled` in the config);
-  budget-neutral (identical steps/epoch), leakage-safe (train-only level
-  edges), reproducible (cached level artifact + per-epoch seeded sampler);
-  see `docs/CURRICULUM.md`.
-* **Security** – the HF write token is read exclusively from HF_TOKEN and
-  never from committed configuration.
-* **Testing** – run python -m pytest tests/ -q before treating a benchmark as
-  valid.
-## 10.1 Unified multi-dataset thesis dataset pipeline
-
-The production data path can combine CrossDocked2020, BindingMOAD, and PDBbind
-without changing the model input schema. Raw sources remain local inputs because
-their licensing and distribution layouts differ.
-
-```mermaid
-flowchart LR
-    A[CrossDocked2020] --> D[Manifest normalization]
-    B[BindingMOAD] --> D
-    C[PDBbind refined] --> D
-    D --> E[RDKit sanitization + ligand filters]
-    E --> F[10 Å protein-only pocket extraction]
-    F --> G[Protein chain FASTA]
-    G --> H[MMseqs2 30% identity / 80% coverage]
-    H --> I[Component-level train / val / test assignment]
-    F --> J[Reaction-validated retrosynthetic labels]
-    I --> J
-    J --> K[Pre-featurized PyG states]
-    K --> L[500 MiB compressed shards + SHA-256 manifest]
-    L --> M[Hugging Face Dataset Hub]
-    M --> N[Lazy shard loader + shard-aware sampler]
-    N --> O[Training]
-```
-
-### Input manifest
-
-For heterogeneous source layouts, a CSV or JSONL row should contain at least:
-
-`source,complex_id,protein_path,ligand_path,resolution,subset`
-
-`preprocess_multidataset.py` also supports recursive discovery when a source
-uses a conventional <id>_protein.pdb and <id>_ligand.sdf|mol2 layout.
-
-### Build sequence-cluster-safe splits
-
-```bash
-python scripts/preprocess_multidataset.py \
-  --crossdocked-manifest ./raw_data/crossdocked.csv \
-  --bindingmoad-manifest ./raw_data/bindingmoad.csv \
-  --pdbbind-manifest ./raw_data/pdbbind_refined.csv \
-  --output-dir ./data/multidataset
-
-bash scripts/run_mmseqs_split.sh \
-  ./data/multidataset/processed_manifest.jsonl \
-  ./data/multidataset
-```
-
-The split stage links complexes that share a clustered protein chain and assigns
-the resulting connected components to train, validation, or test. This prevents
-a clustered protein chain from appearing in multiple splits. A 30% sequence
-identity split supports sequence-level generalization claims; it does not by
-itself prove unseen structural folds.
-
-### Build real supervision and shard it
-
-```bash
-python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split-manifest ./data/multidataset/split_manifest.json --split train --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_train.pt --max-steps 4
-python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split val --split-manifest ./data/multidataset/split_manifest.json --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_val.pt --max-steps 4
-python scripts/build_trajectories.py --manifest ./data/multidataset/processed_manifest.jsonl --split test --split-manifest ./data/multidataset/split_manifest.json --catalog ./data/enamine_3d_subset.parquet --output ./data/trajectories_test.pt --max-steps 4
-python scripts/shard_and_upload.py --input ./data/trajectories_train.pt --split train --output-dir ./data/shards --repo-id JJKK1212/3d-syntree-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_train.json
-python scripts/shard_and_upload.py --input ./data/trajectories_val.pt --split val --output-dir ./data/shards --repo-id JJKK1212/3d-syntree-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_val.json
-python scripts/shard_and_upload.py --input ./data/trajectories_test.pt --split test --output-dir ./data/shards --repo-id JJKK1212/3d-syntree-multidataset --max-shard-gb 0.50 --metadata-json ./data/trajectories_test.json
-```
-
-Shards are bounded by compressed byte size rather than fixed sample count.
-The manifest stores sample ranges, compressed sizes, and SHA-256 hashes. The
-training loader downloads a shard on first access and keeps a bounded local
-LRU cache. The shard-aware sampler shuffles within each shard before moving
-to another shard, avoiding pathological global random cross-shard access.
-
-### Retrosynthesis coverage
-
-The forward reaction engine defines eight certified reaction SMARTS, but a
-co-crystallized product graph does not always contain enough information to
-recover the experimental precursor uniquely. The current product-only
-retrosynthesis implementation therefore accepts the five families declared in
-`SUPPORTED_RETRO_FAMILIES` and requires exact forward replay after catalog matching.
-Urea formation and click triazole are not silently converted into ground truth
-without additional reaction provenance.
-
-This distinction should remain explicit in the thesis: eight forward reaction
-templates are available to the generator, while only product-invertible
-transformations are used as supervised retrosynthetic labels unless external
-reaction provenance is available.
-## 11. License
+Agent-facing documentation (`docs/agent/`) is part of the deliverable, not
+an afterthought: the project is built by autonomous engineering sessions
+that must leave a precise, verified resumption point after every session.
+
+## 14. Implementation status
+
+Honest, evidence-linked status (synchronized with the GitHub issue
+tracker; last updated 2026-11-02, session S-V2-09):
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Branch clean-room reset (purge of all legacy content) | **Done, verified, closed** | commit `075f86d` — branch tree verified empty on origin; foundation `0f5d74a` (#5) |
+| Frozen state tensor contract & PyG batch path | **Done, verified, closed** | `syntree/core/schema.py` @ `0001087`, 93/93 tests (#6) |
+| Non-singular PaiNN norms & bounded unit vectors | **Done, verified, closed** | `syntree/models/equivariant.py` @ `00ec653`, 45/45 tests (#7) |
+| Continuous cosine cutoff envelope for all spatial RBF projections | **Done, verified, closed** | `syntree/models/cutoff.py` @ `bf735a6`, 46/46 tests — bitwise-zero features beyond the cutoff (`d = r_cut + 1e-4` probe), derivative → 0 continuously at the boundary, integrated inside `GaussianRadialBasis` for the backbone and handle-head bases (#9, D-V2-011) |
+| Bipartite union-graph backbone (`BipartitePaiNN`) | **Done, verified, closed** | `syntree/models/bipartite.py` @ `e76d955`, 69/69 tests — SE(3) invariance/equivariance ≤3e-13 over 36 rigid-motion trials, clean pocket-only N_l=0, 5,999,104-param frozen profile (#21) |
+| MDP / derivation-DAG semantics + TB backward policy | **Done, verified, closed** | `docs/architecture/MDP_STATE_SPACE.md` + `syntree/engine/` @ `d3d186a`, 50/50 tests — toy-DAG `P(x)=R(x)/Z` residuals < 1e-9 (#38, D-V2-009) |
+| Agency-enabled handle-selection head | **Done, verified, closed** | `syntree/models/handle_head.py` @ `433d303` (S-V2-04), 44/44 tests — valid normalized laws on real `AssemblyEnvironment` menus, rigid-motion invariance 8.3e-16 (FP64) / 5.96e-08 (FP32), 224,896-param frozen profile (#22, D-V2-010) |
+| Discrete assembly MDP + terminal reward oracle + TB engine (engine layer) | **Implemented, tested locally** — engine layer of the reconciled design; trainer/CLI integration open | `syntree/engine/environment.py` / `rl.py` / `gflownet.py` @ `d3d186a`, 50/50 tests (D-V2-009); #24/#29/#30/#42 remain open for their full scope |
+| Two-layer stacked cross-attention decoder | **Done, verified, closed** | `syntree/models/policy.py` @ `dc4921e` (S-V2-06), 58/58 tests — `[B, 1, 256]` × `[B, N, 256]` → `[B, 256]` acceptance shapes, padded atoms masked exactly (bit-identical under pad junk), SE(3) invariance 8.882e-16 (FP64) / 4.768e-07 (FP32), 1,219,328-param frozen profile, no new spatial-RBF site (#23, D-V2-012) |
+| Stable von Mises circular-torsion mathematics | **Done, verified, closed** | `syntree/models/torsion_head.py` @ `ae2c615` (S-V2-07), 44/44 tests — `log I_0` matches `scipy.special.i0e` to a measured 6.51e-6 over κ∈[0,100] (< 1e-5 acceptance); analytic Amos' ratio backward finite, ≥ 0, strictly < 1 everywhere (measured deviation vs `I₁/I₀`: 3.30e-2 max, O(κ⁻²) decay); the legacy NaN-leak/series-divergence failure is structurally eliminated (#8, D-V2-013) |
+| Fail-closed FP32 hardware precision engine | **Done, verified, closed** | `syntree/utils/hardware.py` @ `5ce4f5e` (S-V2-07), 35/35 tests — simulated Tesla T4 (cc 7.5) forces `precision="fp32"` with no GradScaler/autocast; `mixed_precision="fp16"` requests log a FAIL-CLOSED warning and execute pure FP32; TF32 structurally off on supported hardware; repo-wide AST ban on AMP machinery (#10, D-V2-014) |
+| Flat-bottom soft-core LJ clash + cavity/heavy-atom volume floors | **Done, verified, closed** | `syntree/chemistry/conformer.py` + engine wiring @ `d61a7fc` (S-V2-07), 50/50 tests — V(0.5 Å) = 484.85 kcal/mol < 500 for **every** supported element pair (bounded-spike ceiling by construction) vs 1.58×10⁹ for the rigid wall; the #42 torsion-refinement objective and the reward's `S_vol` (0.35 cavity ratio + 12-heavy-atom floors, stationary) consume it (#14, D-V2-015) |
+| Certified 32-reaction taxonomy + 9-family coarse mapping + deterministic deprotections | **Done, verified, closed** | `syntree/chemistry/reactions.py` @ `0e296b0` (S-V2-08), 82/82 tests — 100% round-trip forward-replay certification on 48 standardized reagent pairs (16 stereo pairs with CIP retention); `DEFAULT_REACTION_REGISTRY` is the certified taxonomy (the generic interim was superseded and removed) while all 50 pinned MDP/TB contracts stay green (#11, D-V2-016) |
+| Junction torsion stages + scaffold-constrained MMFF94 in the static pocket vdW field | **Done, verified, closed** | `syntree/chemistry/conformer.py` (extended) + `finalize_terminal_molecule` opt-in flags @ `472f4df` (S-V2-08), 18/18 tests — amide planarity ≤ 1.0° (restored exactly post-MMFF: MMFF94's amide torsions sit ~3.7–11.6° off planar at their minimum, a measured finding), seed-scaffold RMSD < 0.15 Å, junction bond settles < 0.02 Å of its MMFF equilibrium, pocket static within 0.05 Å behind D-V2-017 opt-in flags whose defaults preserve the legacy behaviour bit-for-bit (#13) |
+| Canonical assembly ordering + seed-conditioned decompositions | **Done, verified, closed** | new package `syntree/data/fragmenter.py` @ `864530d` (S-V2-08), 21/21 tests — identical retrosynthetic trajectories under 12–20 random atom renumberings per ligand (the #15 acceptance criterion); the pinned seed rule (max ring system → highest degree → canonical SMILES) and periphery→core peeling with permanent rejection of atom-isolating cuts (#15) |
+| Decoupled hierarchical policy heads + discrete 36-bin SO(2) torsion space | **Done, verified, closed** | `syntree/models/policy.py` + `syntree/models/torsion_head.py` @ `74133c8` (S-V2-09), 100/100 tests — STOP-isolation pinned by forward hooks (no continuation head executes for terminating rows); every action component a pure dimensionless categorical whose logs compose in TB (κ/μ-invariance pinned); the exact family→reaction factorization; the tied 50k catalog embedding table; the asymmetric resonance-lock torsion gating; the three pre-V2 policy bugs pinned dead (#24, D-V2-018) |
+| Complete policy assembly (`SynTreePolicy`) + parameter audit | **Implemented, CPU-verified** — the CUDA forward-pass criterion awaits the authorized T4 runtime | `syntree/models/policy.py` @ `84fd3e7` (S-V2-09), 48/48 tests — one registered module with the full frozen stack (checkpointed backbone, handle head, decoder, #24 heads, #39 seed/anchor component); 10,880,719 params = 43.5 MB FP32 < the 50 MB bound (D-V2-019); full-profile forward zero-NaN/Inf on CPU; the tied table shared and counted once (#25) |
+| Learnable seed-fragment & pocket-anchor selection (policy side) | **Implemented** (via #25): deterministic rotation-equivariant anchor generator, factorized `P(anchor\|pocket)·P(seed\|anchor,pocket)` head, masks, TB log-prob contribution | `syntree/models/policy.py` @ `84fd3e7`, pinned in `tests/test_policy_assembly.py` — generator determinism/equivariance, subpocket separation, law validity, gradients through the checkpointed backbone into the tied table; the environment-side candidate-state rewiring and supervised seed labels remain #39's open scope (blocked on #12) |
+| Reaction-aware chemoselectivity & competing-handle curation screen | **Done, verified, closed** | `syntree/chemistry/chemoselectivity.py` @ `044adca` (S-V2-09), 111/111 tests — the free-group vocabulary with orthogonal protection passing by construction; the per-class exclusion matrix (self-reactive pairs, organometallic quenching, competing handles/electrophiles/SNAr positions, catalyst poisons); the asymmetric 2,4-dihalo-1,3-azine exemption; the catalog manifest with per-rule impact counts/percentages (#40, D-V2-020) |
+| Enamine REAL 50k synthon catalog + `pharm3d` d256 embeddings | **Artifacts built, verified; build code re-landing pending** | S-V2-10 full-scale build: 290,648 source records screened (sha256-pinned mirror) → 152,489 certified pool (registry handle detection) → #40 chemoselectivity screen (39,150 exclusions) → 50,000 selected (34,984 saturated / 15,016 aromatic; D-V2-023) → 2,137-dim `pharm3d` → QR-JL projection (seed 2026) → `[50000, 256]` all-finite; mean Fsp3 0.7151, mean rotatable 1.5361 — all four #12 acceptance criteria independently re-verified. Artifact: `enamine_real_50k_pharm3d_d256.h5` (67,797,608 B, sha256 `8b8c13a0…`, immutable) on HF `JJKK1212/3d-syntree-v2-catalog`; evidence at `docs/data/catalog/`. The build **code** was lost to a sandbox recycle before commit — #12 stays open until `synthon_encoder.py` + the driver + tests are re-landed against the artifact pins |
+| Hashed inverted synthon index | **Done, verified, closed** | `syntree/chemistry/synthon_index.py` + `scripts/build_synthon_index.py` (#41, S-V2-12): full-scale benchmark — exhaustive self-retrieval 68,417/0 lost, brute-force equivalence 2,000/0 mismatches, 888.7× mean candidate reduction, 1.34 µs lookups, byte-deterministic rebuilds |
+| Multi-source preprocessing pipeline (CrossDocked / PDBbind / BindingMOAD → uniform pocket+ligand artifacts + provenance manifest) | **Done, verified, closed** | `syntree/data/preprocessing.py` + `scripts/preprocess_multidataset.py` @ `fccd670` (S-V2-10), 28/28 tests — full-scale run over 204,005 complexes with zero unhandled exceptions (170,954 accepted / 33,051 exact-code rejections); CONECT+template ligand reconstruction (`rdDetermineBonds` evaluated and rejected on RDKit 2026.09.1); the MOAD annotations mirror superseded by the final binding-data CSV (measured 13% resolution of family-representative ids); suite 942/942 (#16) |
+| Clustered splits (MMseqs2 30%) | **Done, verified, closed** | `scripts/split_clusters.py` + `scripts/run_mmseqs_split.sh` (#17, S-V2-11): full-scale 204,005 records → 22,387 clusters / 14,958 components / **zero leakage**, train 136,764 / val 17,096 / test 17,095 — evidence at `docs/data/splits/` |
+| Trajectory extraction + exact forward replay | **Done, verified, closed** | `syntree/data/trajectories.py` + `scripts/build_trajectories.py` (#18, S-V2-12/13): full-scale run over all 170,955 accepted complexes — **194 accepted trajectories** (train 111 / val 50 / test 33), every step exact-replay-verified; closed failure vocabulary over 170,761 rejects (97.78% `no_matched_seed` — the honest certified-BB reconstructibility census, `docs/data/trajectories/README.md`) |
+| Compressed sharding engine | **Done, verified, closed** | `syntree/data/sharded.py` + `scripts/shard_and_upload.py` (#19, S-V2-13): byte-bounded greedy packing with fail-closed size verification, SHA-256 manifests, HF streaming loader, shard-aware unbiased shuffle sampler |
+| Coordinate jitter & exposure-bias augmentation | **Done, verified, closed** | `syntree/data/augmentation.py` (#20): σ=0.15 Å ligand-only Gaussian jitter + rigid ±5° non-junction dihedral perturbation (Gauss-Seidel exact targets, fail-closed bound verification), train-split only; **measured finding (S-V2-14)**: naive jitter inverts stereocentres (~4% on the fixture) → stereo-signature rejection resampling guarantees no inversion |
+| Supervised trainer (Profile A: pure FP32, B=12×6, pocket cap 700) | **Implemented, CPU-verified** — the two T4 acceptance criteria (monotonic 2-epoch descent on T4; peak reserved VRAM < 9.5 GB) await the authorized #36 runtime | `syntree/engine/trainer.py` + `syntree/data/supervised.py` + `configs/train_colab_t4.json` + `scripts/train_stage1.py` (#26): crystal-intermediate supervised states with fail-closed record/artifact cross-checks, the full Stage-1 loss stack (seed/stop/handle/family/reaction/synthon/parity CE + circular von Mises torsion loss), fail-closed divergence (no nan-shield/batch-skipping), separate host-RAM/GPU-VRAM telemetry, atomic SHA-256 checkpoints with exact continuation state, time-budget graceful stop; end-to-end CLI smoke green |
+| Approach-C quantile curriculum (9 levels / 6 stages / 0.03 floor) | **Done, verified, closed** | `syntree/engine/curriculum.py` + trainer/CLI integration (#27, S-V2-15): per-item difficulty over the five issue-named axes (pocket atoms, rotatable bonds, rings, pocket charge magnitude, handle rarity — D-V2-037), 9 quantile-balanced bins, floor-exact 6-stage distribution (D-V2-038), exactly-N deterministic epoch draws, milestone machine (val improvement ≥ 0.005, patience-2 fallback), checkpointable sampler state in the trainer payload; canonical `--curriculum` CLI flag (D-V2-039); 40/40 tests incl. the CLI smoke — both #27 acceptance criteria verified |
+| 2D → 3D transfer pretraining | Not started — code deps satisfied (#11/#12/#27 closed); **externally blocked on licensed reaction data** (owner decision) | #28 |
+| Test suites A/B | Suite A **done, verified, closed** (293/293); Suite B **implemented + CPU-verified** (47 passed / 1 skipped — the skip is the T4 memory measurement, gated on the authorized #36 session) | #32 (`tests/suite_a/`); #33 (`tests/suite_b/`) |
+| Retrosynthesis & comparative evaluation stack | **#34/#44 done, verified, closed with real-planner evidence**; #35 harness verified on the frozen 33-target test manifest — baseline structures (TargetDiff/DiffSBDD/SyntheMol) await operator export | `syntree/engine/evaluator.py` + `syntree/engine/comparative.py` + `scripts/run_benchmarks.py` / `export_aizynth_stock.py` / `prepare_aizynth_tracks.py` / `make_frozen_targets.py` / `run_comparative_benchmark.py` (#34/#44/#35): the fail-closed generated-SDF corpus parser, the isolated `aizynthcli` subprocess boundary (public USPTO policy), the two never-merged stock tracks (generator-aligned Enamine 50k with catalog-ID/checksum tie + independent external ZINC 17,422,831), stock-mismatch vs planner-failure classification (real-planner-tested), seeded bootstrap CIs, paired-over-common-targets comparisons, `evaluation_report.json` / `comparative_benchmark.json` + markdown; evidence run on the 194-record / 30-unique-structure #18 corpus: validity 100%, PoseBusters 194/194, Track A solve 0.267 (22 stock mismatches), Track B solve 0.733 — see `docs/eval/` |
+| T4 GPU execution / training | **Prepared — awaiting operator authentication** | #36: `notebooks/run_3d_syntree.ipynb` (fail-closed T4 preflight, sshd setup, exact-commit checkout, separate RAM/VRAM preflight, canonical training launch) + `docs/ops/colab_ssh_workflow.md` (the operator's `colab ssh` CLI flow + the #45 §29.1 authorization handoff). No connection has been established and none is claimed; #43 profiling/resume rides the same session |
+| HF artifact synchronization | **Partially exercised** — one-time preservation upload of the #12 catalog dataset to HF (`JJKK1212/3d-syntree-v2-catalog`, private) under the owner's directive; the automated sync pipeline is #37's gated scope | #37 |
+
+No training has been run, no benchmark numbers exist, and no scientific
+claim beyond the unit-tested contracts above is implied anywhere in this
+repository.
+
+## 15. Limitations
+
+- The system is an early-stage rebuild: the foundation, the backbone, the
+  handle-selection head, the cross-attention decoder, the von Mises
+  torsion mathematics, the FP32 hardware gate, the soft-core clash and
+  volume-floor physics, the reconciled GFlowNet engine layer, the certified
+  32-reaction taxonomy, the #13 junction-torsion/MMFF stages, the
+  canonical decomposer, the decoupled hierarchical policy heads with the
+  discrete torsion space, the complete `SynTreePolicy` assembly with the
+  seed/anchor selection component (CPU-verified; CUDA pending), the
+  chemoselectivity curation screen, and the multi-source preprocessing
+  pipeline are implemented; the #12 catalog **artifacts** are built and
+  verified (its build code is being re-landed); everything else in
+  this README describes the *target* design, clearly marked as such.
+- The MDP/derivation-DAG semantics and the TB backward term are resolved
+  (#38 closed with proofs and toy-DAG verification); the *trainer*
+  integration of Stage 2 is implemented and verified (#29/#30/#31 closed:
+  the logZ head + rollout driver + TB trainer, the docking-backend
+  injection point of the stationary reward, and the Stage-2 CLI with
+  exact resume).
+- GPU behaviour (T4 memory profile, throughput) is unmeasured by design —
+  it requires the authorized remote workflow.
+- Data licensing and catalog access (Enamine REAL terms, PDBbind
+  registration-gated distribution) constrain what can be reproduced
+  verbatim; provenance records document the verified open mirrors used.
+
+## 16. License
 
 MIT — see [LICENSE](LICENSE).
-
-
-## 12. Research-grade contribution boundary
-
-3D-SynTree is not claimed to be novel merely because it combines PaiNN, RDKit,
-reaction SMARTS, cross-attention, or a synthon catalog. Those are established
-components. The research contribution must be demonstrated empirically by
-showing what the **chemistry-constrained 3D policy** adds beyond each component
-and by using a leakage-safe benchmark.
-
-The current research hypothesis is:
-
-> A reaction-constrained autoregressive policy can learn target-conditioned
-> choices over reaction family, purchasable synthon, and periodic junction
-> torsion while retaining hard chemical validity, and PPO can optimize the
-> resulting 3D designs against an external pocket oracle without relaxing the
-> synthesis grammar.
-
-This is a falsifiable hypothesis, not an acceptance claim.
-
-### 12.1 What is actually novel here
-
-The defensible unit of contribution is the **integrated constrained decision
-process**, not the individual neural layers:
-
-1. **Discrete reaction family** conditioned on the current reactive handle and
-   protein-pocket context.
-2. **Catalog-scale discrete synthon selection** under a reaction grammar.
-3. **Continuous periodic torsion** for the newly created bond.
-4. **Deterministic chemical execution** between policy decisions.
-5. **Terminal multi-objective optimization** with PPO while preserving the same
-   reaction/action constraints.
-6. **Evaluation of the entire synthesis-and-geometry trajectory**, rather than
-   reporting only a molecular validity percentage.
-
-The repository therefore reports reaction accuracy, oracle-family synthon
-accuracy, joint action accuracy, circular torsion NLL, chemical validity,
-3D validity, diversity, novelty, docking, and independent retrosynthetic
-solvability separately.
-
-This distinction matters because recent 3D SBDD benchmarks show that generated
-3D conformations can be invalid even when conventional docking scores look
-strong. A valid relaxed pose and a low docking score are therefore not
-interchangeable claims.
-
-### 12.2 Required ablations
-
-A thesis/paper run should contain at least these controlled variants:
-
-| Variant | Reaction grammar | 3D pocket conditioning | Learned torsion | PPO |
-| :--- | :---: | :---: | :---: | :---: |
-| Random constrained | Yes | No | No | No |
-| Catalog policy | Yes | Yes | No | No |
-| 3D-SynTree BC | Yes | Yes | Yes | No |
-| 3D-SynTree PPO | Yes | Yes | Yes | Yes |
-
-Additional ablations should remove the handle-to-pocket distance features,
-remove the reaction-family head, and replace the learned torsion with a
-deterministic torsion diagnostic. These experiments establish whether each
-architectural commitment contributes measurable information.
-
-### 12.3 Baseline protocol
-
-Published baselines such as TargetDiff, DiffSBDD, Pocket2Mol, SyntheMol, or
-other contemporary SBDD systems should not be reimplemented inside this
-repository merely to manufacture a comparison. Their official released
-checkpoints/configurations should generate outputs for the **same target
-manifest**, after which this repository evaluates the exported structures with
-the same metric code.
-
-Use:
-
-```bash
-python scripts/run_comparative_benchmark.py \
-  --manifest ./benchmarks/targets.jsonl \
-  --outputs ./benchmarks/outputs \
-  --methods 3d-syntree,targetdiff,diffsbbd,synthemol \
-  --limit 100
-```
-
-The target manifest must be frozen before model outputs are inspected. Target
-selection, sequence clustering, ligand filtering, docking protocol, and
-external retrosynthesis configuration must be shared across methods.
-
-Do not call a model's self-reported benchmark numbers a head-to-head result.
-A valid comparison requires the same targets, preprocessing, output budget,
-docking protocol, and metric implementation.
-
-### 12.4 Required primary metrics
-
-The comparative report should include:
-
-- chemical validity;
-- 3D validity / PoseBusters-style validity;
-- uniqueness;
-- pairwise molecular diversity;
-- novelty relative to the training corpus;
-- mean and distributional Fsp3;
-- molecular weight and other drug-like descriptors;
-- independent retrosynthetic solve rate;
-- docking score **only when the same external docking engine is available for
-  every method**;
-- target-conditioned success rate;
-- synthesis-step statistics and action-space failure rate.
-
-For a 3D generative model, docking alone is insufficient. The benchmark should
-also examine bond-length, angle, torsion, and pocket-distance distributions
-and, where appropriate, interaction recovery against the reference complex.
-
-### 12.5 Pareto analysis
-
-The phrase "break the Pareto frontier" is reserved for an observed result, not
-an architectural assumption.
-
-The final paper should plot at least:
-
-- docking/pose quality vs independent synthesis success;
-- docking/pose quality vs Fsp3;
-- synthesis success vs molecular diversity;
-- 3D validity vs docking score.
-
-Confidence intervals or bootstrap intervals should be reported across targets.
-A model occupies a useful trade-off region only if the observed data support
-that statement.
-
-### 12.6 Stage 2 PPO
-
-Stage 1 is behavioral cloning from reaction-validated crystal decompositions.
-Stage 2 is optional PPO fine-tuning:
-
-```bash
-python main.py \
-  --mode rl \
-  --config configs/rl_colab_12h.json \
-  --resume-auto
-```
-
-PPO uses a terminal reward. The reward is decomposed into docking, clash,
-Fsp3, QED, and chemical validity components. Docking is an external oracle:
-when GNINA/Vina is unavailable, the repository does **not** fabricate a docking
-score.
-
-The action space remains chemistry-constrained throughout RL. PPO therefore
-cannot directly propose an arbitrary atom graph or arbitrary bond geometry;
-every non-STOP action still passes through the same reaction grammar and RDKit
-reaction engine.
-
-### 12.7 Important scientific limitation
-
-The hybrid action space itself should not be presented as an unprecedented
-mathematical construction. SynCoGen has already demonstrated joint
-synthesis-aware 3D generation, while SHARP has demonstrated fragment-based
-hierarchical action-space reinforcement learning for synthesizable molecular
-optimization. The defensible contribution is therefore the particular
-reaction-family -> catalog-synthon -> periodic-torsion factorization, explicit
-RDKit reaction execution, target-conditioned torsion modeling, PPO training
-protocol, and empirical evidence produced by this repository.
-
-Likewise, high Fsp3 is not synonymous with good medicinal chemistry, and a
-catalog membership guarantee is not equivalent to successful laboratory
-synthesis. Independent retrosynthesis and, ultimately, experimental validation
-remain necessary.
-
-### 12.8 Reproducibility requirements
-
-Every reported experiment should archive:
-
-- exact Git commit;
-- dataset repository revision and manifest hashes;
-- synthon catalog hash;
-- target manifest hash;
-- model configuration;
-- random seeds;
-- checkpoint;
-- docking executable/version and command configuration;
-- PoseBusters version/configuration;
-- AiZynthFinder version/configuration;
-- generated SDFs and synthesis recipes;
-- per-target raw metrics.
-
-A paper table should never be produced from an unversioned mixture of local
-datasets, checkpoints, and generated outputs.
-
----
-
-## 13. Training Policy Update (2026-10-29): From-Scratch Restart + Curriculum
-
-**Stage 1 restarts from scratch.** The 2026-10-28 runs are retired as
-starting points: a resumed epoch-15 checkpoint produced `loss=nan` for
-every batch from batch 0 (preserved in `docs/evidence/`). The current policy:
-
-* `--fresh` (or `training.fresh_start: true`, set in
-  `configs/train_colab_12h.json`) starts at epoch 0 with newly initialized
-  weights and optimizer state, and **archives** — never deletes — previous
-  local checkpoints under `experiments/checkpoints/archive/<UTC-stamp>/`.
-* `--fresh` combined with `--resume-auto` is a hard error; nothing about
-  the start mode is silent. Fresh runs log
-  `[trainer] FRESH START CONFIRMED ... param health ...` so the log itself
-  proves the run began from scratch with finite weights.
-* `CheckpointManager.restore_latest` **refuses** checkpoints whose model /
-  optimizer / scaler tensors are non-finite (loud error, file preserved for
-  forensics) — structural consistency alone no longer qualifies as
-  "verified".
-* The remote HF repository is only wiped with the explicit `--purge-remote`
-  flag; without it a fresh run progressively overwrites remote checkpoint
-  files and older revisions remain recoverable via HF commit history.
-
-**Curriculum learning is enabled for Stage 1.** `configs/train_colab_12h.json`
-now activates a 9-level difficulty curriculum over the **entire** training
-split (`syntree/engine/curriculum.py`, design in `docs/CURRICULUM.md`):
-reproducible difficulty scores (ligand/pocket structure, target-synthon
-RDKit features, reaction-family rarity; train-only normalization) → 9
-balanced quantile levels → milestone-driven mixed sampling (easy-biased
-early, hard-biased late, every level always ≥ 3% weight). Steps/epoch,
-LR schedule, and the time budget are unchanged. Level counts, stage,
-weights, and per-level validation metrics are printed and written to
-`metrics.jsonl` / `history.json`.
-**Verified before training (2026-10-29 CPU pre-flight):**
-`python scripts/verify_curriculum.py --config configs/train_colab_12h.json`
-replays the production curriculum build on the REAL HF dataset and passes a
-15-check fail-closed battery (15/15 PASS: balanced levels, monotone
-difficulty, leakage invariants, sampler floors, full-run coverage, cache
-round-trip); a 2-epoch CPU/fp32 smoke on real data confirmed the end-to-end
-training path (fresh start, milestone advance, per-level metrics) with zero
-NaN/OOM skips — see `docs/CURRICULUM.md` and `docs/evidence/`.
-
-**Known-error status.** A persistent Stage-1 NaN failure (fp16, T4) is
-**documented but deliberately not fixed** this iteration:
-`docs/PERSISTENT_ERRORS_NAN.md` records the evidence, the confirmed facts
-vs. hypotheses, and the next investigation steps. Do not assume the fresh
-restart cures it — it only guarantees clean starting state.
-**2026-10-29 forensics (CPU pass):** the preserved epoch-15 checkpoint is
-confirmed NaN-poisoned (113/119 model tensors 100% NaN; H1 for the resume
-incident); catalog and raw data are ruled out as sources; and a NEW primary
-anomaly was found — the GradScaler scale had already collapsed to a
-denormal (1.84e-40) at the last "healthy" checkpoint and to 0.0 by epoch 15,
-meaning the fp16 run's gradient path was broken from the start. The
-fp16-vs-fp32 A/B on the T4 is the decisive next control (a CPU fp32 run on
-the same data trains cleanly). See PERSISTENT_ERRORS_NAN §6.5.
-
-## 14. Documentation Index
-
-| Document | Content |
-|---|---|
-| `docs/HANDOFF_2026-10-29.md` | Current state, division of responsibilities, verification evidence, prioritized next steps, next test batch |
-| `docs/PERSISTENT_ERRORS_NAN.md` | The open NaN failure: facts, hypotheses, affected code, investigation plan |
-| `docs/CURRICULUM.md` | Curriculum design, config reference, verification protocol, A/B comparison plan |
-| `docs/DECISIONS.md` | Complete architectural decision record (chosen vs rejected alternatives, evidence levels, self-critique) |
-| `docs/ENGINEERING_AUDIT_REPORT.md` | 2026-10-28 audit: verified data sources, defect fixes, certification |
-| `docs/evidence/` | Verbatim incident logs and forensic snapshots |
-| `prototypes/train_observatory/` | Verified prototype observability/curriculum/NaN-shield/metrics modules (not yet integrated) |
-| `docs/tasklist.md` | Original mission brief and earlier task history |
