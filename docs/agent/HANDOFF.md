@@ -5,42 +5,48 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-06, session S-V2-21 (closing commit: this
-docs commit on top of `778ff1c`): **the authorized T4 track is
-executed** — the Colab bridge is operational and verified (root shell
-over `colab ssh --proxy-mode` + paramiko; OAuth refresh-token cache in
-`~/.config/colab-cli/`), the T-chain ran clean on the real Tesla T4
-(T1 controlled stop / T2 mid-training SIGKILL + integrity / T3 exact
-resume / T4 monotonic + VRAM gates, `TRAIN_CHAIN_DONE`, run persisted
-to HF), and #26/#36/#42 are **closed** with that evidence.  Two live
-continuation bugs were caught by the chain and fixed with regression
-tests (D-V2-046 digest scope; D-V2-047 completed-run resume no-op) plus
-D-V2-048 (epoch extension legalized for cross-session continuation).
-Suite: **1687 passed / 22 skipped**.  Clean-room closures: **36 of 40**.
+**Last updated:** 2026-11-06, session S-V2-22 (closing commit: this
+docs commit on top of `895d67c`): **#43 closed — the cross-session
+continuation executed on a second authorized T4.**  The S-V2-21
+account's free tier died mid-session (assign POST 503 outcome:2,
+currentBalance 0); a fresh operator account re-consented through the
+same split PKCE flow, the bridge re-verified (T4 + §29.2 gate + SSH
+battery), the workspace restored bit-exact from HF, and the two-round
+T-chain reproduced clean (RUN_TAG repro-r1/repro-r2 — round 2's T1
+stopped at the historical step-12/42 signature; all gates PASS, both
+runs persisted to HF).  The never-before-executed continuation driver
+then ran live and caught two latent defects (**D-V2-049**, fixed at
+`895d67c`: quoted-heredoc `${VAR}` NameErrors + the X1 preflight guard
+checking the wrong tar path) before completing the true cross-VM run:
+history 42 → 63 with **prefix identity**, fresh runtime telemetry
+baseline, epoch-3 final loss **bit-identical across VMs**, persisted
+as `runs/stage1_t4_session2/run.tar`.  Suite baseline: **1687 passed /
+22 skipped** (not re-run — the only delta is the bash-driver fix,
+verified by its live X1–X5 execution).  Clean-room closures: **37 of
+40** (#5–#27, #29–#34, #38–#44).
 
 ## 1. Continuation instruction
 
 ```
-Next session — ONE dependency-ready runtime action remains, then
-operator-gated work:
+Next session — NO dependency-ready runtime actions remain; the work
+left is operator-gated:
 
-A. THE #43 CROSS-SESSION CONTINUATION RUN (dependency-ready, ~15 min
-   of T4 time): the driver is committed and the source run is persisted
-   on HF. Run:
-     bash /home/z/my-project/scripts/bootstrap_t4.sh session2 continue
-   (provisions + §29.2-gates a fresh T4, restores the workspace from
-   HF, then runtime_cross_session_continue.sh session1 session2 1:
-   fetches runs/stage1_t4_session1/run.tar, verifies the sidecar,
-   resumes with max_epochs extended on the NEW runtime, asserts the
-   history-prefix identity + fresh hardware baseline, persists
-   runs/stage1_t4_session2/run.tar). That closes #43.
-   KNOWN RISK: free-tier GPU provisioning can silently return CPU-only
-   runtimes (assign endpoint 'Service Unavailable') — the bootstrap
-   gates fail-closed and retries with backoff; if the pool stays dry,
-   report and stop (never train on a non-T4 runtime, #45 §29.2).
-   Evidence collection after success:
-     ssh_evidence/session2_continue/  (logs + telemetry via
-     colab_ssh_client.py get), then update #43/STATUS/HANDOFF.
+A. (DONE S-V2-22) The #43 cross-session continuation run — executed
+   on a fresh second T4 (new operator account): CROSS_SESSION_
+   CONTINUATION PASS (42 → 63, prefix identical), NEW_RUNTIME_
+   TELEMETRY_BASELINE PASS, persisted as runs/stage1_t4_session2/
+   run.tar; two latent driver defects caught + fixed (D-V2-049 at
+   895d67c). Evidence: ssh_evidence/repro_r1_r2/ (both T-chain
+   rounds, restore, both continuation runs, both VMs' preflights).
+   Re-provisioning recipe if a future run needs a T4 again:
+     colab new -s syntree-t4 --gpu T4   + scripts/t4_gate.py gate
+     + runtime_restore_from_hf.sh  (HF_TOKEN via SFTP /root/.hf_token)
+   KNOWN RISK (unchanged): free-tier provisioning can silently return
+   CPU-only runtimes (assign endpoint 'Service Unavailable') — gate
+   fail-closed on nvidia-smi AND torch-CUDA before any work (#45
+   §29.2); the S-V2-22 account-death failure mode (POST 503 outcome:2
+   + currentBalance 0 on every attempt) means: ask the operator for a
+   fresh account re-consent — never fake or CPU-substitute.
 
 B. If the operator exports baseline structures (TargetDiff/DiffSBDD/
    SyntheMol: one SDF per frozen-target id — see the manifest
@@ -55,16 +61,23 @@ C. If neither: #28 needs the owner's licensed-reaction-data decision;
    there is no other dependency-ready work — verify state, reconcile
    documentation, end with an honest handoff.
 
-Do NOT redo: the S-V2-21 bridge/chain/benchmark work (WORK_LOG
-§S-V2-21), the S-V2-20 evaluation stack, or anything earlier. The dev
-sandbox is CPU-only by constitution (#45 §5–§6); the persistent python
-env is /home/z/my-project/evalenv (in-repo .venv dirs are wiped by the
+Do NOT redo: the S-V2-22 two-round T-chain reproduction, the #43
+cross-VM continuation, or the D-V2-049 fix (WORK_LOG §S-V2-22); nor
+the S-V2-21 bridge/chain/benchmark work, the S-V2-20 evaluation
+stack, or anything earlier. The dev sandbox is CPU-only by
+constitution (#45 §5–§6); the persistent python env is
+/home/z/my-project/evalenv (in-repo .venv dirs are wiped by the
 sandbox recycler — D-V2-044; clear /tmp/pytest-of-z before full-suite
-runs — Errno 28 exhaustion, S-V2-21). The colab CLI + paramiko live in
-/home/z/.venv (google-colab-cli; ~/.ssh/id_ed25519.pub is the bridge
-public key — do NOT pass -i/--identity to `colab ssh`, it shells out
-to the absent ssh-keygen; the private key stays in
-/home/z/my-project/.secrets/, never committed).
+runs — Errno 28 exhaustion, S-V2-21). The colab CLI + paramiko live
+in /home/z/.venv (google-colab-cli; ~/.ssh/id_ed25519.pub is the
+bridge public key — regenerated from the preserved private key in
+/home/z/my-project/.secrets/ if the recycler wipes it; do NOT pass
+-i/--identity to `colab ssh`, it shells out to the absent ssh-keygen;
+the private key stays in /home/z/my-project/.secrets/, never
+committed). Git pushes need the persisted credential helper:
+  git -c credential.helper='store --file=/home/z/my-project/.auth/
+  git-credentials' push origin 3d-synV2
+(the recycler wipes the global gitconfig that carried it).
 ```
 
 ## 2. Binding context for every future session

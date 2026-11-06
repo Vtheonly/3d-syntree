@@ -12,21 +12,24 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-06 (session S-V2-21: **the authorized bridge went
-> fully operational and the T-chain ran clean on the real Tesla T4** — #36
-> OPS-01 closed with the complete remote-workflow evidence (root shell via
-> `colab ssh --proxy-mode` + paramiko, §29.2 battery PASS, HF bit-exact
-> restore, remote training launch with persisted telemetry); #26 TRAIN-01
-> closed with both run criteria measured on the T4 (2-epoch strictly
-> monotonic descent 16.29→12.00; peak reserved VRAM 2.24 GiB < 9.5 GiB,
-> zero OOM); #42 CHEM-07 closed with the T4 execution-path benchmark (13
-> real pockets, Brent 8–10 evals/junction, honest 11 metal-pocket
-> fail-closed records). Two live continuation bugs were caught by the
-> chain and fixed (D-V2-046 digest scope, D-V2-047 completed-run repeat),
-> plus D-V2-048 legalizing epoch extension for #43's cross-session
-> continuation — that final #43 run is staged (`runtime_cross_session_continue.sh`,
-> source run persisted on HF) and blocked only on free-tier GPU capacity.
-> Suite **1687 passed / 22 skipped**; clean-room closures **36 of 40**.)
+> Last synchronized: 2026-11-06 (session S-V2-22: **the #43 cross-session
+> continuation executed on a second authorized T4 — #43 OPS-03 closed**.
+> The previous operator account's free tier died mid-session (assign POST
+> 503 outcome:2, currentBalance 0 — evidence: the 00:40–01:04 bootstrap
+> campaign logs); a fresh operator account re-consented through the same
+> split PKCE flow, the bridge re-established (T4 provisioned + §29.2 gate
+> PASS + SSH battery verified), the workspace restored bit-exact from HF,
+> and the two-round T-chain reproduced clean (RUN_TAG repro-r1/repro-r2 —
+> round 2's T1 stopped at step 12/42, the exact historical S-V2-21
+> signature; monotonic descent, VRAM < 9.5 GiB, SIGKILL integrity, exact
+> resume, HF persistence). The #43 continuation then ran for real — first
+> same-VM (catching the two latent D-V2-049 driver defects, fixed at
+> `895d67c`), then the true cross-VM run on a freshly provisioned second
+> T4: history 42 → 63 with prefix identity, fresh runtime telemetry
+> baseline, persisted as `runs/stage1_t4_session2/run.tar` (the
+> originally planned slot). Suite **1687 passed / 22 skipped** (S-V2-21
+> baseline; the S-V2-22 delta is a bash-driver fix verified by its live
+> X1–X5 execution); clean-room closures **37 of 40**.)
 
 ## Legend
 
@@ -76,21 +79,19 @@ Awaiting Verification` → `Verified — Ready to Close` → `Closed`.
 | 40 | CHEM-06 | Chemoselectivity filters | **Closed** (2026-11-02) | `syntree/chemistry/chemoselectivity.py` | `044adca` | `tests/test_chemoselectivity.py` 111/111; all 5 #40 acceptance criteria verified (layer after basic validation; traceable named rules; protected substrates pass; full rule coverage; manifest impact reporting) — D-V2-020; full suite 914/914 | — |
 | 41 | DATA-06 | Hashed inverted synthon index | **Closed** (2026-11-03, S-V2-12: built + benchmarked at full scale — exhaustive self-retrieval 68,417 checks/0 lost, brute-force equivalence 2,000 queries/0 mismatches, 888.7× mean candidate reduction, 1.34 µs lookups, byte-deterministic rebuilds, fail-closed version guards; the #18 consumer criterion demonstrated on real data) | `syntree/chemistry/synthon_index.py` + `scripts/build_synthon_index.py` | `dea8809` | `tests/test_synthon_index.py` 28/28; full-scale benchmark manifest | — |
 | 42 | CHEM-07 | Terminal Sub-Bin Geometry Refinement (re-scoped) | **Closed** (2026-11-06, S-V2-21: the last criterion — *benchmarked on the supported T4 execution path* — measured on the authorized Tesla T4 at `778ff1c`: `scripts/benchmark_torsion_refinement.py` over real pockets via the production loaders, 13 rotatable rxn_07 junction states (24 sampled; 11 PDBbind metal pockets fail-closed on MMFF94 typing — recorded in the report, never hidden), bins cycled 1–36 incl. the periodic boundary, per-junction coarse 9-point scan + Brent 8–10 evals, objective improvement median 1.10 / max 109.98, wall per terminal state mean 9.48 s (MMFF-dominated), hardware baseline recorded; core + tests closed at S-V2-03/D-V2-009/015/017, integrated-generation wiring at S-V2-18) | `syntree/engine/environment.py` (terminal oracle) + `scripts/benchmark_torsion_refinement.py` | `778ff1c` | bin-containment + dense-scan comparison + covalent-geometry preservation tests; the rollout-driver battery; the on-T4 benchmark report (`ssh_evidence/session1_chain/logs/torsion_refinement_benchmark.json`) | — |
-| 43 | OPS-03 | Measured T4 profiling + session-safe resume | **Implemented — the within-session evidence complete; the cross-session run staged and blocked on free-tier GPU capacity** (2026-11-06, S-V2-21: on the authorized T4 — controlled stop `CONTROLLED_STOP_OK budget=15` (work-aware T1), **mid-training SIGKILL** (`ABRUPT_KILL_MID_TRAINING`, process alive + fresh telemetry) with `INTEGRITY_AFTER_KILL: PASS` (SHA-256 sidecar), exact resume to completion (step 12 → 42, zero repeats — D-V2-047), last-completed-sample logging (epoch 1 batch 20 step 42), telemetry with separate host-RAM/GPU-VRAM pools + hardware baselines per runtime, HF persistence. Session-safe resume engineering hardened by D-V2-046/047/048. Remaining: **one real cross-VM continuation** — `scripts/runtime_cross_session_continue.sh` (staged at `778ff1c`: fetch the persisted session-1 run, verify, resume with extended epochs on a NEW runtime, assert history prefix identity + fresh hardware baseline, persist as session2) blocked only on provisioning capacity at session end) | `syntree/engine/trainer.py` + `scripts/runtime_train_chain.sh` + `scripts/runtime_cross_session_continue.sh` | `778ff1c` | the T-chain evidence bundle + 3 new regression tests; suite 1687/22 | One T4 provisioning window (`bootstrap_t4.sh session2 continue`) |
+| 43 | OPS-03 | Measured T4 profiling + session-safe resume | **Closed** (2026-11-06, S-V2-22: the last remaining item — one real cross-VM continuation — executed on a freshly provisioned second T4 runtime (a new operator account after the previous account's free tier died): the persisted `repro-r2` run fetched from HF, SHA-256-sidecar-verified, resumed with `max_epochs` 2→3 on the new VM; `CROSS_SESSION_CONTINUATION: PASS` (history 42 → 63, +21 new records, **prefix identical — no repeats/skips/rewrites**), `NEW_RUNTIME_TELEMETRY_BASELINE: PASS` (fresh host-RAM/GPU-VRAM baseline on the resumed runtime), persisted as `runs/stage1_t4_session2/run.tar` — the originally planned slot; the epoch-3 final loss is **bit-identical across the same-VM and cross-VM executions** (0.0102224592 — the seeded RNG state rides the checkpoint). The execution caught two latent driver defects (**D-V2-049**, fixed at `895d67c`: the quoted-heredoc `${VAR}` interpolation NameErrors in DL/ME/TB/PU + the X1 preflight guard checking the wrong tar path). The S-V2-21 within-session evidence stands: work-aware T1 `CONTROLLED_STOP_OK`, mid-training SIGKILL + `INTEGRITY_AFTER_KILL: PASS`, exact resume to completion, separate-pool telemetry, HF persistence; and S-V2-22 reproduced the full T-chain twice more on the new account (repro-r1/repro-r2, round 2 stopping at the historical step-12/42 signature) | `syntree/engine/trainer.py` + `scripts/runtime_train_chain.sh` + `scripts/runtime_cross_session_continue.sh` | `895d67c` | T-chain evidence bundles on two authorized T4s (S-V2-21 `session1_chain` + S-V2-22 `ssh_evidence/repro_r1_r2/` — chain/restore/cross logs, telemetry, preflights for both VMs); suite 1687/22 (S-V2-21 baseline; the S-V2-22 delta is the bash-driver fix, verified by its live X1–X5 execution) | — |
 | 44 | EVAL-03 | Stock-aligned + independent AiZynthFinder tracks | **Closed** (2026-11-05, S-V2-20: both tracks through reproducible versioned configs — `scripts/export_aizynth_stock.py` (Track A: 50,000 unique InChIKeys, catalog-ID mapping preserved, the SHA-256 tie to the immutable catalog `8b8c13a0…` recorded) + `scripts/prepare_aizynth_tracks.py` (the two configs + `tracks_manifest.json` with per-file SHA-256s and the documented Zenodo/figshare URLs); Track B = the official AiZynthFinder public ZINC stock (17,422,831 keys, the exact memory-bounded extraction documented); the stock-mismatch test demonstrated with the REAL planner (gated test + 22/8 classified mismatches in the corpus run); the two solve rates are separate report sections — no merged headline key exists in the schema (pinned by tests); the report distinguishes forward replay / stock-aligned / independent; #35's output includes both; provenance doc `docs/eval/retrosynthesis_tracks.md`) | `scripts/export_aizynth_stock.py` + `scripts/prepare_aizynth_tracks.py` + `docs/eval/` | `6c8c2bc` | `tests/test_eval_stock_tracks.py` 11/11 (+3 real-planner gated) + the evidence run | — |
 
 
-**Progress denominator: 40 issues (#5–#44).** Closed: **36** (#5–#27,
-#29–#34, #38–#42, #44 — clean-room era; the FLOW track closed
+**Progress denominator: 40 issues (#5–#44).** Closed: **37** (#5–#27,
+#29–#34, #38–#44 — clean-room era; the FLOW track closed
 S-V2-18; #25/#33 closed with the S-V2-16/17 T4 evidence; #34/#44
 closed S-V2-20 with the real-planner evaluation evidence; **#26/#36/#42
-closed S-V2-21 with the authorized-T4 chain evidence**).
-Implemented-awaiting: #43 (the within-session resume evidence is
-complete; one cross-VM continuation run remains — the driver is staged
-and the source run is persisted on HF; blocked on free-tier GPU
-provisioning capacity at session end), #35 (the baseline structures —
-the harness, frozen manifest and 3D-SynTree side are verified; rides
-the operator's baseline exports).  Blocked-external: #28 (licensed
+closed S-V2-21 with the authorized-T4 chain evidence; #43 closed
+S-V2-22 with the cross-VM continuation evidence**).
+Implemented-awaiting: #35 (the baseline structures — the harness,
+frozen manifest and 3D-SynTree side are verified; rides the operator's
+baseline exports).  Blocked-external: #28 (licensed
 reaction data — owner decision).  Dependency-READY: **#37 OPS-02** is
 the final milestone — its remaining blocker is #35 (the baseline
 comparison); the sync mechanics are proven. #45 excluded by standing

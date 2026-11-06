@@ -2778,3 +2778,110 @@ temp roots, Errno 28 — not code).  Commits: `ee28713` (D-V2-046),
 `925071d` (D-V2-047 + the work-aware driver), `6445929` (RUN_TAG
 parameterization), `778ff1c` (D-V2-048 + the continuation driver + the
 #42 benchmark), all pushed to `origin/3d-synV2`.
+
+## Session S-V2-22 — 2026-11-06 — the dead free tier replaced, the two-round T-chain reproduced on a new authorized account, and #43's cross-VM continuation finally executed (two latent driver defects caught: D-V2-049)
+
+### 0. State discovery: the account died mid-session
+
+The S-V2-22 bootstrap campaign (00:40–01:04 UTC, evidence:
+`ssh_evidence/bootstrap/{new_attempt,retry_new,final_new,campaign3_new}*.log`)
+hit the documented free-tier failure mode from the other side: the assign
+endpoint answered `503 / outcome:2` on every POST while GETs still
+returned `acc:t4`, and `ccu-info` reported `currentBalance: 0` —
+the operator account's free GPU quota was exhausted (the operator
+confirmed: "the free tier in that account is dead").  The sandbox
+recycler had also wiped `~/.ssh/id_ed25519.pub` and the git credential
+config (the bridge PRIVATE key survived in `.secrets/colab_ed25519`,
+never re-generated — only its public half was re-derived).
+
+### 1. Re-auth on a fresh operator account, bridge re-verified
+
+The operator re-consented through the same split PKCE flow
+(`scripts/colab_auth_flow.py` url → operator code → exchange; the
+one-time code read from a 0600 file, never argv).  The new token
+(refresh-enabled) provisioned a T4 on the FIRST attempt; the §29.2
+gate PASSed (nvidia-smi AND torch-CUDA concurring: Tesla T4 15360 MiB,
+torch 2.11.0+cu130, cc 7.5) and the SSH-proxy battery verified the
+root shell (`ssh_evidence/verify_s-v2-newacct_1793929474.json`;
+`colab ssh --proxy-mode` + paramiko, host RAM 12.67 GiB tracked
+separate from GPU VRAM).  The dead account's token is archived
+read-only at `.auth/colab_token_dead_account.json` — nothing revoked.
+
+### 2. The two training rounds reproduced
+
+`runtime_restore_from_hf.sh` restored the workspace bit-exact
+(`HF_RESTORE_BITEXACT: PASS` — all three trajectory SHA-256s match the
+S-V2-21 values; 388 processed artifacts; catalog checksum verified).
+The T-chain then ran TWICE on the same authorized T4, pinned at
+`5c65b77`, historical config untouched (`colab_t4_profile_a`: B=12 ×
+accum 6, lr 3e-4, wd 1e-5, FP32 tf32-off, seed 2026, pocket cap 700,
+max_epochs 2; entry `scripts/train_stage1.py --config
+configs/train_colab_t4.json --device cuda`):
+
+- **Round 1 (`RUN_TAG=repro-r1`)**: T1 probe 60 s completes (42
+  micro-steps — the historical total) → 30 s budget stops at 27/42
+  (15 left) `CONTROLLED_STOP_OK`; T2 `ABRUPT_KILL_MID_TRAINING`
+  (telemetry 3→4 while alive) + `INTEGRITY_AFTER_KILL: PASS`; T3 exact
+  resume to 42/42 `max_epochs_reached`; T4
+  `STRICTLY_MONOTONIC_EPOCH_DESCENT: PASS` (17.155 → 12.190,
+  first/last 27.785 → 0.102), `VRAM_UNDER_9_5_GIB: PASS` (peak
+  reserved 2258 MiB, peak allocated 1501.8 MiB — the historical
+  allocated figure exactly); `HF_RUN_UPLOAD_DONE: repro-r1`;
+  `TRAIN_CHAIN_DONE` (01:51–01:54).
+- **Round 2 (`RUN_TAG=repro-r2`)**: T1 30 s budget leaves 14
+  (rejected, work-aware) → **15 s budget stops at step 12/42 (30
+  left) — the exact S-V2-21 Run-3 signature**; T2 kill + integrity
+  PASS; T3 42/42; T4 monotonic PASS (16.659 → 14.077, first/last
+  26.824 → 0.061), VRAM PASS (peak reserved 2818 MiB, allocated
+  1501.8 MiB again); `HF_RUN_UPLOAD_DONE: repro-r2`;
+  `TRAIN_CHAIN_DONE` (01:55–01:59:59).
+
+Evidence: `ssh_evidence/repro_r1_r2/` (chain log covering both rounds,
+restore log, both outer logs, telemetry.jsonl, the checkpoint sidecar,
+hardware_preflight.json).  Both run.tars persist on HF
+(`runs/stage1_t4_repro-r1|repro-r2/run.tar`).
+
+### 3. #43's cross-session continuation — executed at last, two latent defects caught (D-V2-049)
+
+The driver staged at `778ff1c` had NEVER executed (S-V2-21 ended
+capacity-blocked).  Its first live run died at X1 with
+`NameError: SRC_TAG is not defined` — the DL/ME/TB/PU Python heredocs
+are QUOTED, so bash never interpolates `${SRC_TAG}/${DST_TAG}/
+${EXTRA_EPOCHS}/${N_TEL_BEFORE}` and the f-strings reached Python with
+the literal `${...}` text.  After fixing that (env-var passing +
+`os.environ` reads), a second latent defect surfaced: X1's preflight
+guard checked `$SRC/hardware_preflight.json` (inside `stage1_t4/`)
+while `runtime_train_chain.sh` tars the preflight at the ARCHIVE ROOT.
+Both fixed at **`895d67c`** (D-V2-049), pushed to `origin/3d-synV2`.
+
+The fixed driver then ran clean twice:
+
+- **Same-VM verification** (`repro-r2 → session2-repro`, the debugging
+  run): `CROSS_SESSION_CONTINUATION: PASS` (42 → 63, +21 new, prefix
+  identical), `NEW_RUNTIME_TELEMETRY_BASELINE: PASS`, HF-persisted as
+  `runs/stage1_t4_session2-repro/run.tar`.
+- **The true cross-VM run** (the #43 letter): VM 1 released
+  (`colab stop`), a FRESH T4 provisioned on the new account (first
+  attempt), §29.2 gate PASS, repo cloned at `895d67c`, workspace
+  restored bit-exact, and the continuation executed on the physically
+  distinct runtime: `SOURCE_CHECKSUM: PASS` (sidecar), source history
+  sha256 `e99b989b…` (identical fingerprint to the VM-1-side source),
+  `CROSS_SESSION_CONTINUATION: PASS` (history 42 → 63, +21 new
+  records, **prefix identical — no repeats/skips/rewrites**),
+  `NEW_RUNTIME_TELEMETRY_BASELINE: PASS` (fresh host-RAM/GPU-VRAM
+  baseline), persisted as **`runs/stage1_t4_session2/run.tar`** — the
+  originally planned slot.  The epoch-3 final total loss
+  (0.0102224592) is **bit-identical across the same-VM and cross-VM
+  executions** — the seeded RNG state riding the checkpoint makes the
+  resumed trajectory reproduce exactly on a different physical T4.
+
+#43 OPS-03 closed (STATUS row + header updated; 37 of 40).
+
+### 4. Session verification
+
+The pytest suite was NOT re-run this session: the only code delta is
+the bash driver fix, which the suite does not cover — its verification
+is the live X1–X5 execution on the authorized T4 (bash -n + the
+driver's own fail-closed gates all green).  Suite baseline stands at
+1687/22 (S-V2-21).  Commits: `895d67c` (D-V2-049 + this record),
+pushed to `origin/3d-synV2`.
