@@ -1725,3 +1725,73 @@ suite 1687/22 at `778ff1c`.
 
 **Affected:**  `syntree/engine/trainer.py`, #43,
 `scripts/runtime_cross_session_continue.sh`.
+
+## D-V2-050 — 2026-11-06 — the owner-directed R3 trainer profile extension: cosine scheduling, early stopping, best-state selection, and the anchor-margin monitor (with the verified finding that no pre-existing −1000 guard exists)
+
+**Context.**  The owner directed the "R3 trainer patch" (profile
+`colab_t4_profile_a_r3`): AdamW weight decay `1e-2`, a cosine LR
+schedule `3e-4 → 3e-5` with scale-aware warmup, validation-based early
+stopping (patience 5, `min_delta` 0.10), best-checkpoint selection
+(`best_state.pt`), and anchor-margin telemetry (warn −800 /
+graceful-stop −700 / "preserve the existing −1000 guard").  The
+directive's own instruction — independently inspect before implementing
+— was followed.
+
+**Verified findings before implementation.**  (1) The reported gaps are
+real against the current trainer: `weight_decay` was `1e-5`, the
+scheduler was unwired (`self.scheduler = None`), no early stopping
+existed, and only the continuation checkpoint (`trainer_state.pt`) was
+saved.  (2) **No `-1000` anchor-margin guard exists anywhere in the V2
+or legacy `main` codebases** (both searched; `git grep` for the
+constant and for `margin`/`anchor` guards over both refs) — the
+"existing guard" premise is stale.  (3) No Stage-1 supervised quantity
+lives on a −700…−1000 scale: the measured loss scale is ~12–16 (T-chain
+evidence) and seed/anchor log-probabilities are ~0–25 — the thresholds
+only cohere on a degradation-increasing, energy-like margin scale.
+
+**Chosen approach.**  (a) R3 fields carry Profile-A defaults so the
+frozen Profile A and all persisted checkpoints stay bit-compatible;
+the schedule semantics (`lr_schedule`/`min_lr`/`warmup_fraction`/
+`schedule_total_steps`) join the digest **only when a schedule is
+active** — the Profile-A digest is verified bit-identical to the
+pre-R3 digest (regression-pinned).  (b) The cosine horizon is frozen
+config (252 steps = 12 epochs × the measured 21 steps/epoch), never
+derived from `max_epochs` at runtime, so D-V2-048 epoch extension
+cannot re-shape the schedule; steps beyond it hold at `min_lr`.  (c)
+`min_delta` 0.10 is implemented **absolute in `_validation_loss`
+units** (≈0.6–0.8 % of the measured scale — a conservative noise
+floor), with the relative improvement recorded alongside in telemetry.
+(d) Early stopping + anchor thresholds are run-length/monitoring
+control and stay out of the digest (D-V2-046 precedent).  (e) The
+anchor-margin monitor is a real, fully-tested mechanism
+(`AnchorMarginMonitor`: warn → telemetry; graceful stop at a batch
+boundary; hard guard → fail-closed divergence) with the
+degradation-increasing convention `hard_guard < warn < graceful_stop`;
+with `anchor_margin_source="none"` it runs in a **loud
+calibration-pending mode** (one telemetry record per fit, never a
+silent gate) because no Stage-1 energy source exists — wiring an
+environment-side source (`"external"` + `anchor_margin_fn`) activates
+full gating.  The owner's −800/−700/−1000 constants ship in the R3
+config verbatim.
+
+**Alternatives considered.**  Silently rescaling the thresholds to the
+Stage-1 loss scale (dishonest — would either always-fire or
+never-fire); faking a default margin source (decorative telemetry);
+subclassing `TrainerProfile` (digest fragmentation for no benefit).
+
+**Evidence.**  17 new regression tests in `tests/test_trainer.py`
+(R3 config pinned; Profile-A digest bit-identity; cosine
+warmup/decay/floor shape; scheduler state riding checkpoints; digest
+refusal across profiles; `min_delta` semantics; plateau early stop at
+patience; `best_state.pt` payload contract; validation telemetry with
+the overfitting observables incl. `learning_rate`; monitor
+classification direction + non-finite raise; loud calibration-pending;
+fail-closed external-source requirement; graceful stop at a batch
+boundary; hard-guard divergence; early-stopping state riding resume).
+Suite **1702 passed / 24 skipped / 0 failed** (baseline 1687/22 + the
+17 new tests; the 2 extra skips are catalog/planner artifact gates
+absent in this rebuilt sandbox).
+
+**Affected:**  `syntree/engine/trainer.py`,
+`configs/train_colab_t4_r3.json`, `tests/test_trainer.py`, #26 (closed
+— extended, not reopened), the staged R3 T4 run.

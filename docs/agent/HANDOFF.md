@@ -5,70 +5,92 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-06, session S-V2-22 (closing commit: this
-docs commit on top of `895d67c`): **#43 closed — the cross-session
-continuation executed on a second authorized T4.**  The S-V2-21
-account's free tier died mid-session (assign POST 503 outcome:2,
-currentBalance 0); a fresh operator account re-consented through the
-same split PKCE flow, the bridge re-verified (T4 + §29.2 gate + SSH
-battery), the workspace restored bit-exact from HF, and the two-round
-T-chain reproduced clean (RUN_TAG repro-r1/repro-r2 — round 2's T1
-stopped at the historical step-12/42 signature; all gates PASS, both
-runs persisted to HF).  The never-before-executed continuation driver
-then ran live and caught two latent defects (**D-V2-049**, fixed at
-`895d67c`: quoted-heredoc `${VAR}` NameErrors + the X1 preflight guard
-checking the wrong tar path) before completing the true cross-VM run:
-history 42 → 63 with **prefix identity**, fresh runtime telemetry
-baseline, epoch-3 final loss **bit-identical across VMs**, persisted
-as `runs/stage1_t4_session2/run.tar`.  Suite baseline: **1687 passed /
-22 skipped** (not re-run — the only delta is the bash-driver fix,
-verified by its live X1–X5 execution).  Clean-room closures: **37 of
-40** (#5–#27, #29–#34, #38–#44).
+**Last updated:** 2026-11-06, session S-V2-23 (local commit on top of
+`5f493ed` — **push pending: the supplied GitHub PAT was rejected 401;
+the R3 commit + this docs refresh are local-only until a fresh PAT
+arrives**): **the owner-directed R3 trainer profile extension landed
+and is CPU-verified (D-V2-050)** — `colab_t4_profile_a_r3`: AdamW
+wd `1e-2`; cosine `3e-4 → 3e-5` with a scale-aware warmup over a
+frozen 252-step horizon (epoch extension never reshapes it,
+D-V2-048-safe); validation early stopping (patience 5, `min_delta`
+0.10 absolute in the measured ~12–16 loss units); `best_state.pt`
+best-validation selection (the full atomic SHA-256 payload); the
+anchor-margin monitor (warn −800 / graceful stop −700 / hard guard
+−1000) with the verified finding that **no pre-existing −1000 guard
+exists in either branch** and no Stage-1 quantity lives on that scale
+— loud calibration-pending mode until an environment-side energy
+source is wired.  Profile A is bit-compatible (digest verified
+identical; all persisted checkpoints resumable).  Tests: trainer
+43/43 (17 new R3 regressions), full suite **1702 passed / 24 skipped /
+0 failed**.  The sandbox was rebuilt from scratch this session (the
+recycler wiped repo/evalenv/.secrets/OAuth cache/SSH keypair;
+`colab_auth_flow.py` was reconstructed from the CLI's own auth
+module; a fresh bridge keypair was generated).  **GPU re-auth is
+staged**: the split-PKCE consent URL was issued to the operator; the
+R3 T4 run executes after they return the one-time code.  Prior
+sessions: S-V2-22 closed #43 (the cross-VM continuation, history
+42 → 63 prefix-identical, `runs/stage1_t4_session2/run.tar`);
+clean-room closures stand at **37 of 40** (#5–#27, #29–#34, #38–#44).
 
 ## 1. Continuation instruction
 
 ```
-Next session — NO dependency-ready runtime actions remain; the work
-left is operator-gated:
+Next session — TWO operator actions gate the remaining work, then one
+runtime action:
 
-A. (DONE S-V2-22) The #43 cross-session continuation run — executed
-   on a fresh second T4 (new operator account): CROSS_SESSION_
-   CONTINUATION PASS (42 → 63, prefix identical), NEW_RUNTIME_
-   TELEMETRY_BASELINE PASS, persisted as runs/stage1_t4_session2/
-   run.tar; two latent driver defects caught + fixed (D-V2-049 at
-   895d67c). Evidence: ssh_evidence/repro_r1_r2/ (both T-chain
-   rounds, restore, both continuation runs, both VMs' preflights).
-   Re-provisioning recipe if a future run needs a T4 again:
-     colab new -s syntree-t4 --gpu T4   + scripts/t4_gate.py gate
-     + runtime_restore_from_hf.sh  (HF_TOKEN via SFTP /root/.hf_token)
-   KNOWN RISK (unchanged): free-tier provisioning can silently return
-   CPU-only runtimes (assign endpoint 'Service Unavailable') — gate
-   fail-closed on nvidia-smi AND torch-CUDA before any work (#45
-   §29.2); the S-V2-22 account-death failure mode (POST 503 outcome:2
-   + currentBalance 0 on every attempt) means: ask the operator for a
-   fresh account re-consent — never fake or CPU-substitute.
+0. THE OPERATOR RETURNS THE GOOGLE AUTH CODE (the split-PKCE URL was
+   issued in S-V2-23; the verifier is persisted at
+   ~/.config/colab-cli/pkce_state.json).  Complete it:
+   /home/z/.venv/bin/python /home/z/my-project/scripts/colab_auth_flow.py code <CODE>
+   then verify: colab_auth_flow.py status  (never print token values).
+   If the PKCE state was wiped by another recycle: re-run the `url`
+   step and re-ask the operator (never fake or CPU-substitute).
 
-B. If the operator exports baseline structures (TargetDiff/DiffSBDD/
-   SyntheMol: one SDF per frozen-target id — see the manifest
-   docs/eval/evidence/frozen_targets.json):
+1. THE OPERATOR SUPPLIES A FRESH GITHUB PAT (the S-V2-23 one was
+   rejected 401).  Store it untracked (git credential store file,
+   0600), then push the local S-V2-23 commits to origin/3d-synV2
+   and verify the remote SHA (D-V2-024).
+
+2. THE R3 T4 RUN (the overfitting watch, ~15–25 min of T4 time):
+   provision + gate fail-closed (colab new -s syntree-t4 --gpu T4;
+   reject CPU-only runtimes — assign-endpoint 'Service Unavailable'
+   is the known free-tier failure mode; account-death = POST 503
+   outcome:2 + currentBalance 0 → ask the operator for a fresh
+   re-consent), restore the workspace from HF
+   (scripts/runtime_restore_from_hf.sh; HF_TOKEN via SFTP
+   /root/.hf_token — the S-V2-23 HF token is verified valid, write
+   role), pull the R3 commit on the VM, then launch:
+     python scripts/train_stage1.py \
+       --config configs/train_colab_t4_r3.json \
+       --trajectories work/data/trajectories \
+       --processed work/data/processed \
+       --catalog work/catalog/<the immutable H5> \
+       --run-dir runs/stage1_t4_r3 --device cuda --max-epochs 12
+   Watch telemetry.jsonl per epoch: validation_loss vs train losses
+   (overfitting = val rising while train falls), the LR cosine,
+   best_state.pt updates, early stopping at patience 5.  Persist the
+   run to HF (RUN_TAG=stage1_r3) and record the evidence (suite runs
+   on CPU only claim CPU; the T4 run claims only what its logs show).
+
+3. (unchanged operator gates) Baseline structures close #35 → #37;
+   #28 needs the owner's licensed-reaction-data decision.  The #35
+   command shape (when the structures arrive):
    scripts/run_comparative_benchmark.py --targets <manifest>
    --method NAME=DIR ... --retro-track stock_aligned=...
    --retro-track independent_external=... closes #35, and with it #37
    (the final milestone; its sync mechanics are already proven —
    bit-exact restores x3, checksum-verified uploads).
 
-C. If neither: #28 needs the owner's licensed-reaction-data decision;
-   there is no other dependency-ready work — verify state, reconcile
-   documentation, end with an honest handoff.
-
-Do NOT redo: the S-V2-22 two-round T-chain reproduction, the #43
-cross-VM continuation, or the D-V2-049 fix (WORK_LOG §S-V2-22); nor
-the S-V2-21 bridge/chain/benchmark work, the S-V2-20 evaluation
-stack, or anything earlier. The dev sandbox is CPU-only by
+Do NOT redo: the S-V2-23 R3 implementation (CPU-verified; only the
+T4 execution remains), the S-V2-22 two-round T-chain reproduction,
+the #43 cross-VM continuation, or the D-V2-049 fix (WORK_LOG
+§S-V2-22); nor the S-V2-21 bridge/chain/benchmark work, the S-V2-20
+evaluation stack, or anything earlier. The dev sandbox is CPU-only by
 constitution (#45 §5–§6); the persistent python env is
 /home/z/my-project/evalenv (in-repo .venv dirs are wiped by the
-sandbox recycler — D-V2-044; clear /tmp/pytest-of-z before full-suite
-runs — Errno 28 exhaustion, S-V2-21). The colab CLI + paramiko live
+sandbox recycler — D-V2-044; clear /tmp/pytest-of-z AND
+/tmp/syntree_trainer_test_* before AND after full-suite runs — the
+S-V2-23 Errno-28 disk-exhaustion incident filled 9.9 GB to 100%). The colab CLI + paramiko live
 in /home/z/.venv (google-colab-cli; ~/.ssh/id_ed25519.pub is the
 bridge public key — regenerated from the preserved private key in
 /home/z/my-project/.secrets/ if the recycler wipes it; do NOT pass

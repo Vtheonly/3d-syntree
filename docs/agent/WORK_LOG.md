@@ -2885,3 +2885,68 @@ is the live X1–X5 execution on the authorized T4 (bash -n + the
 driver's own fail-closed gates all green).  Suite baseline stands at
 1687/22 (S-V2-21).  Commits: `895d67c` (D-V2-049 + this record),
 pushed to `origin/3d-synV2`.
+
+## Session S-V2-23 — 2026-11-06 — the sandbox rebuilt from scratch (recycle wiped the workspace); the owner-directed R3 trainer profile implemented + verified; the GPU re-authentication staged (pending the operator's Google consent); the GitHub PAT rejected
+
+### 1. State reconstruction (after a full sandbox recycle)
+
+The recycler took **everything** this time: `repo/`, `evalenv/`,
+`.secrets/`, `ssh_evidence/`, `~/.config/colab-cli/` (the OAuth cache),
+`~/.ssh/` (the bridge keypair) and the untracked sandbox helpers
+(`colab_auth_flow.py`, `bootstrap_t4.sh`, `t4_gate.py`).  Rebuilt from
+the persisted sources: fresh clone at `5f493ed` (= the S-V2-22 head,
+**#43 already closed** — 37/40); `evalenv` rebuilt per the §6.2 recipe
+(torch 2.15 CPU + `-e ".[test]"` + h5py/pandas/psutil/huggingface_hub);
+`google-colab-cli` 0.7.5 + paramiko reinstalled into `/home/z/.venv`;
+a fresh bridge keypair generated (`scripts/gen_bridge_key.py`, private
+key in `.secrets/`, 0600); and `scripts/colab_auth_flow.py`
+**reconstructed from the CLI's own auth module** (split PKCE: step 1
+prints the Google consent URL and persists the verifier; step 2
+exchanges the operator-returned one-time code and writes the CLI's own
+token cache — §29.1 honored: the agent never touches a password).
+
+**The sandbox disk filled to 100% mid-session** (Errno 28 — the
+trainer tests' mkdtemp checkpoints had stacked 7.3 GB in `/tmp` plus
+767 pip-cache dirs); cleaned, 6.9 GB recovered — full-suite runs must
+keep clearing `/tmp/syntree_trainer_test_*` too, not only
+`/tmp/pytest-of-z`.
+
+### 2. The owner-directed R3 trainer extension (D-V2-050)
+
+Implemented `colab_t4_profile_a_r3` exactly as specified and verified:
+AdamW `wd=1e-2`; cosine `3e-4 → 3e-5` with scale-aware warmup
+(`warmup_fraction` of the frozen 252-step horizon — epoch extension
+never reshapes it); validation early stopping (patience 5,
+`min_delta=0.10` absolute in the measured ~12–16 loss units, relative
+improvement recorded alongside); `best_state.pt` (the full atomic
+SHA-256 continuation payload + `kind=best_val` provenance); the
+anchor-margin monitor (warn −800 / graceful stop −700 / hard guard
+−1000, degradation-increasing convention, loud calibration-pending
+mode — **verified: no pre-existing −1000 guard exists in either
+branch**, and no Stage-1 quantity lives on that scale; see D-V2-050
+for the full analysis).  Profile A stays bit-compatible (digest
+verified identical; all persisted checkpoints resumable).
+
+**Verification (independently reproduced this session):**
+`pytest tests/test_trainer.py` → **43/43** (26 existing + 17 new);
+full suite → **1702 passed / 24 skipped / 0 failed** in 287.6 s.  The
+git review (`diff --check`/`--stat`/`--unified=80`/`status`) is clean:
+trainer +565/−27, tests +324, the new R3 config.
+
+### 3. Honest ledger (what is NOT done and why)
+
+- **The GitHub PAT the owner supplied is rejected (401 Unauthorized)**
+  — verified against the API without printing it.  The R3 commit is
+  **local only**; push is blocked until a fresh PAT arrives.
+  Anonymous read works (the repo is public); authenticated push does
+  not.
+- **HF token verified valid (write role, `JJKK1212`)** — the run
+  bundle / catalog / R3 run artifacts can persist to HF as before.
+- **GPU authentication is staged, not complete**: the real Google
+  consent URL was generated (split PKCE step 1 executed; the verifier
+  is persisted) and handed to the operator with instructions.  The
+  T4 provisioning + the R3 training run (the overfitting watch:
+  per-epoch train/val telemetry + early stopping + best-state) execute
+  after the operator returns the one-time authorization code.
+- No GPU work was attempted or claimed this session yet; the sandbox
+  remains CPU-only per #45 §5–§6.
