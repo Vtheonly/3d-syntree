@@ -2950,3 +2950,97 @@ trainer +565/−27, tests +324, the new R3 config.
   after the operator returns the one-time authorization code.
 - No GPU work was attempted or claimed this session yet; the sandbox
   remains CPU-only per #45 §5–§6.
+
+---
+
+## Session S-V2-24 — 2026-11-06 — GPU re-auth completed (two operator code rounds); the R3 T4 run EXECUTED — the overfitting watch answered with live evidence; the run persisted checksum-verified; the sandbox rebuilt from scratch (recycle #3)
+
+### 1. State reconstruction (after a third full sandbox recycle)
+
+The recycler again wiped everything (repo, `.secrets/`,
+`~/.config/colab-cli/`, `~/.ssh/`, the untracked sandbox helpers).
+Rebuilt: fresh clone at `f4fb715` (= the remote `3d-synV2` head — the
+S-V2-23 "push pending" note is superseded: the R3 commit `bcddf7b` +
+docs `f4fb715` were already on origin, verified via anonymous
+`git ls-remote` + clone); `google-colab-cli` 0.7.5 + paramiko
+reinstalled into `/home/z/.venv`; a fresh bridge keypair
+(`scripts/gen_bridge_key.py` — `~/.ssh/id_ed25519(.pub)` + private
+copy in `.secrets/colab_ed25519`, 0600); and
+`scripts/colab_auth_flow.py` reconstructed again from the CLI's own
+auth module (same split-PKCE design, now persisting state at the
+canonical path AND a `.secrets/` mirror).  Issue #45 re-checked: no
+new operator directives after S-V2-20; the constitution stands.
+
+### 2. Operator round-trips (all §29.1-honored; nothing faked)
+
+- **Google consent, attempt 1**: the operator returned a code for the
+  S-V2-23-era challenge — orphaned by the recycle (documented failure
+  mode; re-issued per protocol).  Attempt 2 (after the fresh URL):
+  `invalid_grant` — the code expired while the operator gathered the
+  other credentials (codes live ~10 min).  Attempt 3: **exchanged OK,
+  refresh_token=yes**; live verification via userinfo
+  (`colab_auth_flow.py status`), token values never printed.
+- **Fresh GitHub PAT supplied + verified end-to-end** (authenticated
+  push → "Everything up-to-date"); stored untracked 0600 at
+  `/home/z/my-project/.auth/git-credentials`.
+- **HF token supplied + verified** (`JJKK1212`, write role; `runs`
+  repo accessible with auth); stored untracked 0600.
+
+### 3. The R3 T4 execution (the owner's overfitting watch)
+
+- **Provisioning + gate**: `colab new -s syntree-t4 --gpu T4` →
+  session READY (free-tier balance 0.00, but the assign endpoint
+  worked — not the account-death signature); fail-closed gate PASS:
+  nvidia-smi AND torch-CUDA both report **Tesla T4 15360 MiB**
+  (driver 580.82.07; torch 2.11.0+cu130, cc 7.5, fp32/tf32-off
+  SUPPORTED).
+- **Workspace restore** (`runtime_restore_from_hf.sh` with the token
+  delivered via SFTP to `/root/.hf_token`): repo at `f4fb715` on the
+  VM, catalog H5 SHA-256 pinned-MATCH, all three trajectory SHA-256s
+  **MATCH — independently re-verified by direct `sha256sum`**, 388
+  processed artifacts, `HF_RESTORE_BITEXACT: PASS`.
+- **The run**: `train_stage1.py --config configs/train_colab_t4_r3.json
+  --max-epochs 12 --device cuda` (241 train / 101 val samples).
+  11 epochs completed, global_step 231/252, **stop_reason:
+  `early_stopping`** (patience 5, min_delta 0.10, counter exhausted at
+  epoch 11).  Validation: 14.2998, 14.1192, 13.9006, 14.5441,
+  13.9487, **13.0775 (best, epoch 6)**, 13.358, 14.0625, 14.1656,
+  15.3366, 15.4609.  Per-epoch train means: 20.77 → 18.93 → 13.97 →
+  13.52 → 12.13 → 10.56 → 10.75 → 10.82 → 10.37 → 9.39.
+  **Verdict: overfitting sets in after epoch 6** — train falls
+  monotonically while validation rises five consecutive epochs; the
+  R3 safeguards caught it live (graceful early stop + `best_state.pt`
+  at the epoch-6 best: `kind=best_val`, full continuation payload @
+  step 126, early-stopping state riding the checkpoint).  The LR
+  cosine + warmup verified live in telemetry (3e-4 peak → decaying;
+  warmup over the frozen 252-step horizon never reshaped by the
+  epoch count).  The anchor-margin monitor ran in its documented loud
+  calibration-pending mode (one telemetry record; thresholds recorded,
+  inactive — no Stage-1 energy source, D-V2-050).
+- **Persistence + evidence**: run tarred and uploaded to HF
+  `JJKK1212/3d-syntree-v2-runs: runs/stage1_t4_r3/run.tar` (261,570,560
+  bytes; **local tar sha256 == remote LFS sha256 ==
+  `1dc00a5896964eda6b9554375a6960a72761b812c43772da6ee01ddfdec0f92b`**).
+  §29.2 battery PASS post-run with the repo-state transcript
+  (`ssh_evidence/verify_r3_final_1793978644.json`); small-file
+  evidence pulled to `ssh_evidence/r3_run/` (telemetry.jsonl, both
+  checkpoint sidecars, restore.log, r3_train.out with the final
+  summary, hardware_preflight.json).  VM stopped after use
+  (`colab stop`; no sessions left open).
+
+### 4. Honest ledger
+
+- **No issues closed or changed** — 37/40 stands; the R3 execution was
+  an owner directive (D-V2-050), not an issue.  The remaining work is
+  entirely operator-gated: #35 (baseline structure exports) → closes
+  #35 + #37; #28 (licensed-data decision).
+- **CPU suite not re-run this session** — this session's diff is
+  docs-only; S-V2-23's independently-reproduced **1702 passed / 24
+  skipped / 0 failed** at `f4fb715` carries over by construction.
+- The `evalenv` dev environment was NOT rebuilt this session (the T4
+  path did not need it; the next CPU-side session rebuilds it per
+  HANDOFF §6.2).
+- One bridge operational note: a detached `nohup` launch holds the
+  paramiko channel open (the first launch call hit the channel
+  read-timeout — the training itself was unaffected; status checks
+  via fresh `exec` calls are the pattern that works).

@@ -12,25 +12,35 @@
 > on 2026-11-01; the branch was emptied (commit `075f86d`) and is being
 > rebuilt from scratch. Statuses below track the **new** codebase only.
 >
-> Last synchronized: 2026-11-06 (session S-V2-23: **the owner-directed R3
-> trainer profile extension landed — implemented + verified on CPU
-> (D-V2-050), local commit pending push (the supplied GitHub PAT was
-> rejected 401)**: `colab_t4_profile_a_r3` (AdamW wd 1e-2, cosine 3e-4 →
-> 3e-5 with scale-aware warmup over a frozen 252-step horizon,
-> validation early stopping patience 5 / min_delta 0.10, `best_state.pt`
-> selection, the anchor-margin monitor with the verified finding that no
-> pre-existing −1000 guard exists in either branch — loud
-> calibration-pending mode until an energy source is wired). Profile A
-> stays bit-compatible (digest verified identical). Tests: trainer 43/43
-> (17 new), full suite **1702 passed / 24 skipped / 0 failed** (the 2
-> extra skips are catalog/planner artifact gates absent in the rebuilt
-> sandbox). The sandbox was rebuilt from scratch this session (the
-> recycler wiped repo/evalenv/.secrets/OAuth cache/SSH keypair — all
-> reconstructed; `colab_auth_flow.py` rebuilt from the CLI's own auth
-> module). **GPU re-auth staged**: the split-PKCE consent URL was issued
-> to the operator; the R3 T4 run (overfitting watch) executes on their
-> code. Issue tracker unchanged: 37 of 40; #35/#37/#28 remain
-> operator-gated. Prior session S-V2-22: **the #43 cross-session
+> Last synchronized: 2026-11-06 (session S-V2-24: **the R3 T4 run
+> executed on an authorized Tesla T4 — the owner's overfitting watch
+> is answered with live evidence (D-V2-050 execution)**:
+> `colab_t4_profile_a_r3` ran 11 of 12 epochs and stopped by
+> **validation early stopping** (patience 5, min_delta 0.10):
+> per-epoch train means fell 20.77 → 9.39 while validation bottomed
+> at epoch 6 (**13.0775**) then rose five consecutive epochs
+> (13.36 → 14.06 → 14.17 → 15.34 → 15.46) — **overfitting detected
+> after epoch 6 and handled live**; `best_state.pt` secured at the
+> epoch-6 best (`kind=best_val`, full continuation payload @ step 126;
+> LR cosine verified live over the frozen 252-step horizon).
+> Provisioning gated fail-closed (nvidia-smi + torch-CUDA concur
+> Tesla T4 15360 MiB, fp32/tf32-off SUPPORTED); workspace restored
+> bit-exact from HF (all three trajectory SHA-256s MATCH —
+> independently re-verified); run persisted checksum-verified to HF
+> `runs/stage1_t4_r3/run.tar` (LFS sha256 `1dc00a58…` local ==
+> remote); §29.2 battery PASS with transcript
+> (`ssh_evidence/verify_r3_final_*`); VM stopped after use. GPU auth
+> re-completed via the split-PKCE flow (the operator's first returned
+> code was rejected `invalid_grant` — expired/stale challenge —
+> re-issued per the documented protocol; never faked); a fresh GitHub
+> PAT supplied and verified (the S-V2-23 commits confirmed already on
+> `origin/3d-synV2` @ `f4fb715`); HF token re-verified (`JJKK1212`,
+> write role). CPU suite not re-run this session (docs-only diff;
+> S-V2-23's **1702 / 24 / 0** at `f4fb715` stands). Issue tracker
+> unchanged: 37 of 40; #35/#37/#28 remain operator-gated. Prior
+> session S-V2-23: the owner-directed R3 profile extension landed and
+> was CPU-verified (D-V2-050) after a full sandbox rebuild. Prior
+> session S-V2-22: **the #43 cross-session
 > continuation executed on a second authorized T4 — #43 OPS-03 closed**.
 > The previous operator account's free tier died mid-session (assign POST
 > 503 outcome:2, currentBalance 0 — evidence: the 00:40–01:04 bootstrap

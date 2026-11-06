@@ -1795,3 +1795,25 @@ absent in this rebuilt sandbox).
 **Affected:**  `syntree/engine/trainer.py`,
 `configs/train_colab_t4_r3.json`, `tests/test_trainer.py`, #26 (closed
 — extended, not reopened), the staged R3 T4 run.
+
+**Executed (S-V2-24, 2026-11-06, on an authorized Tesla T4).**  The
+R3 profile ran for real: 11 of 12 epochs, global_step 231/252,
+`stop_reason: early_stopping` (patience 5, `min_delta` 0.10 — the
+counter exhausted at epoch 11).  Validation: 14.2998, 14.1192,
+13.9006, 14.5441, 13.9487, **13.0775 (best, epoch 6)**, 13.358,
+14.0625, 14.1656, 15.3366, 15.4609; per-epoch train means 20.77 →
+9.39 — **the overfitting signature the owner asked to watch for was
+detected live (val rising five consecutive epochs while train fell)
+and handled**: graceful early stop + `best_state.pt` at the epoch-6
+best (`kind=best_val`, full continuation payload @ step 126).  The
+cosine + warmup verified live in telemetry (3e-4 peak after the
+warmup, decaying on the frozen 252-step horizon); the anchor monitor
+ran in its loud calibration-pending mode exactly as designed.  The run
+is persisted checksum-verified at HF `runs/stage1_t4_r3/run.tar`
+(local tar sha256 == remote LFS sha256 ==
+`1dc00a5896964eda6b9554375a6960a72761b812c43772da6ee01ddfdec0f92b`);
+evidence: `ssh_evidence/r3_run/` + `ssh_evidence/verify_r3_final_…`
++ WORK_LOG §S-V2-24.  The honest reading: on the 194-trajectory
+Stage-1 set (241 train / 101 val), ~6 epochs is the useful horizon —
+the #28 pretraining/data-scale track is the designed path past it,
+not longer training.

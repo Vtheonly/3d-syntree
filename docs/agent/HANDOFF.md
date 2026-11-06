@@ -5,98 +5,97 @@
 > `docs/agent/DEPENDENCIES.md` → `docs/agent/DECISIONS.md` →
 > `docs/architecture/ARCHITECTURE.md` → `docs/agent/WORK_LOG.md`.
 
-**Last updated:** 2026-11-06, session S-V2-23 (local commit on top of
-`5f493ed` — **push pending: the supplied GitHub PAT was rejected 401;
-the R3 commit + this docs refresh are local-only until a fresh PAT
-arrives**): **the owner-directed R3 trainer profile extension landed
-and is CPU-verified (D-V2-050)** — `colab_t4_profile_a_r3`: AdamW
-wd `1e-2`; cosine `3e-4 → 3e-5` with a scale-aware warmup over a
-frozen 252-step horizon (epoch extension never reshapes it,
-D-V2-048-safe); validation early stopping (patience 5, `min_delta`
-0.10 absolute in the measured ~12–16 loss units); `best_state.pt`
-best-validation selection (the full atomic SHA-256 payload); the
-anchor-margin monitor (warn −800 / graceful stop −700 / hard guard
-−1000) with the verified finding that **no pre-existing −1000 guard
-exists in either branch** and no Stage-1 quantity lives on that scale
-— loud calibration-pending mode until an environment-side energy
-source is wired.  Profile A is bit-compatible (digest verified
-identical; all persisted checkpoints resumable).  Tests: trainer
-43/43 (17 new R3 regressions), full suite **1702 passed / 24 skipped /
-0 failed**.  The sandbox was rebuilt from scratch this session (the
-recycler wiped repo/evalenv/.secrets/OAuth cache/SSH keypair;
-`colab_auth_flow.py` was reconstructed from the CLI's own auth
-module; a fresh bridge keypair was generated).  **GPU re-auth is
-staged**: the split-PKCE consent URL was issued to the operator; the
-R3 T4 run executes after they return the one-time code.  Prior
-sessions: S-V2-22 closed #43 (the cross-VM continuation, history
-42 → 63 prefix-identical, `runs/stage1_t4_session2/run.tar`);
-clean-room closures stand at **37 of 40** (#5–#27, #29–#34, #38–#44).
+**Last updated:** 2026-11-06, session S-V2-24 (**the R3 T4 run
+executed on an authorized Tesla T4 — the owner's overfitting watch is
+answered with live evidence; D-V2-050 execution**):
+`colab_t4_profile_a_r3` ran 11 of 12 epochs and stopped by
+**validation early stopping** (patience 5, `min_delta` 0.10) —
+per-epoch train means fell 20.77 → 9.39 while validation bottomed at
+epoch 6 (**13.0775**) then rose five consecutive epochs (→ 15.46):
+**overfitting detected after epoch 6 and handled live**
+(`best_state.pt` = the epoch-6 best, `kind=best_val`, full
+continuation payload @ step 126; LR cosine verified live over the
+frozen 252-step horizon; the anchor monitor in its documented loud
+calibration-pending mode).  Provisioning gated fail-closed
+(nvidia-smi + torch-CUDA concur Tesla T4 15360 MiB, fp32/tf32-off
+SUPPORTED); the workspace restored bit-exact from HF (trajectory
+SHA-256s MATCH, independently re-verified); the run persisted
+checksum-verified to HF `runs/stage1_t4_r3/run.tar` (LFS sha256
+`1dc00a58…`, local == remote); §29.2 battery PASS (transcript in
+`ssh_evidence/`); the VM stopped after use.  GPU auth re-completed
+via the split-PKCE flow (two failed operator code rounds — one
+orphaned by the recycle, one expired `invalid_grant` — then exchanged
+OK; never faked); a fresh GitHub PAT + the HF token were supplied and
+verified, and the S-V2-23 commits are confirmed on `origin/3d-synV2`
+at `f4fb715` (the earlier "push pending" note is superseded).
+Clean-room closures stand at **37 of 40** (#5–#27, #29–#34, #38–#44);
+the remaining work is entirely operator-gated (#35 baselines →
+#35+#37; #28 licensed-data decision).
 
 ## 1. Continuation instruction
 
 ```
-Next session — TWO operator actions gate the remaining work, then one
-runtime action:
+Next session — no runtime action is pending; the remaining work is
+operator-gated:
 
-0. THE OPERATOR RETURNS THE GOOGLE AUTH CODE (the split-PKCE URL was
-   issued in S-V2-23; the verifier is persisted at
-   ~/.config/colab-cli/pkce_state.json).  Complete it:
-   /home/z/.venv/bin/python /home/z/my-project/scripts/colab_auth_flow.py code <CODE>
-   then verify: colab_auth_flow.py status  (never print token values).
-   If the PKCE state was wiped by another recycle: re-run the `url`
-   step and re-ask the operator (never fake or CPU-substitute).
+0. (DONE S-V2-24) GPU auth + the R3 T4 run + the evidence persistence
+   all executed and recorded (WORK_LOG §S-V2-24; D-V2-050 execution).
+   Resumable artifacts on HF: runs/stage1_t4_r3/run.tar — best_state.pt
+   (the epoch-6 best, val 13.0775, full continuation payload @ step
+   126) + trainer_state.pt (the early-stopped step 231; --resume
+   continues from it, D-V2-047 no-op semantics apply to completed
+   epochs).
 
-1. THE OPERATOR SUPPLIES A FRESH GITHUB PAT (the S-V2-23 one was
-   rejected 401).  Store it untracked (git credential store file,
-   0600), then push the local S-V2-23 commits to origin/3d-synV2
-   and verify the remote SHA (D-V2-024).
-
-2. THE R3 T4 RUN (the overfitting watch, ~15–25 min of T4 time):
-   provision + gate fail-closed (colab new -s syntree-t4 --gpu T4;
-   reject CPU-only runtimes — assign-endpoint 'Service Unavailable'
-   is the known free-tier failure mode; account-death = POST 503
-   outcome:2 + currentBalance 0 → ask the operator for a fresh
-   re-consent), restore the workspace from HF
-   (scripts/runtime_restore_from_hf.sh; HF_TOKEN via SFTP
-   /root/.hf_token — the S-V2-23 HF token is verified valid, write
-   role), pull the R3 commit on the VM, then launch:
-     python scripts/train_stage1.py \
-       --config configs/train_colab_t4_r3.json \
-       --trajectories work/data/trajectories \
-       --processed work/data/processed \
-       --catalog work/catalog/<the immutable H5> \
-       --run-dir runs/stage1_t4_r3 --device cuda --max-epochs 12
-   Watch telemetry.jsonl per epoch: validation_loss vs train losses
-   (overfitting = val rising while train falls), the LR cosine,
-   best_state.pt updates, early stopping at patience 5.  Persist the
-   run to HF (RUN_TAG=stage1_r3) and record the evidence (suite runs
-   on CPU only claim CPU; the T4 run claims only what its logs show).
-
-3. (unchanged operator gates) Baseline structures close #35 → #37;
-   #28 needs the owner's licensed-reaction-data decision.  The #35
-   command shape (when the structures arrive):
+1. THE OPERATOR EXPORTS THE #35 BASELINE STRUCTURES (one SDF per
+   target_id — TargetDiff / DiffSBDD / SyntheMol), then:
    scripts/run_comparative_benchmark.py --targets <manifest>
    --method NAME=DIR ... --retro-track stock_aligned=...
-   --retro-track independent_external=... closes #35, and with it #37
-   (the final milestone; its sync mechanics are already proven —
-   bit-exact restores x3, checksum-verified uploads).
+   --retro-track independent_external=...
+   → closes #35, and with it #37 (the final milestone; its sync
+   mechanics are already proven — bit-exact restores x3,
+   checksum-verified uploads).
 
-Do NOT redo: the S-V2-23 R3 implementation (CPU-verified; only the
-T4 execution remains), the S-V2-22 two-round T-chain reproduction,
-the #43 cross-VM continuation, or the D-V2-049 fix (WORK_LOG
-§S-V2-22); nor the S-V2-21 bridge/chain/benchmark work, the S-V2-20
-evaluation stack, or anything earlier. The dev sandbox is CPU-only by
-constitution (#45 §5–§6); the persistent python env is
-/home/z/my-project/evalenv (in-repo .venv dirs are wiped by the
-sandbox recycler — D-V2-044; clear /tmp/pytest-of-z AND
-/tmp/syntree_trainer_test_* before AND after full-suite runs — the
-S-V2-23 Errno-28 disk-exhaustion incident filled 9.9 GB to 100%). The colab CLI + paramiko live
-in /home/z/.venv (google-colab-cli; ~/.ssh/id_ed25519.pub is the
-bridge public key — regenerated from the preserved private key in
-/home/z/my-project/.secrets/ if the recycler wipes it; do NOT pass
--i/--identity to `colab ssh`, it shells out to the absent ssh-keygen;
-the private key stays in /home/z/my-project/.secrets/, never
-committed). Git pushes need the persisted credential helper:
+2. #28 NEEDS THE OWNER'S licensed-reaction-data decision.  Context the
+   R3 run just measured: on the honest 194-trajectory Stage-1 set
+   (241 train / 101 val samples) the model overfits after ~6 epochs
+   (val bottomed 13.0775 then rose 5 straight epochs while train fell
+   20.77 → 9.39; early stopping fired at patience 5).  More data /
+   the #28 pretraining track is the designed answer — not longer
+   training on the same set.
+
+3. IF A T4 SESSION IS NEEDED AGAIN: colab_auth_flow.py first
+   (`status` — the refresh-token cache may still be valid; else `url`
+   → operator code → `code`; never fake), then
+   colab new -s syntree-t4 --gpu T4, the fail-closed gate (nvidia-smi
+   AND torch-CUDA must concur Tesla T4 — CPU-only fallbacks are
+   disposed, never trained on; account-death = POST 503 outcome:2 +
+   currentBalance 0 → fresh operator re-consent), SFTP the HF token to
+   /root/.hf_token, bash scripts/runtime_restore_from_hf.sh, then
+   launch train_stage1.py --config configs/train_colab_t4_r3.json …
+   VMs burn compute units — colab stop after use.  Operational note:
+   a detached nohup launch holds the paramiko channel open (the
+   launch call itself may time out — harmless; poll via fresh exec
+   calls).
+
+Do NOT redo: the S-V2-24 R3 T4 execution (persisted; the overfitting
+verdict recorded), the S-V2-23 R3 implementation (CPU-verified), the
+S-V2-22 two-round T-chain reproduction, the #43 cross-VM continuation,
+or the D-V2-049 fix (WORK_LOG §S-V2-22); nor the S-V2-21
+bridge/chain/benchmark work, the S-V2-20 evaluation stack, or
+anything earlier. The dev sandbox is CPU-only by constitution
+(#45 §5–§6); the persistent python env is /home/z/my-project/evalenv
+(in-repo .venv dirs are wiped by the sandbox recycler — D-V2-044;
+clear /tmp/pytest-of-z AND /tmp/syntree_trainer_test_* before AND
+after full-suite runs — the S-V2-23 Errno-28 disk-exhaustion incident
+filled 9.9 GB to 100%). The colab CLI + paramiko live in
+/home/z/.venv (google-colab-cli; ~/.ssh/id_ed25519.pub is the bridge
+public key — regenerate a FRESH keypair via scripts/gen_bridge_key.py
+when the recycler wipes ~/.ssh AND .secrets/ (S-V2-24 proved a fresh
+keypair always works — the pubkey rides the session-creation header,
+no runtime pre-registration needed); do NOT pass -i/--identity to
+`colab ssh`, it shells out to the absent ssh-keygen; the private key
+stays in /home/z/my-project/.secrets/, never committed). Git pushes
+need the persisted credential helper:
   git -c credential.helper='store --file=/home/z/my-project/.auth/
   git-credentials' push origin 3d-synV2
 (the recycler wipes the global gitconfig that carried it).
@@ -179,12 +178,17 @@ committed). Git pushes need the persisted credential helper:
   `docs/eval/` incl. the evidence copies) — #34/#44 are closed with
   evidence; #35's harness, frozen manifest and 3D-SynTree side are
   verified (only the operator's baseline structures are missing).
+- **The S-V2-22/23/24 work**: the #43 cross-VM continuation + the
+  D-V2-049 driver fix (S-V2-22); the R3 profile extension (D-V2-050,
+  `bcddf7b`, CPU-verified S-V2-23); and the R3 T4 execution with the
+  overfitting verdict + checksum-verified HF persistence (S-V2-24 —
+  `runs/stage1_t4_r3/run.tar`; WORK_LOG §S-V2-24).
 
 ## 4. Known debts / open risks
 
 | Item | Owner | Note |
 |---|---|---|
-| **#43's cross-session continuation run** | #43/agent | Driver staged (`bootstrap_t4.sh session2 continue`); blocked only on free-tier GPU provisioning capacity (CPU-only fallback runtimes observed; the bootstrap gates fail-closed) |
+| **Anchor-margin monitor stays calibration-pending** | owner/agent | Thresholds −800/−700/−1000 recorded verbatim (D-V2-050) but inactive until an environment-side energy source is wired (`anchor_margin_source="external"` + `anchor_margin_fn`); the R3 T4 run confirmed no Stage-1 quantity lives on that scale |
 | **#37 blocked on #35** | operator | The sync mechanics are proven (bit-exact restore x3, checksum-verified uploads); only the baseline comparison remains |
 | **#35's baselines** | operator | The harness is verified; TargetDiff/DiffSBDD/SyntheMol structures (one SDF per target_id) close it |
 | Stage-1 training set is 194 trajectories (the honest census) | #28/owner | The #28 two-tier pretraining is the designed scale path; externally blocked on licensed reaction data |
@@ -202,11 +206,13 @@ at `~/.ssh/id_ed25519.pub` (private key in
 `/home/z/my-project/.secrets/colab_ed25519`, never committed). No
 session is left open at handoff (VMs burn compute units; `colab stop`
 after use). Everything the runtime needs is persisted: the
-388-artifact training bundle + the session-1 run
+388-artifact training bundle + the session-1/2 runs + the R3 run
 (`JJKK1212/3d-syntree-v2-runs`: `data/training_bundle.tar`,
-`runs/stage1_t4_session1/run.tar`) + the catalog
-(`JJKK1212/3d-syntree-v2-catalog`); a fresh session restores in ~3 min
-via `scripts/runtime_restore_from_hf.sh` (verified bit-exact x3).
+`runs/stage1_t4_session1/run.tar`, `runs/stage1_t4_session2/run.tar`,
+`runs/stage1_t4_r3/run.tar` — the R3 tar's local == remote sha256
+verified S-V2-24) + the catalog (`JJKK1212/3d-syntree-v2-catalog`);
+a fresh session restores in ~3 min via
+`scripts/runtime_restore_from_hf.sh` (verified bit-exact x4).
 Evidence transcripts live in `/home/z/my-project/ssh_evidence/`
 (outside git; the summarized numbers are recorded in WORK_LOG/STATUS).
 
@@ -231,10 +237,11 @@ runs (Errno 28). No secrets are stored in the repository.
    psutil huggingface_hub aizynthfinder "pyarrow==16.1.0" posebusters
    vina meeko gemmi && pip install rdkit==2026.9.1` (D-V2-044).
 3. Baseline the suite with `python -m pytest tests/ -q` — expected
-   **1687 passed / 22 skipped** (catalog present at `work/catalog/`;
-   +3 planner-gated tests re-enable with `SYNTREE_AIZYNTH_MODELS`
-   after installing the aizynthfinder stack per D-V2-044 — without
-   it the 1687 baseline holds with those skipped).
+   **1702 passed / 24 skipped / 0 failed** at `f4fb715` (S-V2-23's
+   independently-reproduced R3-era baseline = the S-V2-21 1687/22 +
+   the 17 R3 regressions; the 24 skips = 16 #11 stereo pairs + the
+   catalog/planner artifact gates + the Suite-B T4 memory gate; a
+   docs-only session may cite it without re-running, as S-V2-24 did).
 4. Work per the #45 §18 per-issue protocol; follow D-V2-024
    (commit+push each verified unit immediately); end with the
    mandatory git diff review, commit+push (report exact SHAs), issue
