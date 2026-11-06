@@ -31,12 +31,17 @@ RD=/content/runs/stage1_t4
 log "X1: source run tag: $SRC_TAG -> target: $DST_TAG (+$EXTRA_EPOCHS epochs)"
 
 # ---------- X1: fetch + verify the persisted source run ----------
-python3 - <<'DL' >> $L 2>&1
+# D-V2-049: the driver's Python heredocs are QUOTED ('DL'/'ME'/'TB'/'PU'), so
+# bash never interpolates ${SRC_TAG}/${DST_TAG}/${EXTRA_EPOCHS}/${N_TEL_BEFORE}
+# into them — the f-strings reached Python with the literal `${...}` text and
+# died with NameError on the first live execution. Pass the tags through the
+# environment and read them with os.environ (no interpolation needed).
+SRC_TAG=$SRC_TAG DST_TAG=$DST_TAG python3 - <<'DL' >> $L 2>&1
 import os, tarfile, hashlib
 assert os.environ.get("HF_TOKEN"), "HF_TOKEN must be exported"
 from huggingface_hub import hf_hub_download
 p = hf_hub_download(repo_id="JJKK1212/3d-syntree-v2-runs",
-                    filename=f"runs/stage1_t4_${SRC_TAG}/run.tar",
+                    filename=f"runs/stage1_t4_{os.environ['SRC_TAG']}/run.tar",
                     repo_type="dataset", local_dir="/content/work/bundle")
 print("source run.tar:", p, os.path.getsize(p), "bytes")
 with tarfile.open(p) as tf:
@@ -45,7 +50,11 @@ print("extracted to /content/work/source_run")
 DL
 SRC=/content/work/source_run/stage1_t4
 [ -f "$SRC/trainer_state.pt" ] || { log "X1: source checkpoint missing"; exit 1; }
-[ -f "$SRC/hardware_preflight.json" ] || { log "X1: source preflight missing"; exit 1; }
+# D-V2-049 (defect 2): runtime_train_chain.sh tars hardware_preflight.json at
+# the ARCHIVE ROOT (arcname="hardware_preflight.json", sibling of stage1_t4/),
+# not inside stage1_t4/ — the guard must check the root, exactly like the X2
+# copy below already does.
+[ -f /content/work/source_run/hardware_preflight.json ] || { log "X1: source preflight missing"; exit 1; }
 python3 - <<'IV' >> $L 2>&1
 import hashlib
 p = "/content/work/source_run/stage1_t4/trainer_state.pt"
@@ -87,12 +96,12 @@ N_TEL_BEFORE=$(wc -l < "$RD/telemetry.jsonl" 2>/dev/null || echo 0)
 log "X2: run dir staged (telemetry lines: $N_TEL_BEFORE); this runtime's preflight: $(python3 -c 'import json; print(json.load(open("/content/hardware_preflight.json"))["gpu"]["name"])')"
 
 # ---------- X3: resume with extended epochs on the NEW runtime ----------
-MAX_EPOCHS=$(python3 - <<'ME'
-import torch
+MAX_EPOCHS=$(EXTRA_EPOCHS=$EXTRA_EPOCHS python3 - <<'ME'
+import os, torch
 p = torch.load("/content/work/source_run/stage1_t4/trainer_state.pt",
                weights_only=False, map_location="cpu")
 profile = p.get("profile") or {}
-print(int(profile.get("max_epochs", 2)) + int(${EXTRA_EPOCHS}))
+print(int(profile.get("max_epochs", 2)) + int(os.environ["EXTRA_EPOCHS"]))
 ME
 )
 log "X3: resuming with max_epochs=$MAX_EPOCHS on this runtime"
@@ -130,10 +139,11 @@ VF
 log "X4: continuation assertions passed"
 
 # the new runtime's hardware baseline must appear in the resumed telemetry
-python3 - <<'TB' >> $L 2>&1
-import json
+N_TEL_BEFORE=$N_TEL_BEFORE python3 - <<'TB' >> $L 2>&1
+import json, os
 lines = [json.loads(l) for l in open("/content/runs/stage1_t4/telemetry.jsonl") if l.strip()]
-new_lines = lines[${N_TEL_BEFORE}:] if ${N_TEL_BEFORE} else lines
+n_before = int(os.environ["N_TEL_BEFORE"])
+new_lines = lines[n_before:] if n_before else lines
 print("telemetry lines: total", len(lines), "| new on this runtime:", len(new_lines))
 assert new_lines, "no telemetry recorded on the resumed runtime"
 sample = new_lines[0]
@@ -144,7 +154,7 @@ TB
 log "X4: new-runtime telemetry baseline verified"
 
 # ---------- X5: persist the cross-session run ----------
-python3 - <<'PU' >> $L 2>&1
+DST_TAG=$DST_TAG python3 - <<'PU' >> $L 2>&1
 import os, tarfile
 assert os.environ.get("HF_TOKEN"), "HF_TOKEN must be exported"
 from huggingface_hub import HfApi
@@ -156,9 +166,9 @@ with tarfile.open("/content/runs/cross_session_run.tar", "w") as tf:
     tf.add("/content/hardware_preflight.json", arcname="hardware_preflight.json")
     tf.add("/content/logs/source_hardware_preflight.json", arcname="source_hardware_preflight.json")
 api.upload_file(path_or_fileobj="/content/runs/cross_session_run.tar",
-                path_in_repo="runs/stage1_t4_${DST_TAG}/run.tar",
+                path_in_repo=f"runs/stage1_t4_{os.environ['DST_TAG']}/run.tar",
                 repo_id="JJKK1212/3d-syntree-v2-runs", repo_type="dataset")
-print("HF_CROSS_SESSION_UPLOAD_DONE: ${DST_TAG}")
+print("HF_CROSS_SESSION_UPLOAD_DONE:", os.environ["DST_TAG"])
 PU
 log "X5: cross-session run persisted (runs/stage1_t4_${DST_TAG}/run.tar)"
 log "CROSS_SESSION_DONE"
